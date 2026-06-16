@@ -888,7 +888,7 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
 
             ret = snprintf(&output[offset],
                            length - offset,
-                           "Video stream: %dx%d %.2f FPS (Codec: %s)\n"
+                           "Video stream: %dx%d %.2f FPS (%s)\n"
 #ifdef DISPLAY_BITRATE
                            "Bitrate: %.1f Mbps, Peak (%us): %.1f\n"
 #endif
@@ -914,9 +914,8 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
 
         ret = snprintf(&output[offset],
                        length - offset,
-                       "Incoming frame rate from network: %.2f FPS\n"
-                       "Decoding frame rate: %.2f FPS\n"
-                       "Rendering frame rate: %.2f FPS\n",
+                       "FPS in/decode: %.2f/%.2f FPS\n"
+                       "FPS rendered: %.2f FPS\n",
                        stats.receivedFps,
                        stats.decodedFps,
                        stats.renderedFps);
@@ -931,7 +930,7 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
     if (stats.framesWithHostProcessingLatency > 0) {
         ret = snprintf(&output[offset],
                        length - offset,
-                       "Host processing latency min/max/average: %.1f/%.1f/%.1f ms\n",
+                       "Host latency min/max/avg: %.1f/%.1f/%.1f ms\n",
                        (float)stats.minHostProcessingLatency / 10,
                        (float)stats.maxHostProcessingLatency / 10,
                        (float)stats.totalHostProcessingLatency / 10 / stats.framesWithHostProcessingLatency);
@@ -955,18 +954,16 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
 
         ret = snprintf(&output[offset],
                        length - offset,
-                       "Frames dropped by your network connection: %.2f%%\n"
-                       "Frames dropped due to network jitter: %.2f%%\n"
-                       "Average network latency: %s\n"
-                       "Average decoding time: %.2f ms\n"
-                       "Average frame queue delay: %.2f ms\n"
-                       "Average rendering time (including monitor V-sync latency): %.2f ms\n",
+                       "Network drop/jitter: %.2f%%/%.2f%%\n"
+                       "Network latency: %s\n"
+                       "Decoding time: %.2f ms\n"
+                       "Frame queue/render: %.2f/%.2f ms\n",
                        (float)stats.networkDroppedFrames / stats.totalFrames * 100,
                        (float)stats.pacerDroppedFrames / stats.decodedFrames * 100,
                        rttString,
-                       (double)(stats.totalDecodeTimeUs / 1000.0) / stats.decodedFrames,
                        (double)(stats.totalPacerTimeUs / 1000.0) / stats.renderedFrames,
-                       (double)(stats.totalRenderTimeUs / 1000.0) / stats.renderedFrames);
+                       (double)(stats.totalRenderTimeUs / 1000.0) / stats.renderedFrames,
+                       (double)(stats.totalDecodeTimeUs / 1000.0) / stats.decodedFrames);
         if (ret < 0 || ret >= length - offset) {
             SDL_assert(false);
             return;
