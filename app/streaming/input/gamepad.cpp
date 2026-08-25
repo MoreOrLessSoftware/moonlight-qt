@@ -6,6 +6,38 @@
 
 #include <QtMath>
 
+#if defined(Q_OS_WIN)
+#include <windows.h>
+#include <roapi.h>
+#include <windows.gaming.input.h>
+#include <wrl.h>
+
+#pragma comment(lib, "runtimeobject.lib")
+
+static void WGI_TriggerRumble(uint16_t left, uint16_t right) {
+    HRESULT hrInit = RoInitialize(RO_INIT_MULTITHREADED);
+    if (FAILED(hrInit) && hrInit != RPC_E_CHANGED_MODE) return;
+
+    Microsoft::WRL::Wrappers::HStringReference classId(RuntimeClass_Windows_Gaming_Input_Gamepad);
+    Microsoft::WRL::ComPtr<ABI::Windows::Gaming::Input::IGamepadStatics> gamepadStatics;
+    if (FAILED(RoGetActivationFactory(classId.Get(), __uuidof(ABI::Windows::Gaming::Input::IGamepadStatics), &gamepadStatics))) return;
+
+    Microsoft::WRL::ComPtr<ABI::Windows::Foundation::Collections::IVectorView<ABI::Windows::Gaming::Input::Gamepad*>> gamepads;
+    if (FAILED(gamepadStatics->get_Gamepads(&gamepads))) return;
+
+    unsigned int count = 0;
+    if (FAILED(gamepads->get_Size(&count)) || count == 0) return;
+
+    Microsoft::WRL::ComPtr<ABI::Windows::Gaming::Input::IGamepad> gamepad;
+    if (FAILED(gamepads->GetAt(0, &gamepad)) || !gamepad) return;
+
+    ABI::Windows::Gaming::Input::GamepadVibration vibration = {0};
+    vibration.LeftTrigger = left / 65535.0;
+    vibration.RightTrigger = right / 65535.0;
+    gamepad->put_Vibration(vibration);
+}
+#endif
+
 // How long the Start button must be pressed to toggle mouse emulation
 #define MOUSE_EMULATION_LONG_PRESS_TIME 750
 
@@ -570,14 +602,22 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
         hapticCaps = 0;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
         hapticCaps |= SDL_GameControllerHasRumble(controller) ? ML_HAPTIC_GC_RUMBLE : 0;
+#if defined(Q_OS_WIN)
+        hapticCaps |= ML_HAPTIC_GC_TRIGGER_RUMBLE; // Force it on so moonlight streams trigger rumble packets to us
+#else
         hapticCaps |= SDL_GameControllerHasRumbleTriggers(controller) ? ML_HAPTIC_GC_TRIGGER_RUMBLE : 0;
+#endif
 #elif SDL_VERSION_ATLEAST(2, 0, 9)
         // Perform a tiny rumbles to see if haptics are supported.
         // NB: We cannot use zeros for rumble intensity or SDL will not actually call the JS driver
         // and we'll get a (potentially false) success value returned.
         hapticCaps |= SDL_GameControllerRumble(controller, 1, 1, 1) == 0 ? ML_HAPTIC_GC_RUMBLE : 0;
 #if SDL_VERSION_ATLEAST(2, 0, 14)
+#if defined(Q_OS_WIN)
+        hapticCaps |= ML_HAPTIC_GC_TRIGGER_RUMBLE;
+#else
         hapticCaps |= SDL_GameControllerRumbleTriggers(controller, 1, 1, 1) == 0 ? ML_HAPTIC_GC_TRIGGER_RUMBLE : 0;
+#endif
 #endif
 #else
         state->haptic = SDL_HapticOpenFromJoystick(SDL_GameControllerGetJoystick(state->controller));
@@ -857,6 +897,10 @@ void SdlInputHandler::rumbleTriggers(uint16_t controllerNumber, uint16_t leftTri
     if (controllerNumber >= MAX_GAMEPADS) {
         return;
     }
+
+#if defined(Q_OS_WIN)
+    WGI_TriggerRumble(leftTrigger, rightTrigger);
+#endif
 
 #if SDL_VERSION_ATLEAST(2, 0, 14)
     if (m_GamepadState[controllerNumber].controller != nullptr) {
