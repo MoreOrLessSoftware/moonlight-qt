@@ -888,14 +888,14 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
 
             ret = snprintf(&output[offset],
                            length - offset,
-                           "Video stream: %dx%d %.2f FPS (%s)\n"
+                           "Video stream: %.2f FPS (%dx%d %s)\n"
 #ifdef DISPLAY_BITRATE
                            "Bitrate: %.1f Mbps, Peak (%us): %.1f\n"
 #endif
                            ,
+                           stats.totalFps,
                            m_VideoDecoderCtx->width,
                            m_VideoDecoderCtx->height,
-                           stats.totalFps,
                            codecString
 #ifdef DISPLAY_BITRATE
                            ,
@@ -914,7 +914,8 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
 
         ret = snprintf(&output[offset],
                        length - offset,
-                       "FPS in/decode: %.2f/%.2f FPS\n"
+                       "FPS incoming: %.2f FPS\n"
+                       "FPS decoded:  %.2f FPS\n"
                        "FPS rendered: %.2f FPS\n",
                        stats.receivedFps,
                        stats.decodedFps,
@@ -930,7 +931,7 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
     if (stats.framesWithHostProcessingLatency > 0) {
         ret = snprintf(&output[offset],
                        length - offset,
-                       "Host latency min/max/avg: %.1f/%.1f/%.1f ms\n",
+                       "Host latency min/max/avg: %.1f / %.1f / %.1f ms\n",
                        (float)stats.minHostProcessingLatency / 10,
                        (float)stats.maxHostProcessingLatency / 10,
                        (float)stats.totalHostProcessingLatency / 10 / stats.framesWithHostProcessingLatency);
@@ -938,7 +939,7 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
     else {
         ret = snprintf(&output[offset],
                        length - offset,
-                       "Host latency min/max/avg: -/-/- ms\n");
+                       "Host latency min/max/avg: - / - / - ms\n");
     }
 
     if (ret < 0 || ret >= length - offset) {
@@ -960,10 +961,10 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
 
         ret = snprintf(&output[offset],
                        length - offset,
-                       "Network drop/jitter: %.2f%%/%.2f%%\n"
+                       "Network drop/jitter: %.2f%% / %.2f%%\n"
                        "Network latency: %s\n"
                        "Decoding time: %.2f ms\n"
-                       "Frame queue/render: %.2f/%.2f ms\n",
+                       "Frame queue/render: %.2f / %.2f ms\n",
                        (float)stats.networkDroppedFrames / stats.totalFrames * 100,
                        (float)stats.pacerDroppedFrames / stats.decodedFrames * 100,
                        rttString,
