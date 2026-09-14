@@ -2,6 +2,7 @@
 
 #include "../../decoder.h"
 #include "../renderer.h"
+#include "pacertrace.h"
 
 #include <QQueue>
 #include <QMutex>
@@ -12,6 +13,11 @@
 // - 1 frame removed from the render queue in the process of rendering
 // - 1 frame for deferred free
 #define PACER_MAX_OUTSTANDING_FRAMES (3 + 1 + 1)
+
+// Arrivals remembered when choosing how long frames wait, and host intervals
+// remembered when judging the source's frame rate.
+#define PACER_CADENCE_TRANSIT_SAMPLES 128
+#define PACER_CADENCE_INTERVAL_SAMPLES 32
 
 class IVsyncSource {
 public:
@@ -56,6 +62,12 @@ private:
 
     void dropFrameForEnqueue(QQueue<AVFrame*>& queue);
 
+    static int cadenceThread(void* context);
+
+    int64_t scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row);
+
+    void waitUntilUs(int64_t targetUs);
+
     QQueue<AVFrame*> m_RenderQueue;
     QQueue<AVFrame*> m_PacingQueue;
     QQueue<int> m_PacingQueueHistory;
@@ -75,4 +87,35 @@ private:
     int m_DisplayFps;
     PVIDEO_STATS m_VideoStats;
     int m_RendererAttributes;
+
+    // Pacing to the host's cadence. See scheduleFrame().
+    SDL_Thread* m_CadenceThread;
+    PacerTrace* m_Trace;
+    void* m_WaitTimer;
+    bool m_WaitTimerHighRes;
+
+    // Tunables, read once in initialize()
+    double m_SmoothGain;
+    int m_ArrivalPercentile;
+    double m_NoTearFraction;
+
+    // What has been learned about the host's cadence
+    int m_LearnFramesLeft;
+    int64_t m_LastHostUs;
+    double m_IntervalUs;
+    double m_SmoothedUs;
+    int64_t m_HostIntervalsUs[PACER_CADENCE_INTERVAL_SAMPLES];
+    int m_HostIntervalCount;
+    int m_NextHostInterval;
+    int64_t m_TransitUs[PACER_CADENCE_TRANSIT_SAMPLES];
+    int m_TransitCount;
+    int m_NextTransit;
+    double m_DelayUs;
+    bool m_Tearing;
+    double m_RenderCostUs;
+
+    // Trace bookkeeping
+    uint64_t m_FrameIndex;
+    uint32_t m_DroppedSinceRow;
+    uint32_t m_EvictedFrames;
 };

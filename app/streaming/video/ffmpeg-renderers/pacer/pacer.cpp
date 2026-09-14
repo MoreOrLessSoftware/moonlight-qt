@@ -13,6 +13,15 @@
 
 #include <SDL_syswm.h>
 
+#include <algorithm>
+#include <cmath>
+
+#ifdef Q_OS_WIN32
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+#endif
+
 // Limit the number of queued frames to prevent excessive memory consumption
 // if the V-Sync source or renderer is blocked for a while. It's important
 // that the sum of all queued frames between both pacing and rendering queues
@@ -29,6 +38,48 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 // V-sync happens.
 #define TIMER_SLACK_MS 3
 
+// Pacing to the host's cadence. See scheduleFrame() for how these fit together.
+
+// Frames shown as they arrive while the host's cadence is learned, at least. A
+// second's worth at the stream's rate is used when that is more.
+#define CADENCE_MIN_LEARN_FRAMES 30
+
+// How much of the gap between the predicted and the actual host capture time each
+// frame corrects. Lower irons out more of the host's jitter; 1 follows the host's
+// timestamps exactly. ML_PACING_SMOOTH sets it as a percentage.
+#define CADENCE_SMOOTH_GAIN 0.25
+
+// A host time further than this many intervals from its prediction is a change
+// of pace or a stall, not jitter, and is followed straight away.
+#define CADENCE_RESYNC_INTERVALS 0.5
+
+// Which point in the recent spread of arrivals frames wait for, and the margin on
+// top. Frames arriving later than that go out when they arrive.
+// ML_PACING_PERCENTILE sets the percentile.
+#define CADENCE_ARRIVAL_PERCENTILE 97
+#define CADENCE_DELAY_GUARD_US 500
+
+// How fast the delay may move per frame. Up quickly so late arrivals are covered,
+// down slowly because every change in it shifts the frames behind.
+#define CADENCE_DELAY_RISE_US 250
+#define CADENCE_DELAY_FALL_US 25
+
+// Longest a frame is held beyond the fastest recent arrival, in source intervals
+#define CADENCE_MAX_HOLD_INTERVALS 2
+
+// Tearing stops once the source reaches this fraction of the display's refresh
+// rate, where the display can show every frame without it, and resumes a little
+// below. ML_PACING_NO_TEAR_PCT sets the fraction as a percentage.
+#define CADENCE_NO_TEAR_FRACTION 0.96
+#define CADENCE_TEAR_HYSTERESIS 0.02
+
+// Longest believable gap between two host frames. Past it the timeline is learned again.
+#define CADENCE_MAX_HOST_GAP_US 1000000
+
+// Left for spinning at the end of a wait, depending on how precise the timer is
+#define CADENCE_SPIN_US 1000
+#define CADENCE_SPIN_LOW_RES_US 2000
+
 Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_RenderThread(nullptr),
     m_VsyncThread(nullptr),
@@ -38,7 +89,31 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_VsyncRenderer(renderer),
     m_MaxVideoFps(0),
     m_DisplayFps(0),
-    m_VideoStats(videoStats)
+    m_VideoStats(videoStats),
+    m_RendererAttributes(0),
+    m_CadenceThread(nullptr),
+    m_Trace(nullptr),
+    m_WaitTimer(nullptr),
+    m_WaitTimerHighRes(false),
+    m_SmoothGain(CADENCE_SMOOTH_GAIN),
+    m_ArrivalPercentile(CADENCE_ARRIVAL_PERCENTILE),
+    m_NoTearFraction(CADENCE_NO_TEAR_FRACTION),
+    m_LearnFramesLeft(0),
+    m_LastHostUs(0),
+    m_IntervalUs(0),
+    m_SmoothedUs(0),
+    m_HostIntervalsUs{},
+    m_HostIntervalCount(0),
+    m_NextHostInterval(0),
+    m_TransitUs{},
+    m_TransitCount(0),
+    m_NextTransit(0),
+    m_DelayUs(0),
+    m_Tearing(true),
+    m_RenderCostUs(0),
+    m_FrameIndex(0),
+    m_DroppedSinceRow(0),
+    m_EvictedFrames(0)
 {
 
 }
@@ -58,12 +133,19 @@ Pacer::~Pacer()
     delete m_VsyncSource;
     m_VsyncSource = nullptr;
 
+    // Stop the cadence thread. It renders for itself and cleans up the render
+    // context on its own way out.
+    if (m_CadenceThread != nullptr) {
+        m_PacingQueueNotEmpty.wakeAll();
+        SDL_WaitThread(m_CadenceThread, nullptr);
+    }
+
     // Stop the render thread
     if (m_RenderThread != nullptr) {
         m_RenderQueueNotEmpty.wakeAll();
         SDL_WaitThread(m_RenderThread, nullptr);
     }
-    else {
+    else if (m_CadenceThread == nullptr) {
         // Notify the renderer that it is being destroyed soon
         // NB: This must happen on the same thread that calls renderFrame().
         m_VsyncRenderer->cleanupRenderContext();
@@ -79,12 +161,22 @@ Pacer::~Pacer()
         av_frame_free(&frame);
     }
     av_frame_free(&m_DeferredFreeFrame);
+
+    // Written out once every row is in
+    delete m_Trace;
+
+#ifdef Q_OS_WIN32
+    if (m_WaitTimer != nullptr) {
+        CloseHandle((HANDLE)m_WaitTimer);
+    }
+#endif
 }
 
 void Pacer::renderOnMainThread()
 {
-    // Ignore this call for renderers that work on a dedicated render thread
-    if (m_RenderThread != nullptr) {
+    // Ignore this call for renderers that work on a dedicated render thread,
+    // and when the cadence thread is rendering for itself
+    if (m_RenderThread != nullptr || m_CadenceThread != nullptr) {
         return;
     }
 
@@ -265,6 +357,55 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
     m_DisplayFps = StreamUtils::getDisplayRefreshRate(window);
     m_RendererAttributes = m_VsyncRenderer->getRendererAttributes();
 
+    // Follow the host's cadence where the renderer can choose per present whether to
+    // tear. Full-screen exclusive renderers rely on the V-blank pacer below to avoid
+    // tearing, and a renderer that can't tear keeps it too.
+    if (enablePacing && !(m_RendererAttributes & RENDERER_ATTRIBUTE_FORCE_PACING) &&
+            m_VsyncRenderer->isRenderThreadSupported() && m_VsyncRenderer->supportsPresentTearing()) {
+        if (qEnvironmentVariableIsSet("ML_PACING_SMOOTH")) {
+            m_SmoothGain = qBound(1, qEnvironmentVariableIntValue("ML_PACING_SMOOTH"), 100) / 100.0;
+        }
+        if (qEnvironmentVariableIsSet("ML_PACING_PERCENTILE")) {
+            m_ArrivalPercentile = qBound(50, qEnvironmentVariableIntValue("ML_PACING_PERCENTILE"), 100);
+        }
+        if (qEnvironmentVariableIsSet("ML_PACING_NO_TEAR_PCT")) {
+            m_NoTearFraction = qBound(10, qEnvironmentVariableIntValue("ML_PACING_NO_TEAR_PCT"), 1000) / 100.0;
+        }
+
+        m_LearnFramesLeft = qMax(CADENCE_MIN_LEARN_FRAMES, m_MaxVideoFps);
+
+#ifdef Q_OS_WIN32
+        m_WaitTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        m_WaitTimerHighRes = m_WaitTimer != nullptr;
+        if (m_WaitTimer == nullptr) {
+            m_WaitTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+        }
+#endif
+
+        QString settings = QString("smoothing gain %1%, arrival percentile %2, no tearing from %3% of the refresh rate, "
+                                   "%4 wait timer")
+                .arg((int)std::lround(m_SmoothGain * 100))
+                .arg(m_ArrivalPercentile)
+                .arg((int)std::lround(m_NoTearFraction * 100))
+                .arg(m_WaitTimerHighRes ? "high resolution" : "standard");
+
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Frame pacing: following the host's cadence, %d FPS stream on a %d Hz display (%s)",
+                    m_MaxVideoFps, m_DisplayFps, qPrintable(settings));
+
+        m_Trace = PacerTrace::startIfRequested(m_DisplayFps, m_MaxVideoFps, settings);
+
+        m_CadenceThread = SDL_CreateThread(Pacer::cadenceThread, "PacerCadence", this);
+        if (m_CadenceThread == nullptr) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "Unable to create frame pacing thread: %s",
+                         SDL_GetError());
+            return false;
+        }
+
+        return true;
+    }
+
     if (enablePacing) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Frame pacing: target %d Hz with %d FPS stream",
@@ -397,6 +538,9 @@ void Pacer::dropFrameForEnqueue(QQueue<AVFrame*>& queue)
     if (queue.size() == MAX_QUEUED_FRAMES) {
         AVFrame* frame = queue.dequeue();
         av_frame_free(&frame);
+
+        // Only the cadence thread reads this, under the same lock
+        m_EvictedFrames++;
     }
 }
 
@@ -407,7 +551,7 @@ void Pacer::submitFrame(AVFrame* frame)
 
     // Queue the frame and possibly wake up the render thread
     m_FrameQueueLock.lock();
-    if (m_VsyncSource != nullptr) {
+    if (m_VsyncSource != nullptr || m_CadenceThread != nullptr) {
         dropFrameForEnqueue(m_PacingQueue);
         m_PacingQueue.enqueue(frame);
         m_FrameQueueLock.unlock();
@@ -415,5 +559,236 @@ void Pacer::submitFrame(AVFrame* frame)
     }
     else {
         enqueueFrameForRenderingAndUnlock(frame);
+    }
+}
+
+// Takes frames in order, waits until each one is due, then draws and presents it
+// from this thread, so nothing sits between the wait ending and the present.
+int Pacer::cadenceThread(void* context)
+{
+    Pacer* me = reinterpret_cast<Pacer*>(context);
+
+#if SDL_VERSION_ATLEAST(2, 0, 9)
+    SDL_SetThreadPriority(SDL_THREAD_PRIORITY_TIME_CRITICAL);
+#else
+    SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);
+#endif
+
+    while (!me->m_Stopping) {
+        me->m_FrameQueueLock.lock();
+
+        while (!me->m_Stopping && me->m_PacingQueue.isEmpty()) {
+            me->m_PacingQueueNotEmpty.wait(&me->m_FrameQueueLock);
+        }
+
+        if (me->m_Stopping) {
+            me->m_FrameQueueLock.unlock();
+            break;
+        }
+
+        AVFrame* frame = me->m_PacingQueue.dequeue();
+        int waiting = me->m_PacingQueue.count();
+        me->m_DroppedSinceRow += me->m_EvictedFrames;
+        me->m_EvictedFrames = 0;
+        me->m_FrameQueueLock.unlock();
+
+        PACER_TRACE_ROW row = {};
+        int64_t targetUs = me->scheduleFrame(frame, &row);
+
+        // Two frames already waiting behind this one means we have fallen behind the
+        // host, and showing it would only keep us there
+        if (waiting >= 2) {
+            me->m_VideoStats->pacerDroppedFrames++;
+            me->m_DroppedSinceRow++;
+            av_frame_free(&frame);
+            continue;
+        }
+
+        // Start drawing early by what drawing and presenting usually take
+        me->waitUntilUs(targetUs - (int64_t)me->m_RenderCostUs);
+
+        me->m_VsyncRenderer->setPresentTearing(row.tear != 0);
+
+        row.renderStartUs = (int64_t)LiGetMicroseconds();
+        me->renderFrame(frame);
+        row.presentUs = (int64_t)LiGetMicroseconds();
+
+        me->m_RenderCostUs += ((row.presentUs - row.renderStartUs) - me->m_RenderCostUs) / 16;
+
+        if (me->m_Trace != nullptr) {
+            row.queueDepth = (uint16_t)waiting;
+            row.droppedBefore = (uint16_t)qMin<uint32_t>(me->m_DroppedSinceRow, 65535);
+            me->m_Trace->record(row);
+        }
+
+        me->m_DroppedSinceRow = 0;
+    }
+
+    // NB: This must happen on the same thread that calls renderFrame().
+    me->m_VsyncRenderer->cleanupRenderContext();
+
+    return 0;
+}
+
+// Works out when a frame should be presented, and whether it may tear.
+//
+// The host's capture timestamps carry its cadence. Each one is predicted from the
+// tracked interval and corrected only part of the way towards its real value, which
+// irons out the host's jitter while still following real changes of pace. The
+// smoothed time is mapped onto our clock by a delay just long enough for nearly
+// every recent frame to have arrived, so frames go out on the host's rhythm instead
+// of the network's. For the first second nothing is paced while this is learned.
+//
+// Tearing lets a frame reach the display the moment it is presented, which is the
+// lowest latency there is. Once the source runs close to the refresh rate the
+// display can show every frame without it, so tearing stops there.
+int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
+{
+    int64_t hostUs = frame->pts;
+    int64_t arrivalUs = frame->pkt_dts;
+
+    row->frame = m_FrameIndex++;
+    row->hostUs = hostUs;
+    row->arrivalUs = arrivalUs;
+    row->targetUs = arrivalUs;
+    row->learning = 1;
+    row->tear = m_Tearing ? 1 : 0;
+
+    if (hostUs <= 0) {
+        // Nothing to pace against
+        return arrivalUs;
+    }
+
+    int64_t hostIntervalUs = m_LastHostUs != 0 ? hostUs - m_LastHostUs : 0;
+    m_LastHostUs = hostUs;
+
+    if (hostIntervalUs <= 0 || hostIntervalUs > CADENCE_MAX_HOST_GAP_US) {
+        // A new timeline, or a break in this one. Learn it again.
+        m_SmoothedUs = (double)hostUs;
+        m_TransitCount = 0;
+        m_NextTransit = 0;
+        m_LearnFramesLeft = qMax(CADENCE_MIN_LEARN_FRAMES, m_MaxVideoFps);
+    }
+    else {
+        m_HostIntervalsUs[m_NextHostInterval] = hostIntervalUs;
+        m_NextHostInterval = (m_NextHostInterval + 1) % PACER_CADENCE_INTERVAL_SAMPLES;
+        m_HostIntervalCount = qMin(m_HostIntervalCount + 1, PACER_CADENCE_INTERVAL_SAMPLES);
+
+        // Tracked for prediction. A single long gap is limited so it cannot drag the
+        // prediction far, but a real change of pace still comes through in a few frames.
+        m_IntervalUs = m_IntervalUs > 0 ?
+                    m_IntervalUs + (qBound(m_IntervalUs / 4, (double)hostIntervalUs, m_IntervalUs * 4) - m_IntervalUs) / 16 :
+                    (double)hostIntervalUs;
+
+        double predictedUs = m_SmoothedUs + m_IntervalUs;
+        double errorUs = hostUs - predictedUs;
+
+        if (std::fabs(errorUs) > m_IntervalUs * CADENCE_RESYNC_INTERVALS) {
+            m_SmoothedUs = (double)hostUs;
+        }
+        else {
+            m_SmoothedUs = predictedUs + errorUs * m_SmoothGain;
+        }
+    }
+
+    // How late this frame arrived relative to its smoothed host time, and how long
+    // frames have to wait for nearly all of the recent ones to have arrived
+    m_TransitUs[m_NextTransit] = arrivalUs - (int64_t)m_SmoothedUs;
+    m_NextTransit = (m_NextTransit + 1) % PACER_CADENCE_TRANSIT_SAMPLES;
+    m_TransitCount = qMin(m_TransitCount + 1, PACER_CADENCE_TRANSIT_SAMPLES);
+
+    int64_t sorted[PACER_CADENCE_TRANSIT_SAMPLES];
+    std::copy(m_TransitUs, m_TransitUs + m_TransitCount, sorted);
+    int64_t* percentile = sorted + (m_TransitCount - 1) * m_ArrivalPercentile / 100;
+    std::nth_element(sorted, percentile, sorted + m_TransitCount);
+    int64_t fastestUs = *std::min_element(sorted, sorted + m_TransitCount);
+
+    double wantedDelayUs = (double)*percentile + CADENCE_DELAY_GUARD_US;
+    if (m_IntervalUs > 0) {
+        wantedDelayUs = qMin(wantedDelayUs, fastestUs + CADENCE_MAX_HOLD_INTERVALS * m_IntervalUs);
+    }
+
+    int64_t targetUs = arrivalUs;
+
+    if (m_LearnFramesLeft > 0) {
+        m_LearnFramesLeft--;
+        m_DelayUs = wantedDelayUs;
+    }
+    else {
+        m_DelayUs += qBound(-(double)CADENCE_DELAY_FALL_US, wantedDelayUs - m_DelayUs, (double)CADENCE_DELAY_RISE_US);
+        targetUs = qMax(arrivalUs, (int64_t)(m_SmoothedUs + m_DelayUs));
+        row->learning = 0;
+    }
+
+    // Tear below the no-tearing threshold, judged from the median host interval so a
+    // single stall cannot flip it
+    int64_t medianIntervalUs = 0;
+    if (m_HostIntervalCount > 0) {
+        int64_t intervals[PACER_CADENCE_INTERVAL_SAMPLES];
+        std::copy(m_HostIntervalsUs, m_HostIntervalsUs + m_HostIntervalCount, intervals);
+        int64_t* median = intervals + m_HostIntervalCount / 2;
+        std::nth_element(intervals, median, intervals + m_HostIntervalCount);
+        medianIntervalUs = *median;
+    }
+
+    if (medianIntervalUs > 0 && m_DisplayFps > 0) {
+        double sourceFps = 1000000.0 / medianIntervalUs;
+
+        if (m_Tearing && sourceFps >= m_NoTearFraction * m_DisplayFps) {
+            m_Tearing = false;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Frame pacing: source at %.1f FPS on a %d Hz display, presenting without tearing",
+                        sourceFps, m_DisplayFps);
+        }
+        else if (!m_Tearing && sourceFps < (m_NoTearFraction - CADENCE_TEAR_HYSTERESIS) * m_DisplayFps) {
+            m_Tearing = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Frame pacing: source at %.1f FPS on a %d Hz display, presenting with tearing",
+                        sourceFps, m_DisplayFps);
+        }
+    }
+
+    row->smoothedUs = (int64_t)m_SmoothedUs;
+    row->delayUs = (int64_t)m_DelayUs;
+    row->targetUs = targetUs;
+    row->intervalUs = (int32_t)qMin<int64_t>(medianIntervalUs, INT32_MAX);
+    row->tear = m_Tearing ? 1 : 0;
+
+    return targetUs;
+}
+
+// Sleeps until a moment on the LiGetMicroseconds() clock, spinning for the last
+// stretch because no sleep is precise enough to land on it
+void Pacer::waitUntilUs(int64_t targetUs)
+{
+    const int64_t spinUs = m_WaitTimerHighRes ? CADENCE_SPIN_US : CADENCE_SPIN_LOW_RES_US;
+
+    for (;;) {
+        int64_t remainingUs = targetUs - (int64_t)LiGetMicroseconds();
+        if (remainingUs <= 0 || m_Stopping) {
+            return;
+        }
+
+        if (remainingUs <= spinUs) {
+            SDL_Delay(0);
+            continue;
+        }
+
+        // In bounded steps, so shutting down never waits long
+        int64_t sleepUs = qMin<int64_t>(remainingUs, 100000) - spinUs;
+
+#ifdef Q_OS_WIN32
+        if (m_WaitTimer != nullptr) {
+            LARGE_INTEGER dueTime;
+            dueTime.QuadPart = -sleepUs * 10;
+
+            if (SetWaitableTimer((HANDLE)m_WaitTimer, &dueTime, 0, nullptr, nullptr, FALSE)) {
+                WaitForSingleObject((HANDLE)m_WaitTimer, INFINITE);
+                continue;
+            }
+        }
+#endif
+
+        SDL_Delay((Uint32)qMax<int64_t>(1, sleepUs / 1000));
     }
 }

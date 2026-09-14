@@ -62,6 +62,7 @@ D3D11VARenderer::D3D11VARenderer(int decoderSelectionPass)
       m_DevicesWithCodecSupport(0),
       m_LastColorTrc(AVCOL_TRC_UNSPECIFIED),
       m_AllowTearing(false),
+      m_TearNextPresent(false),
       m_OverlayLock(0),
       m_HwDeviceContext(nullptr)
 {
@@ -572,7 +573,10 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
 
     // Use DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING with flip mode for non-vsync case, if possible.
     // NOTE: This is only possible in windowed or borderless windowed mode.
-    if (!params->enableVsync) {
+    //
+    // Frame pacing asks for it with V-sync on too, and then chooses per present
+    // whether to tear. See setPresentTearing().
+    if (!params->enableVsync || params->enableFramePacing) {
         BOOL allowTearing = FALSE;
         hr = m_Factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,
                                             &allowTearing,
@@ -594,15 +598,18 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
                          hr);
             // Non-fatal
         }
+    }
 
-        // DXVA2 may let us take over for FSE V-sync off cases. However, if we don't have DXGI_FEATURE_PRESENT_ALLOW_TEARING
-        // then we should not attempt to do this unless there's no other option (HDR, DXVA2 failed in pass 1, etc).
-        if (!m_AllowTearing && m_DecoderSelectionPass == 0 && !(params->videoFormat & VIDEO_FORMAT_MASK_10BIT) &&
-                (SDL_GetWindowFlags(params->window) & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Defaulting to DXVA2 for FSE without DXGI_FEATURE_PRESENT_ALLOW_TEARING support");
-            return false;
-        }
+    // Without V-sync every present tears. With it, none do unless frame pacing asks.
+    m_TearNextPresent = m_AllowTearing && !params->enableVsync;
+
+    // DXVA2 may let us take over for FSE V-sync off cases. However, if we don't have DXGI_FEATURE_PRESENT_ALLOW_TEARING
+    // then we should not attempt to do this unless there's no other option (HDR, DXVA2 failed in pass 1, etc).
+    if (!params->enableVsync && !m_AllowTearing && m_DecoderSelectionPass == 0 && !(params->videoFormat & VIDEO_FORMAT_MASK_10BIT) &&
+            (SDL_GetWindowFlags(params->window) & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Defaulting to DXVA2 for FSE without DXGI_FEATURE_PRESENT_ALLOW_TEARING support");
+        return false;
     }
 
     SDL_SysWMinfo info;
@@ -765,9 +772,7 @@ void D3D11VARenderer::renderFrame(AVFrame* frame)
 
     UINT flags;
 
-    if (m_AllowTearing) {
-        SDL_assert(!m_DecoderParams.enableVsync);
-
+    if (m_AllowTearing && m_TearNextPresent) {
         // If tearing is allowed, use DXGI_PRESENT_ALLOW_TEARING with syncInterval 0.
         // It is not valid to use any other syncInterval values in tearing mode.
         flags = DXGI_PRESENT_ALLOW_TEARING;
@@ -1457,6 +1462,16 @@ bool D3D11VARenderer::checkDecoderSupport(IDXGIAdapter* adapter)
     }
 
     return true;
+}
+
+bool D3D11VARenderer::supportsPresentTearing()
+{
+    return m_AllowTearing;
+}
+
+void D3D11VARenderer::setPresentTearing(bool tear)
+{
+    m_TearNextPresent = tear;
 }
 
 int D3D11VARenderer::getRendererAttributes()

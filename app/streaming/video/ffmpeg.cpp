@@ -1918,6 +1918,9 @@ void FFmpegVideoDecoder::decoderThreadProc()
                     // Capture a frame timestamp to measuring pacing delay
                     frame->pkt_dts = LiGetMicroseconds();
 
+                    // Zero means there is no host capture time for this frame
+                    frame->pts = 0;
+
                     if (!m_FrameInfoQueue.isEmpty()) {
                         // Data buffers in the DU are not valid here!
                         DECODE_UNIT du = m_FrameInfoQueue.dequeue();
@@ -1927,8 +1930,9 @@ void FFmpegVideoDecoder::decoderThreadProc()
                         // queue because that's directly caused by decoder latency.
                         m_ActiveWndVideoStats.totalDecodeTimeUs += (LiGetMicroseconds() - du.enqueueTimeUs);
 
-                        // Store the presentation time (90 kHz timebase)
-                        frame->pts = (int64_t)du.rtpTimestamp;
+                        // Store the host's capture time in microseconds. Frame pacing
+                        // follows the host's cadence from these.
+                        frame->pts = (int64_t)du.presentationTimeUs;
                     }
 
                     m_ActiveWndVideoStats.decodedFrames++;

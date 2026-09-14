@@ -193,6 +193,18 @@ public:
         // Don't wait by default
     }
 
+    // Whether setPresentTearing() takes effect: presents can go straight to the
+    // scanout instead of waiting for the display's next refresh.
+    virtual bool supportsPresentTearing() {
+        return false;
+    }
+
+    // Chooses whether the next renderFrame() may tear. Only called from the thread
+    // that renders, and only when supportsPresentTearing() is true.
+    virtual void setPresentTearing(bool) {
+        // Nothing
+    }
+
     // Called on the same thread as renderFrame() during destruction of the renderer
     virtual void cleanupRenderContext() {
         // Nothing
