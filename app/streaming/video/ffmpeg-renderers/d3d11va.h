@@ -26,6 +26,8 @@ public:
     virtual int getRendererAttributes() override;
     virtual int getDecoderCapabilities() override;
     virtual InitFailureReason getInitFailureReason() override;
+    virtual bool supportsPresentTearing() override;
+    virtual void setPresentTearing(bool tear) override;
 
     enum PixelShaders {
         GENERIC_YUV_420,
@@ -93,6 +95,10 @@ private:
     AVColorTransferCharacteristic m_LastColorTrc;
 
     bool m_AllowTearing;
+
+    // Whether the next present uses DXGI_PRESENT_ALLOW_TEARING. Always with V-sync
+    // off, and chosen per frame by frame pacing with it on.
+    bool m_TearNextPresent;
 
     std::array<Microsoft::WRL::ComPtr<ID3D11PixelShader>, PixelShaders::_COUNT> m_VideoPixelShaders;
     Microsoft::WRL::ComPtr<ID3D11Buffer> m_VideoVertexBuffer;
