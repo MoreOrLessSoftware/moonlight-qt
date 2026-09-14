@@ -20,6 +20,8 @@ typedef struct _PACER_TRACE_ROW {
     int64_t smoothedUs;         // Host capture time after smoothing (host clock)
     int64_t delayUs;            // Offset mapping smoothed host time onto our clock
     int64_t targetUs;           // When Present() was meant to return
+    int64_t dequeueUs;          // When the pacing thread took the frame from the queue
+    int64_t drawDueUs;          // When drawing was meant to start
     int64_t renderStartUs;      // When drawing started
     int64_t drawEndUs;          // When drawing finished
     int64_t presentStartUs;     // When Present() was called
