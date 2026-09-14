@@ -101,7 +101,10 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 // builds lasted up to about a second and a half.
 #define CADENCE_HOST_STEP_MAX_US 2000000
 
-// Left for spinning at the end of a wait, depending on how precise the timer is
+// Left for busy-spinning at the end of a wait, depending on how precise the timer
+// is. No sleep lands within a few hundred microseconds of a target, and at a frame
+// rate the display follows that error is on screen: measured at 90 FPS on 100 Hz,
+// late starts made presented intervals less even than the host's own.
 #define CADENCE_SPIN_US 1000
 #define CADENCE_SPIN_LOW_RES_US 2000
 
@@ -886,7 +889,11 @@ void Pacer::waitUntilUs(int64_t targetUs)
         }
 
         if (remainingUs <= spinUs) {
-            SDL_Delay(0);
+            // Spin the rest of the way. Yielding through SDL_Delay(0) slept instead
+            // and started frames anywhere from 23 to 556 us late.
+#ifdef Q_OS_WIN32
+            YieldProcessor();
+#endif
             continue;
         }
 
