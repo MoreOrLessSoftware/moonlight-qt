@@ -96,6 +96,7 @@ private:
 
     // Tunables, read once in initialize()
     double m_SmoothGain;
+    double m_SmoothMaxUs;
     int m_ArrivalPercentile;
     double m_NoTearFraction;
 
