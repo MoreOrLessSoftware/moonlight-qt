@@ -21,6 +21,8 @@ typedef struct _PACER_TRACE_ROW {
     int64_t delayUs;            // Offset mapping smoothed host time onto our clock
     int64_t targetUs;           // When Present() was meant to return
     int64_t renderStartUs;      // When drawing started
+    int64_t drawEndUs;          // When drawing finished
+    int64_t presentStartUs;     // When Present() was called
     int64_t presentUs;          // When Present() returned
     int32_t intervalUs;         // Median of recent host frame intervals
     uint16_t queueDepth;        // Frames already waiting behind this one
@@ -99,7 +101,8 @@ private:
     Histogram m_Spacing;
     Histogram m_Late;
     Histogram m_Hold;
-    Histogram m_Render;
+    Histogram m_Draw;
+    Histogram m_PresentCall;
     Histogram m_HostJitter;
 
     static const int k_WorstPairs = 10;

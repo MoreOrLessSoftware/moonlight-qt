@@ -28,6 +28,8 @@ public:
     virtual InitFailureReason getInitFailureReason() override;
     virtual bool supportsPresentTearing() override;
     virtual void setPresentTearing(bool tear) override;
+    virtual bool prepareFrame(AVFrame* frame) override;
+    virtual void presentPreparedFrame() override;
 
     enum PixelShaders {
         GENERIC_YUV_420,

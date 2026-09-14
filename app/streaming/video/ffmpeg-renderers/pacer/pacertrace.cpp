@@ -134,6 +134,8 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "#   on screen longer than the host held it. This is the stutter figure.\n"
                     << "# late_us = present_us - target_us: how far Present() missed its schedule. Negative is early.\n"
                     << "# hold_us = present_us - arrival_us: time the frame spent in the pacer, drawing included.\n"
+                    << "# draw_us: time spent drawing. present_call_us: how long the Present() call took. Drawing starts\n"
+                    << "#   early, and Present() is timed to return at target_us.\n"
                     << "# tear_line_pct: for a frame presented with tearing less than a refresh period after the previous\n"
                     << "#   one, where down the screen the tear lands if the display was still scanning that frame out.\n"
                     << "#   A variable refresh display that had already finished shows no tear. -1 otherwise.\n"
@@ -141,7 +143,7 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "# host_step: the host stamped the frame well before it appeared, so it was held as long as the frame\n"
                     << "#   before it instead of being paced by its stamp. Pairs touching one are left out of the spacing figures.\n"
                     << "frame,host_us,arrival_us,smoothed_us,delay_us,target_us,render_start_us,present_us,"
-                       "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,render_us,"
+                       "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,draw_us,present_call_us,"
                        "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step\n";
 
     trace->m_Thread = SDL_CreateThread(PacerTrace::writerThread, "PacerTrace", trace);
@@ -251,7 +253,8 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
 
     int64_t lateUs = row.presentUs - row.targetUs;
     int64_t holdUs = row.presentUs - row.arrivalUs;
-    int64_t renderUs = row.presentUs - row.renderStartUs;
+    int64_t drawUs = row.drawEndUs - row.renderStartUs;
+    int64_t presentCallUs = row.presentUs - row.presentStartUs;
 
     int tearLinePct = -1;
     if (row.tear && m_HavePrevious && m_PeriodUs > 0 &&
@@ -282,7 +285,8 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
     }
     else {
         m_Hold.add(holdUs);
-        m_Render.add(renderUs);
+        m_Draw.add(drawUs);
+        m_PresentCall.add(presentCallUs);
 
         if (lateUs > 1000) {
             m_MissedTargets++;
@@ -338,7 +342,8 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
              << spacingErrorUs << ','
              << lateUs << ','
              << holdUs << ','
-             << renderUs << ','
+             << drawUs << ','
+             << presentCallUs << ','
              << row.intervalUs << ','
              << (row.tear ? 1 : 0) << ','
              << tearLinePct << ','
@@ -371,7 +376,8 @@ void PacerTrace::writeFooter()
              << "# host cadence jitter |host interval - median host interval|: " << m_HostJitter.describe() << "\n"
              << "# missed schedule by over 1 ms: " << m_MissedTargets << " frames, lateness " << m_Late.describe() << "\n"
              << "# hold arrival to present: " << m_Hold.describe() << "\n"
-             << "# drawing and present: " << m_Render.describe() << "\n"
+             << "# drawing: " << m_Draw.describe() << "\n"
+             << "# Present() call: " << m_PresentCall.describe() << "\n"
              << "# presented with tearing: " << m_TornFrames << " of " << m_Rows << ", tearing switched on or off "
              << m_TearSwitches << " times\n"
              << "# possible tears (tearing present within a refresh of the previous frame): " << m_PossibleTears
