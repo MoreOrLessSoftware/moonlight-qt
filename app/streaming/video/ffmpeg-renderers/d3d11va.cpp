@@ -658,7 +658,15 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
     // presented. See prepareFrame(). This needs a monitored fence, which can signal an
     // event when the GPU gets to it; without one, frames are presented as before.
     // ML_PACING_GPU_READY=0 turns it off.
-    if (params->enableFramePacing && m_FenceType == SupportedFenceType::Monitored &&
+    //
+    // Only where the pacer follows the host's cadence, which takes tearing support and
+    // no full-screen exclusive (see getRendererAttributes() and Pacer::initialize()).
+    // The V-blank pacer renders exactly as before.
+    bool cadencePacing = params->enableFramePacing && m_AllowTearing &&
+            (SDL_GetWindowFlags(params->window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != SDL_WINDOW_FULLSCREEN &&
+            !(qEnvironmentVariableIsSet("ML_PACING_CADENCE") && qEnvironmentVariableIntValue("ML_PACING_CADENCE") == 0);
+
+    if (cadencePacing && m_FenceType == SupportedFenceType::Monitored &&
             !(qEnvironmentVariableIsSet("ML_PACING_GPU_READY") && qEnvironmentVariableIntValue("ML_PACING_GPU_READY") == 0)) {
         hr = m_RenderDevice->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_GpuReadyFence));
         if (SUCCEEDED(hr)) {
