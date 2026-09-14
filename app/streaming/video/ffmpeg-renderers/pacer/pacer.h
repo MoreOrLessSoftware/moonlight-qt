@@ -126,6 +126,7 @@ private:
     int m_NextDrawCost;
     double m_PresentCostUs;
     double m_DrawMarginUs;
+    double m_DrawLeadUs;
 
     // Host timestamp steps. See scheduleFrame().
     bool m_HostStepsEnabled;

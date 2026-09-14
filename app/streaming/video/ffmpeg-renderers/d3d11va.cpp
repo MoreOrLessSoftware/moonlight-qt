@@ -64,6 +64,7 @@ D3D11VARenderer::D3D11VARenderer(int decoderSelectionPass)
       m_AllowTearing(false),
       m_TearNextPresent(false),
       m_GpuReadyEvent(nullptr),
+      m_DecodeReadyEvent(nullptr),
       m_GpuReadyFenceValue(0),
       m_GpuReadyEnabled(false),
       m_OverlayLock(0),
@@ -118,6 +119,9 @@ D3D11VARenderer::~D3D11VARenderer()
     m_GpuReadyFence.Reset();
     if (m_GpuReadyEvent != nullptr) {
         CloseHandle(m_GpuReadyEvent);
+    }
+    if (m_DecodeReadyEvent != nullptr) {
+        CloseHandle(m_DecodeReadyEvent);
     }
 
     m_RenderTargetView.Reset();
@@ -659,9 +663,10 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
         hr = m_RenderDevice->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_GpuReadyFence));
         if (SUCCEEDED(hr)) {
             m_GpuReadyEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            m_DecodeReadyEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         }
 
-        m_GpuReadyEnabled = SUCCEEDED(hr) && m_GpuReadyEvent != nullptr;
+        m_GpuReadyEnabled = SUCCEEDED(hr) && m_GpuReadyEvent != nullptr && m_DecodeReadyEvent != nullptr;
 
         if (m_GpuReadyEnabled) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -1101,11 +1106,21 @@ void D3D11VARenderer::renderVideo(AVFrame* frame)
         SDL_assert(m_DecodeD2RFence);
         SDL_assert(m_RenderD2RFence);
 
-        lockContext(this);
-        if (SUCCEEDED(m_DecodeDeviceContext->Signal(m_DecodeD2RFence.Get(), m_D2RFenceValue))) {
-            m_RenderDeviceContext->Wait(m_RenderD2RFence.Get(), m_D2RFenceValue++);
+        uint64_t decodeBoundary = (uint64_t)ML_FRAME_DECODE_BOUNDARY(frame);
+
+        if (decodeBoundary != 0) {
+            // The decoder thread marked this frame's own decode work as it came out of
+            // the decoder. Waiting for exactly that, rather than for everything decoded
+            // since, keeps the frames behind it out of this one's drawing.
+            m_RenderDeviceContext->Wait(m_RenderD2RFence.Get(), decodeBoundary);
         }
-        unlockContext(this);
+        else {
+            lockContext(this);
+            if (SUCCEEDED(m_DecodeDeviceContext->Signal(m_DecodeD2RFence.Get(), m_D2RFenceValue))) {
+                m_RenderDeviceContext->Wait(m_RenderD2RFence.Get(), m_D2RFenceValue++);
+            }
+            unlockContext(this);
+        }
     }
 
     UINT srvIndex;
@@ -1561,6 +1576,49 @@ bool D3D11VARenderer::supportsPresentTearing()
 void D3D11VARenderer::setPresentTearing(bool tear)
 {
     m_TearNextPresent = tear;
+}
+
+// Marks the decode work behind a frame that has just come out of the decoder, so the
+// thread that renders can wait for exactly that and nothing decoded after it.
+//
+// With separate decode and render devices, FFmpeg hands frames over before the GPU has
+// finished decoding them. Measured on one GPU that took about 6 ms, which the wait for
+// the GPU to finish drawing then absorbed: every frame was presented about 5 ms after
+// its target. Waiting for the decode before the frame is scheduled puts that time
+// ahead of the schedule instead.
+uint64_t D3D11VARenderer::captureDecodeBoundary()
+{
+    if (!m_GpuReadyEnabled || m_DecodeDevice == m_RenderDevice ||
+            m_DecodeD2RFence == nullptr || m_DecodeReadyEvent == nullptr) {
+        return 0;
+    }
+
+    lockContext(this);
+    UINT64 value = m_D2RFenceValue++;
+    HRESULT hr = m_DecodeDeviceContext->Signal(m_DecodeD2RFence.Get(), value);
+    unlockContext(this);
+
+    return SUCCEEDED(hr) ? value : 0;
+}
+
+bool D3D11VARenderer::waitForDecode(uint64_t decodeBoundary)
+{
+    if (decodeBoundary == 0 || !m_GpuReadyEnabled ||
+            m_DecodeD2RFence->GetCompletedValue() >= decodeBoundary) {
+        return false;
+    }
+
+    bool completed = SUCCEEDED(m_DecodeD2RFence->SetEventOnCompletion(decodeBoundary, m_DecodeReadyEvent)) &&
+            WaitForSingleObject(m_DecodeReadyEvent, 500) == WAIT_OBJECT_0;
+
+    if (!completed) {
+        // Never risk stalling every frame on a fence that has stopped working
+        m_GpuReadyEnabled = false;
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Waiting for the GPU to finish decoding a frame failed; frames are presented without waiting from now on");
+    }
+
+    return true;
 }
 
 int D3D11VARenderer::getRendererAttributes()

@@ -1918,6 +1918,10 @@ void FFmpegVideoDecoder::decoderThreadProc()
                     // Capture a frame timestamp to measuring pacing delay
                     frame->pkt_dts = LiGetMicroseconds();
 
+                    // Mark the GPU work behind this frame, so it can be waited for exactly.
+                    // Zero when the renderer has nothing to wait for.
+                    ML_FRAME_DECODE_BOUNDARY(frame) = (int64_t)m_FrontendRenderer->captureDecodeBoundary();
+
                     // Zero means there is no host capture time for this frame
                     frame->pts = 0;
 

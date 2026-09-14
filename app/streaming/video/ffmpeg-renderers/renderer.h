@@ -137,6 +137,10 @@ private:
 #define RENDERER_ATTRIBUTE_NO_BUFFERING 0x08
 #define RENDERER_ATTRIBUTE_FORCE_PACING 0x10
 
+// The value captureDecodeBoundary() returned for a frame, carried on the frame from
+// the decoder thread to the thread that renders. Zero when there is none.
+#define ML_FRAME_DECODE_BOUNDARY(frame) ((frame)->best_effort_timestamp)
+
 class IFFmpegRenderer : public Overlay::IOverlayRenderer {
 public:
     enum class RendererType {
@@ -215,6 +219,19 @@ public:
     // Presents what prepareFrame() drew
     virtual void presentPreparedFrame() {
         // Nothing
+    }
+
+    // Marks the GPU work that produced a frame. Called on the decoder thread as the
+    // frame comes out of the decoder. Returns a value for waitForDecode(), or 0 when
+    // there is nothing to wait for.
+    virtual uint64_t captureDecodeBoundary() {
+        return 0;
+    }
+
+    // Blocks until the GPU work captureDecodeBoundary() marked is done, and returns
+    // whether that meant waiting. Called from the thread that renders.
+    virtual bool waitForDecode(uint64_t) {
+        return false;
     }
 
     // Called on the same thread as renderFrame() during destruction of the renderer
