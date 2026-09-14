@@ -108,18 +108,17 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 #define CADENCE_SPIN_US 1000
 #define CADENCE_SPIN_LOW_RES_US 2000
 
-// Drawing starts early enough for this percentile of recent draw times, plus a
-// margin, so that a slow draw rarely holds up the Present() call behind it.
+// Frames are scheduled with room to draw and present them: this percentile of recent
+// draw times, the usual Present() call, and a margin, so that a slow draw rarely
+// holds up the Present() call behind it.
 //
-// The margin is also the GPU's time to finish what was drawn. Present() waits for
-// that, so a short margin turns GPU time into Present() timing: at 200 us, calls
-// took 314 us at the median and 919 us at p99 when drawing ended under 200 us before
-// them, and 176 / 559 us with 400-800 us to spare. At 1000 us the call's p95 fell
-// from 609 to 359 us and presented intervals came within a few percent of the host's;
-// 2000 and 3000 added little. It costs no latency, since only drawing moves earlier.
-// ML_PACING_DRAW_MARGIN_US sets it.
+// Before the renderer waited for the GPU to finish drawing, the margin was also the
+// GPU's time to finish, and 1000 us kept Present() calls steady. That time is now
+// part of the draw times, so the margin only covers draws slower than the
+// percentile. It is latency, since every frame waits for it. ML_PACING_DRAW_MARGIN_US
+// sets it.
 #define CADENCE_DRAW_PERCENTILE 95
-#define CADENCE_DRAW_MARGIN_US 1000
+#define CADENCE_DRAW_MARGIN_US 200
 
 Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_RenderThread(nullptr),
@@ -158,6 +157,7 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_NextDrawCost(0),
     m_PresentCostUs(0),
     m_DrawMarginUs(CADENCE_DRAW_MARGIN_US),
+    m_DrawLeadUs(0),
     m_HostStepsEnabled(true),
     m_HostStepActive(false),
     m_HostStepStartUs(0),
@@ -662,6 +662,14 @@ int Pacer::cadenceThread(void* context)
         me->m_EvictedFrames = 0;
         me->m_FrameQueueLock.unlock();
 
+        // Wait for the GPU to finish decoding the frame, and count it as arriving once it
+        // has, so it is scheduled from when it can actually be drawn. Only a wait that
+        // blocked moves the arrival: a frame that finished decoding while it queued
+        // arrived when the decoder handed it over.
+        if (me->m_VsyncRenderer->waitForDecode((uint64_t)ML_FRAME_DECODE_BOUNDARY(frame))) {
+            frame->pkt_dts = (int64_t)LiGetMicroseconds();
+        }
+
         PACER_TRACE_ROW row = {};
         int64_t targetUs = me->scheduleFrame(frame, &row);
 
@@ -715,6 +723,23 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
     row->targetUs = arrivalUs;
     row->learning = 1;
     row->tear = m_Tearing ? 1 : 0;
+
+    // How long before its target a frame starts drawing: long enough for nearly all
+    // recent draws and the Present() call after them. Paced frames are scheduled that
+    // much later, so the time a frame needs to draw is not taken out of its schedule.
+    // Without it, frames drawing for about 2.8 ms were given about 1.5 ms: 96% of them
+    // started drawing as they arrived and were presented when drawing finished, a
+    // median 1.4 ms late, and presented intervals varied six times more than the
+    // schedule.
+    m_DrawLeadUs = m_RenderCostUs;
+    if (m_DrawCostCount > 0) {
+        uint32_t costs[PACER_CADENCE_DRAW_SAMPLES];
+        std::copy(m_DrawCostsUs, m_DrawCostsUs + m_DrawCostCount, costs);
+        uint32_t* percentile = costs + (m_DrawCostCount - 1) * CADENCE_DRAW_PERCENTILE / 100;
+        std::nth_element(costs, percentile, costs + m_DrawCostCount);
+        m_DrawLeadUs = *percentile + m_PresentCostUs;
+    }
+    m_DrawLeadUs += m_DrawMarginUs;
 
     if (hostUs <= 0) {
         // Nothing to pace against
@@ -852,7 +877,7 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
                 m_DelayUs = qMin(m_DelayUs, fastestUs + CADENCE_MAX_HOLD_INTERVALS * m_IntervalUs);
             }
 
-            targetUs = qMax(arrivalUs, (int64_t)(m_SmoothedUs + m_DelayUs));
+            targetUs = qMax(arrivalUs, (int64_t)(m_SmoothedUs + m_DelayUs + m_DrawLeadUs));
             m_LastPacedHoldUs = (double)(targetUs - arrivalUs);
             row->learning = 0;
         }
@@ -903,21 +928,12 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
 // missed its target, and presented intervals varied more than the host's. Where the
 // renderer can separate the two, the frame is drawn ahead with room for a slow draw
 // and only the Present() call, which takes a steady fraction of a millisecond, is
-// timed. The unused part of that room is the cost, a few hundred microseconds.
+// timed. Drawing starts the lead scheduleFrame() worked out before the target.
 void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
 {
     int64_t presentCostUs = (int64_t)m_PresentCostUs;
-    int64_t drawAllowanceUs = (int64_t)m_RenderCostUs;
 
-    if (m_DrawCostCount > 0) {
-        uint32_t costs[PACER_CADENCE_DRAW_SAMPLES];
-        std::copy(m_DrawCostsUs, m_DrawCostsUs + m_DrawCostCount, costs);
-        uint32_t* percentile = costs + (m_DrawCostCount - 1) * CADENCE_DRAW_PERCENTILE / 100;
-        std::nth_element(costs, percentile, costs + m_DrawCostCount);
-        drawAllowanceUs = *percentile;
-    }
-
-    waitUntilUs(targetUs - presentCostUs - drawAllowanceUs - (int64_t)m_DrawMarginUs);
+    waitUntilUs(targetUs - (int64_t)m_DrawLeadUs);
 
     row->renderStartUs = (int64_t)LiGetMicroseconds();
     uint64_t pacerTimeUs = (uint64_t)(row->renderStartUs - frame->pkt_dts);

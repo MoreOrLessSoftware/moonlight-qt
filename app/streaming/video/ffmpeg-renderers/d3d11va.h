@@ -30,6 +30,8 @@ public:
     virtual void setPresentTearing(bool tear) override;
     virtual bool prepareFrame(AVFrame* frame) override;
     virtual void presentPreparedFrame() override;
+    virtual uint64_t captureDecodeBoundary() override;
+    virtual bool waitForDecode(uint64_t decodeBoundary) override;
 
     enum PixelShaders {
         GENERIC_YUV_420,
@@ -106,6 +108,7 @@ private:
     // pacing on. See prepareFrame().
     Microsoft::WRL::ComPtr<ID3D11Fence> m_GpuReadyFence;
     HANDLE m_GpuReadyEvent;
+    HANDLE m_DecodeReadyEvent;
     UINT64 m_GpuReadyFenceValue;
     bool m_GpuReadyEnabled;
 
