@@ -63,6 +63,9 @@ D3D11VARenderer::D3D11VARenderer(int decoderSelectionPass)
       m_LastColorTrc(AVCOL_TRC_UNSPECIFIED),
       m_AllowTearing(false),
       m_TearNextPresent(false),
+      m_GpuReadyEvent(nullptr),
+      m_GpuReadyFenceValue(0),
+      m_GpuReadyEnabled(false),
       m_OverlayLock(0),
       m_HwDeviceContext(nullptr)
 {
@@ -111,6 +114,11 @@ D3D11VARenderer::~D3D11VARenderer()
     m_DecodeR2DFence.Reset();
     m_RenderD2RFence.Reset();
     m_RenderR2DFence.Reset();
+
+    m_GpuReadyFence.Reset();
+    if (m_GpuReadyEvent != nullptr) {
+        CloseHandle(m_GpuReadyEvent);
+    }
 
     m_RenderTargetView.Reset();
     m_SwapChain.Reset();
@@ -642,6 +650,31 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
         return false;
     }
 
+    // With frame pacing, wait for the GPU to finish each drawn frame before it is
+    // presented. See prepareFrame(). This needs a monitored fence, which can signal an
+    // event when the GPU gets to it; without one, frames are presented as before.
+    // ML_PACING_GPU_READY=0 turns it off.
+    if (params->enableFramePacing && m_FenceType == SupportedFenceType::Monitored &&
+            !(qEnvironmentVariableIsSet("ML_PACING_GPU_READY") && qEnvironmentVariableIntValue("ML_PACING_GPU_READY") == 0)) {
+        hr = m_RenderDevice->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_GpuReadyFence));
+        if (SUCCEEDED(hr)) {
+            m_GpuReadyEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        }
+
+        m_GpuReadyEnabled = SUCCEEDED(hr) && m_GpuReadyEvent != nullptr;
+
+        if (m_GpuReadyEnabled) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Frame pacing waits for the GPU to finish each frame before presenting it");
+        }
+        else {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Unable to create a fence to wait for the GPU to finish frames: %x",
+                        hr);
+            m_GpuReadyFence.Reset();
+        }
+    }
+
     // Disable Alt+Enter, PrintScreen, and window message snooping. This makes
     // it safe to run the renderer on a separate rendering thread rather than
     // requiring the main (message loop) thread.
@@ -803,12 +836,42 @@ bool D3D11VARenderer::prepareFrame(AVFrame* frame)
         m_LastColorTrc = frame->color_trc;
     }
 
+    // Mark the end of this frame's GPU work, so we can tell when it is done
+    UINT64 gpuReadyValue = 0;
+    if (m_GpuReadyEnabled) {
+        gpuReadyValue = ++m_GpuReadyFenceValue;
+        if (FAILED(m_RenderDeviceContext->Signal(m_GpuReadyFence.Get(), gpuReadyValue))) {
+            gpuReadyValue = 0;
+        }
+    }
+
     // Start the GPU on this now, so Present() has as little as possible left to wait for
     m_RenderDeviceContext->Flush();
 
     if (m_DecodeDevice == m_RenderDevice) {
         // Release the context lock
         unlockContext(this);
+    }
+
+    // Wait for the GPU to finish the frame, with the context lock released so the
+    // decoder is not held up meanwhile.
+    //
+    // A tearing Present() does not reach the display until all GPU work on its back
+    // buffer is done, so a frame presented with work outstanding shows up whenever the
+    // GPU finishes rather than when it was presented, and a timed Present() call does
+    // not make a timed frame. Frame pacing counts this wait as part of drawing and
+    // starts early enough to cover it, so the Present() at the target has nothing left
+    // to wait for.
+    if (gpuReadyValue != 0 && m_GpuReadyFence->GetCompletedValue() < gpuReadyValue) {
+        bool completed = SUCCEEDED(m_GpuReadyFence->SetEventOnCompletion(gpuReadyValue, m_GpuReadyEvent)) &&
+                WaitForSingleObject(m_GpuReadyEvent, 500) == WAIT_OBJECT_0;
+
+        if (!completed) {
+            // Never risk stalling every frame on a fence that has stopped working
+            m_GpuReadyEnabled = false;
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Waiting for the GPU to finish a frame failed; frames are presented without waiting from now on");
+        }
     }
 
     return true;

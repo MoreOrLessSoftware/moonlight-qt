@@ -102,6 +102,13 @@ private:
     // off, and chosen per frame by frame pacing with it on.
     bool m_TearNextPresent;
 
+    // Waiting for the GPU to finish a drawn frame before it is presented, with frame
+    // pacing on. See prepareFrame().
+    Microsoft::WRL::ComPtr<ID3D11Fence> m_GpuReadyFence;
+    HANDLE m_GpuReadyEvent;
+    UINT64 m_GpuReadyFenceValue;
+    bool m_GpuReadyEnabled;
+
     std::array<Microsoft::WRL::ComPtr<ID3D11PixelShader>, PixelShaders::_COUNT> m_VideoPixelShaders;
     Microsoft::WRL::ComPtr<ID3D11Buffer> m_VideoVertexBuffer;
 
