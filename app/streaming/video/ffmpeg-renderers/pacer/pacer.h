@@ -115,6 +115,14 @@ private:
     bool m_Tearing;
     double m_RenderCostUs;
 
+    // Host timestamp steps. See scheduleFrame().
+    bool m_HostStepsEnabled;
+    bool m_HostStepActive;
+    int64_t m_HostStepStartUs;
+    double m_HostStepLatenessUs;
+    int64_t m_LastArrivalUs;
+    double m_LastPacedHoldUs;
+
     // Trace bookkeeping
     uint64_t m_FrameIndex;
     uint32_t m_DroppedSinceRow;

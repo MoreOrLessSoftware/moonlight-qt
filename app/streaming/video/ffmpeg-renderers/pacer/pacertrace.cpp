@@ -81,6 +81,7 @@ PacerTrace::PacerTrace(int displayHz) :
     m_PossibleTears(0),
     m_TearThirds{},
     m_TearSwitches(0),
+    m_HostStepFrames(0),
     m_WorstSpacingUs{},
     m_WorstFrame{}
 {
@@ -137,9 +138,11 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "#   one, where down the screen the tear lands if the display was still scanning that frame out.\n"
                     << "#   A variable refresh display that had already finished shows no tear. -1 otherwise.\n"
                     << "# A row with dropped_before > 0 follows frames that were never shown; its intervals are not frame times.\n"
+                    << "# host_step: the host stamped the frame well before it appeared, so it was held as long as the frame\n"
+                    << "#   before it instead of being paced by its stamp. Pairs touching one are left out of the spacing figures.\n"
                     << "frame,host_us,arrival_us,smoothed_us,delay_us,target_us,render_start_us,present_us,"
                        "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,render_us,"
-                       "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning\n";
+                       "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step\n";
 
     trace->m_Thread = SDL_CreateThread(PacerTrace::writerThread, "PacerTrace", trace);
     if (trace->m_Thread == nullptr) {
@@ -270,6 +273,10 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
         m_TearSwitches++;
     }
 
+    if (row.hostStep) {
+        m_HostStepFrames++;
+    }
+
     if (row.learning) {
         m_LearningRows++;
     }
@@ -284,7 +291,8 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
 
         // Spacing only means a frame time across two consecutive paced frames with
         // nothing dropped between them
-        if (m_HavePrevious && !m_Previous.learning && row.droppedBefore == 0 && hostIntervalUs > 0) {
+        if (m_HavePrevious && !m_Previous.learning && row.droppedBefore == 0 && hostIntervalUs > 0 &&
+                !row.hostStep && !m_Previous.hostStep) {
             if (row.intervalUs > 0 && hostIntervalUs > row.intervalUs * PACER_TRACE_STALL_INTERVALS) {
                 m_SourceStalls++;
             }
@@ -336,7 +344,8 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
              << tearLinePct << ','
              << row.queueDepth << ','
              << row.droppedBefore << ','
-             << (row.learning ? 1 : 0) << '\n';
+             << (row.learning ? 1 : 0) << ','
+             << (row.hostStep ? 1 : 0) << '\n';
 
     m_Previous = row;
     m_HavePrevious = true;
@@ -367,7 +376,9 @@ void PacerTrace::writeFooter()
              << m_TearSwitches << " times\n"
              << "# possible tears (tearing present within a refresh of the previous frame): " << m_PossibleTears
              << ", tear line top/middle/bottom third: " << m_TearThirds[0] << '/' << m_TearThirds[1] << '/'
-             << m_TearThirds[2] << "\n";
+             << m_TearThirds[2] << "\n"
+             << "# host timestamp steps: " << m_HostStepFrames
+             << " frames held as long as the frame before them, left out of the spacing figures\n";
 
     int order[k_WorstPairs];
     for (int i = 0; i < k_WorstPairs; i++) {

@@ -27,6 +27,7 @@ typedef struct _PACER_TRACE_ROW {
     uint16_t droppedBefore;     // Frames never shown since the previous row
     uint8_t learning;           // Still learning the host's cadence
     uint8_t tear;               // Presented with tearing permission
+    uint8_t hostStep;           // Part of a host timestamp step, held like the frame before it
 } PACER_TRACE_ROW, *PPACER_TRACE_ROW;
 
 // Writes one CSV row per presented frame and a summary on close. Rows are handed
@@ -93,6 +94,7 @@ private:
     uint64_t m_PossibleTears;
     uint64_t m_TearThirds[3];
     uint64_t m_TearSwitches;
+    uint64_t m_HostStepFrames;
 
     Histogram m_Spacing;
     Histogram m_Late;
