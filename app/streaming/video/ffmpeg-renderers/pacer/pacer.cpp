@@ -96,6 +96,11 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 // Longest believable gap between two host frames. Past it the timeline is learned again.
 #define CADENCE_MAX_HOST_GAP_US 1000000
 
+// Longest a host timestamp step may last before its offset is taken to be where the
+// host's timeline now is, and frames are paced by it again. Runs measured on earlier
+// builds lasted up to about a second and a half.
+#define CADENCE_HOST_STEP_MAX_US 2000000
+
 // Left for spinning at the end of a wait, depending on how precise the timer is
 #define CADENCE_SPIN_US 1000
 #define CADENCE_SPIN_LOW_RES_US 2000
@@ -132,6 +137,12 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_DelayUs(0),
     m_Tearing(true),
     m_RenderCostUs(0),
+    m_HostStepsEnabled(true),
+    m_HostStepActive(false),
+    m_HostStepStartUs(0),
+    m_HostStepLatenessUs(0),
+    m_LastArrivalUs(0),
+    m_LastPacedHoldUs(0),
     m_FrameIndex(0),
     m_DroppedSinceRow(0),
     m_EvictedFrames(0)
@@ -392,6 +403,9 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
         if (qEnvironmentVariableIsSet("ML_PACING_PERCENTILE")) {
             m_ArrivalPercentile = qBound(50, qEnvironmentVariableIntValue("ML_PACING_PERCENTILE"), 100);
         }
+        if (qEnvironmentVariableIsSet("ML_PACING_HOST_STEPS")) {
+            m_HostStepsEnabled = qEnvironmentVariableIntValue("ML_PACING_HOST_STEPS") != 0;
+        }
         if (qEnvironmentVariableIsSet("ML_PACING_NO_TEAR_PCT")) {
             m_NoTearFraction = qBound(10, qEnvironmentVariableIntValue("ML_PACING_NO_TEAR_PCT"), 1000) / 100.0;
         }
@@ -407,12 +421,13 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
 #endif
 
         QString settings = QString("smoothing gain %1% on errors up to %5 us, arrival percentile %2, "
-                                   "no tearing from %3% of the refresh rate, %4 wait timer")
+                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6")
                 .arg((int)std::lround(m_SmoothGain * 100))
                 .arg(m_ArrivalPercentile)
                 .arg((int)std::lround(m_NoTearFraction * 100))
                 .arg(m_WaitTimerHighRes ? "high resolution" : "standard")
-                .arg((int)m_SmoothMaxUs);
+                .arg((int)m_SmoothMaxUs)
+                .arg(m_HostStepsEnabled ? "handled" : "ignored");
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Frame pacing: following the host's cadence, %d FPS stream on a %d Hz display (%s)",
@@ -693,6 +708,7 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
         m_TransitCount = 0;
         m_NextTransit = 0;
         m_LearnFramesLeft = qMax(CADENCE_MIN_LEARN_FRAMES, m_MaxVideoFps);
+        m_HostStepActive = false;
     }
     else {
         m_HostIntervalsUs[m_NextHostInterval] = hostIntervalUs;
@@ -721,50 +737,103 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
         }
     }
 
-    // How late this frame arrived relative to its smoothed host time, and how long
-    // frames have to wait for nearly all of the recent ones to have arrived
-    m_TransitUs[m_NextTransit] = arrivalUs - (int64_t)m_SmoothedUs;
-    m_NextTransit = (m_NextTransit + 1) % PACER_CADENCE_TRANSIT_SAMPLES;
-    m_TransitCount = qMin(m_TransitCount + 1, PACER_CADENCE_TRANSIT_SAMPLES);
-
-    int64_t sorted[PACER_CADENCE_TRANSIT_SAMPLES];
-    std::copy(m_TransitUs, m_TransitUs + m_TransitCount, sorted);
-    int64_t* percentile = sorted + (m_TransitCount - 1) * m_ArrivalPercentile / 100;
-    std::nth_element(sorted, percentile, sorted + m_TransitCount);
-    int64_t fastestUs = *std::min_element(sorted, sorted + m_TransitCount);
-
-    double wantedDelayUs = (double)*percentile + CADENCE_DELAY_GUARD_US;
-    if (m_IntervalUs > 0) {
-        wantedDelayUs = qMin(wantedDelayUs, fastestUs + CADENCE_MAX_HOLD_INTERVALS * m_IntervalUs);
-    }
-
     int64_t targetUs = arrivalUs;
 
-    if (m_LearnFramesLeft > 0) {
-        m_LearnFramesLeft--;
-        m_DelayUs = wantedDelayUs;
-    }
-    else {
-        double stepUs = wantedDelayUs - m_DelayUs;
+    // Is this frame part of a host timestamp step?
+    //
+    // While a game renders below the stream rate the host sometimes stamps a frame a
+    // few milliseconds after the one before, although it arrives a whole game frame
+    // later, and keeps stamping the frames after it that much early until one long
+    // gap brings the stamps back into line. Paced by their stamps, those frames were
+    // released on arrival while their neighbours were held: in a 433 s session that
+    // was 150 of the 196 spacing errors over 5 ms, and counting their lateness held
+    // the delay up by a frame even at a steady 100 FPS.
+    //
+    // A step opens when a frame arrives later after the previous one than its stamp
+    // says by more than a stream frame interval, and later than its schedule by more
+    // than half of one. Its frames are held as long as the last paced frame was, so
+    // they keep the arrivals' spacing and the stream's latency, and they are left out
+    // of the delay. It closes on the first frame back within half the lateness it
+    // opened with, or after CADENCE_HOST_STEP_MAX_US. ML_PACING_HOST_STEPS=0 turns
+    // this off.
+    bool hostStep = false;
 
-        if (stepUs < 0) {
-            // A share of the way down, at least the fixed step, never past the target
-            stepUs = qMax(qMin(stepUs / CADENCE_DELAY_FALL_DIVISOR, -(double)CADENCE_DELAY_FALL_US), stepUs);
+    if (m_HostStepsEnabled && m_LearnFramesLeft == 0 && m_TransitCount > 0 && m_MaxVideoFps > 0) {
+        double streamIntervalUs = 1000000.0 / m_MaxVideoFps;
+        double latenessUs = arrivalUs - (m_SmoothedUs + m_DelayUs);
+        int64_t arrivalIntervalUs = m_LastArrivalUs != 0 ? arrivalUs - m_LastArrivalUs : 0;
+
+        if (!m_HostStepActive && hostIntervalUs > 0 &&
+                arrivalIntervalUs - hostIntervalUs > streamIntervalUs &&
+                latenessUs > streamIntervalUs / 2) {
+            m_HostStepActive = true;
+            m_HostStepStartUs = arrivalUs;
+            m_HostStepLatenessUs = latenessUs;
+        }
+
+        if (m_HostStepActive) {
+            if (latenessUs < m_HostStepLatenessUs / 2 ||
+                    arrivalUs - m_HostStepStartUs > CADENCE_HOST_STEP_MAX_US) {
+                // Back in line with its stamps, or the offset has lasted long
+                // enough to be the timeline now
+                m_HostStepActive = false;
+            }
+            else {
+                hostStep = true;
+                targetUs = arrivalUs + (int64_t)m_LastPacedHoldUs;
+                row->learning = 0;
+                row->hostStep = 1;
+            }
+        }
+    }
+
+    m_LastArrivalUs = arrivalUs;
+
+    if (!hostStep) {
+        // How late this frame arrived relative to its smoothed host time, and how long
+        // frames have to wait for nearly all of the recent ones to have arrived
+        m_TransitUs[m_NextTransit] = arrivalUs - (int64_t)m_SmoothedUs;
+        m_NextTransit = (m_NextTransit + 1) % PACER_CADENCE_TRANSIT_SAMPLES;
+        m_TransitCount = qMin(m_TransitCount + 1, PACER_CADENCE_TRANSIT_SAMPLES);
+
+        int64_t sorted[PACER_CADENCE_TRANSIT_SAMPLES];
+        std::copy(m_TransitUs, m_TransitUs + m_TransitCount, sorted);
+        int64_t* percentile = sorted + (m_TransitCount - 1) * m_ArrivalPercentile / 100;
+        std::nth_element(sorted, percentile, sorted + m_TransitCount);
+        int64_t fastestUs = *std::min_element(sorted, sorted + m_TransitCount);
+
+        double wantedDelayUs = (double)*percentile + CADENCE_DELAY_GUARD_US;
+        if (m_IntervalUs > 0) {
+            wantedDelayUs = qMin(wantedDelayUs, fastestUs + CADENCE_MAX_HOLD_INTERVALS * m_IntervalUs);
+        }
+
+        if (m_LearnFramesLeft > 0) {
+            m_LearnFramesLeft--;
+            m_DelayUs = wantedDelayUs;
         }
         else {
-            stepUs = qMin(stepUs, (double)CADENCE_DELAY_RISE_US);
+            double stepUs = wantedDelayUs - m_DelayUs;
+
+            if (stepUs < 0) {
+                // A share of the way down, at least the fixed step, never past the target
+                stepUs = qMax(qMin(stepUs / CADENCE_DELAY_FALL_DIVISOR, -(double)CADENCE_DELAY_FALL_US), stepUs);
+            }
+            else {
+                stepUs = qMin(stepUs, (double)CADENCE_DELAY_RISE_US);
+            }
+
+            m_DelayUs += stepUs;
+
+            // The hold limit binds on the delay itself, so a delay built up while the
+            // source was slow cannot outlast the source speeding up
+            if (m_IntervalUs > 0) {
+                m_DelayUs = qMin(m_DelayUs, fastestUs + CADENCE_MAX_HOLD_INTERVALS * m_IntervalUs);
+            }
+
+            targetUs = qMax(arrivalUs, (int64_t)(m_SmoothedUs + m_DelayUs));
+            m_LastPacedHoldUs = (double)(targetUs - arrivalUs);
+            row->learning = 0;
         }
-
-        m_DelayUs += stepUs;
-
-        // The hold limit binds on the delay itself, so a delay built up while the
-        // source was slow cannot outlast the source speeding up
-        if (m_IntervalUs > 0) {
-            m_DelayUs = qMin(m_DelayUs, fastestUs + CADENCE_MAX_HOLD_INTERVALS * m_IntervalUs);
-        }
-
-        targetUs = qMax(arrivalUs, (int64_t)(m_SmoothedUs + m_DelayUs));
-        row->learning = 0;
     }
 
     // Tear below the no-tearing threshold, judged from the median host interval so a
