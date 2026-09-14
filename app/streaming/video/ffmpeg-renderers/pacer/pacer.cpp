@@ -105,8 +105,14 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 // is. No sleep lands within a few hundred microseconds of a target, and at a frame
 // rate the display follows that error is on screen: measured at 90 FPS on 100 Hz,
 // late starts made presented intervals less even than the host's own.
-#define CADENCE_SPIN_US 1000
-#define CADENCE_SPIN_LOW_RES_US 2000
+//
+// Once drawing was scheduled, a frame usually reached this thread 1-2 ms before it
+// was due to start drawing, and with 1000 us of spinning that left a timer sleep of
+// a few hundred microseconds. Now and then that sleep ended 2-3 ms late, three times
+// in a 105 s session, each a hitch of several milliseconds with the schedule itself
+// steady. Spinning 2000 us leaves no sleep that short. ML_PACING_SPIN_US sets it.
+#define CADENCE_SPIN_US 2000
+#define CADENCE_SPIN_LOW_RES_US 3000
 
 // Frames are scheduled with room to draw and present them: this percentile of recent
 // draw times, the usual Present() call, and a margin, so that a slow draw rarely
@@ -158,6 +164,7 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_PresentCostUs(0),
     m_DrawMarginUs(CADENCE_DRAW_MARGIN_US),
     m_DrawLeadUs(0),
+    m_SpinUs(CADENCE_SPIN_US),
     m_HostStepsEnabled(true),
     m_HostStepActive(false),
     m_HostStepStartUs(0),
@@ -427,6 +434,9 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
         if (qEnvironmentVariableIsSet("ML_PACING_DRAW_MARGIN_US")) {
             m_DrawMarginUs = qBound(0, qEnvironmentVariableIntValue("ML_PACING_DRAW_MARGIN_US"), 20000);
         }
+        if (qEnvironmentVariableIsSet("ML_PACING_SPIN_US")) {
+            m_SpinUs = qBound(0, qEnvironmentVariableIntValue("ML_PACING_SPIN_US"), 20000);
+        }
         if (qEnvironmentVariableIsSet("ML_PACING_HOST_STEPS")) {
             m_HostStepsEnabled = qEnvironmentVariableIntValue("ML_PACING_HOST_STEPS") != 0;
         }
@@ -445,14 +455,15 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
 #endif
 
         QString settings = QString("smoothing gain %1% on errors up to %5 us, arrival percentile %2, "
-                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin")
+                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin, %8 us spin")
                 .arg((int)std::lround(m_SmoothGain * 100))
                 .arg(m_ArrivalPercentile)
                 .arg((int)std::lround(m_NoTearFraction * 100))
                 .arg(m_WaitTimerHighRes ? "high resolution" : "standard")
                 .arg((int)m_SmoothMaxUs)
                 .arg(m_HostStepsEnabled ? "handled" : "ignored")
-                .arg((int)m_DrawMarginUs);
+                .arg((int)m_DrawMarginUs)
+                .arg(m_WaitTimerHighRes ? m_SpinUs : qMax(m_SpinUs, CADENCE_SPIN_LOW_RES_US));
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Frame pacing: following the host's cadence, %d FPS stream on a %d Hz display (%s)",
@@ -662,6 +673,9 @@ int Pacer::cadenceThread(void* context)
         me->m_EvictedFrames = 0;
         me->m_FrameQueueLock.unlock();
 
+        PACER_TRACE_ROW row = {};
+        row.dequeueUs = (int64_t)LiGetMicroseconds();
+
         // Wait for the GPU to finish decoding the frame, and count it as arriving once it
         // has, so it is scheduled from when it can actually be drawn. Only a wait that
         // blocked moves the arrival: a frame that finished decoding while it queued
@@ -670,7 +684,6 @@ int Pacer::cadenceThread(void* context)
             frame->pkt_dts = (int64_t)LiGetMicroseconds();
         }
 
-        PACER_TRACE_ROW row = {};
         int64_t targetUs = me->scheduleFrame(frame, &row);
 
         // Two frames already waiting behind this one means we have fallen behind the
@@ -933,7 +946,8 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
 {
     int64_t presentCostUs = (int64_t)m_PresentCostUs;
 
-    waitUntilUs(targetUs - (int64_t)m_DrawLeadUs);
+    row->drawDueUs = targetUs - (int64_t)m_DrawLeadUs;
+    waitUntilUs(row->drawDueUs);
 
     row->renderStartUs = (int64_t)LiGetMicroseconds();
     uint64_t pacerTimeUs = (uint64_t)(row->renderStartUs - frame->pkt_dts);
@@ -977,7 +991,7 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
 // stretch because no sleep is precise enough to land on it
 void Pacer::waitUntilUs(int64_t targetUs)
 {
-    const int64_t spinUs = m_WaitTimerHighRes ? CADENCE_SPIN_US : CADENCE_SPIN_LOW_RES_US;
+    const int64_t spinUs = m_WaitTimerHighRes ? m_SpinUs : qMax(m_SpinUs, CADENCE_SPIN_LOW_RES_US);
 
     for (;;) {
         int64_t remainingUs = targetUs - (int64_t)LiGetMicroseconds();

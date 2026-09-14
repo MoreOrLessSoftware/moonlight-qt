@@ -143,9 +143,12 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "# A row with dropped_before > 0 follows frames that were never shown; its intervals are not frame times.\n"
                     << "# host_step: the host stamped the frame well before it appeared, so it was held as long as the frame\n"
                     << "#   before it instead of being paced by its stamp. Pairs touching one are left out of the spacing figures.\n"
+                    << "# dequeue_us: when the pacing thread took the frame from the queue. draw_due_us: when drawing was\n"
+                    << "#   meant to start; render_start_us - draw_due_us is how late the thread woke for it.\n"
                     << "frame,host_us,arrival_us,smoothed_us,delay_us,target_us,render_start_us,present_us,"
                        "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,draw_us,present_call_us,"
-                       "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step\n";
+                       "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step,"
+                       "dequeue_us,draw_due_us\n";
 
     trace->m_Thread = SDL_CreateThread(PacerTrace::writerThread, "PacerTrace", trace);
     if (trace->m_Thread == nullptr) {
@@ -351,7 +354,9 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
              << row.queueDepth << ','
              << row.droppedBefore << ','
              << (row.learning ? 1 : 0) << ','
-             << (row.hostStep ? 1 : 0) << '\n';
+             << (row.hostStep ? 1 : 0) << ','
+             << row.dequeueUs << ','
+             << row.drawDueUs << '\n';
 
     m_Previous = row;
     m_HavePrevious = true;
