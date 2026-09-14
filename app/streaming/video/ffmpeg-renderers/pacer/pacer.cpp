@@ -108,6 +108,19 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 #define CADENCE_SPIN_US 1000
 #define CADENCE_SPIN_LOW_RES_US 2000
 
+// Drawing starts early enough for this percentile of recent draw times, plus a
+// margin, so that a slow draw rarely holds up the Present() call behind it.
+//
+// The margin is also the GPU's time to finish what was drawn. Present() waits for
+// that, so a short margin turns GPU time into Present() timing: at 200 us, calls
+// took 314 us at the median and 919 us at p99 when drawing ended under 200 us before
+// them, and 176 / 559 us with 400-800 us to spare. At 1000 us the call's p95 fell
+// from 609 to 359 us and presented intervals came within a few percent of the host's;
+// 2000 and 3000 added little. It costs no latency, since only drawing moves earlier.
+// ML_PACING_DRAW_MARGIN_US sets it.
+#define CADENCE_DRAW_PERCENTILE 95
+#define CADENCE_DRAW_MARGIN_US 1000
+
 Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_RenderThread(nullptr),
     m_VsyncThread(nullptr),
@@ -140,6 +153,11 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_DelayUs(0),
     m_Tearing(true),
     m_RenderCostUs(0),
+    m_DrawCostsUs{},
+    m_DrawCostCount(0),
+    m_NextDrawCost(0),
+    m_PresentCostUs(0),
+    m_DrawMarginUs(CADENCE_DRAW_MARGIN_US),
     m_HostStepsEnabled(true),
     m_HostStepActive(false),
     m_HostStepStartUs(0),
@@ -406,6 +424,9 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
         if (qEnvironmentVariableIsSet("ML_PACING_PERCENTILE")) {
             m_ArrivalPercentile = qBound(50, qEnvironmentVariableIntValue("ML_PACING_PERCENTILE"), 100);
         }
+        if (qEnvironmentVariableIsSet("ML_PACING_DRAW_MARGIN_US")) {
+            m_DrawMarginUs = qBound(0, qEnvironmentVariableIntValue("ML_PACING_DRAW_MARGIN_US"), 20000);
+        }
         if (qEnvironmentVariableIsSet("ML_PACING_HOST_STEPS")) {
             m_HostStepsEnabled = qEnvironmentVariableIntValue("ML_PACING_HOST_STEPS") != 0;
         }
@@ -424,13 +445,14 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
 #endif
 
         QString settings = QString("smoothing gain %1% on errors up to %5 us, arrival percentile %2, "
-                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6")
+                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin")
                 .arg((int)std::lround(m_SmoothGain * 100))
                 .arg(m_ArrivalPercentile)
                 .arg((int)std::lround(m_NoTearFraction * 100))
                 .arg(m_WaitTimerHighRes ? "high resolution" : "standard")
                 .arg((int)m_SmoothMaxUs)
-                .arg(m_HostStepsEnabled ? "handled" : "ignored");
+                .arg(m_HostStepsEnabled ? "handled" : "ignored")
+                .arg((int)m_DrawMarginUs);
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Frame pacing: following the host's cadence, %d FPS stream on a %d Hz display (%s)",
@@ -521,9 +543,14 @@ void Pacer::renderFrame(AVFrame* frame)
 
     // Render it
     m_VsyncRenderer->renderFrame(frame);
-    uint64_t afterRender = LiGetMicroseconds();
 
-    m_VideoStats->totalRenderTimeUs += (afterRender - beforeRender);
+    finishFrame(frame, LiGetMicroseconds() - beforeRender);
+}
+
+// Counts a rendered frame, then releases the one before it and trims the render queue
+void Pacer::finishFrame(AVFrame* frame, uint64_t renderTimeUs)
+{
+    m_VideoStats->totalRenderTimeUs += renderTimeUs;
     m_VideoStats->renderedFrames++;
 
     // Wait until after next frame to free this one to ensure the GPU
@@ -647,16 +674,8 @@ int Pacer::cadenceThread(void* context)
             continue;
         }
 
-        // Start drawing early by what drawing and presenting usually take
-        me->waitUntilUs(targetUs - (int64_t)me->m_RenderCostUs);
-
         me->m_VsyncRenderer->setPresentTearing(row.tear != 0);
-
-        row.renderStartUs = (int64_t)LiGetMicroseconds();
-        me->renderFrame(frame);
-        row.presentUs = (int64_t)LiGetMicroseconds();
-
-        me->m_RenderCostUs += ((row.presentUs - row.renderStartUs) - me->m_RenderCostUs) / 16;
+        me->presentAt(frame, targetUs, &row);
 
         if (me->m_Trace != nullptr) {
             row.queueDepth = (uint16_t)waiting;
@@ -874,6 +893,68 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
     row->tear = m_Tearing ? 1 : 0;
 
     return targetUs;
+}
+
+// Draws a frame and presents it so that Present() returns at the target.
+//
+// Drawing takes a varying time, much of it waiting on the decoder's context lock,
+// and drawing and presenting in one call put all of that variation on screen: at
+// 90 FPS on a 100 Hz panel, draw time accounted for nearly all of how far Present()
+// missed its target, and presented intervals varied more than the host's. Where the
+// renderer can separate the two, the frame is drawn ahead with room for a slow draw
+// and only the Present() call, which takes a steady fraction of a millisecond, is
+// timed. The unused part of that room is the cost, a few hundred microseconds.
+void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
+{
+    int64_t presentCostUs = (int64_t)m_PresentCostUs;
+    int64_t drawAllowanceUs = (int64_t)m_RenderCostUs;
+
+    if (m_DrawCostCount > 0) {
+        uint32_t costs[PACER_CADENCE_DRAW_SAMPLES];
+        std::copy(m_DrawCostsUs, m_DrawCostsUs + m_DrawCostCount, costs);
+        uint32_t* percentile = costs + (m_DrawCostCount - 1) * CADENCE_DRAW_PERCENTILE / 100;
+        std::nth_element(costs, percentile, costs + m_DrawCostCount);
+        drawAllowanceUs = *percentile;
+    }
+
+    waitUntilUs(targetUs - presentCostUs - drawAllowanceUs - (int64_t)m_DrawMarginUs);
+
+    row->renderStartUs = (int64_t)LiGetMicroseconds();
+    uint64_t pacerTimeUs = (uint64_t)(row->renderStartUs - frame->pkt_dts);
+
+    if (!m_VsyncRenderer->prepareFrame(frame)) {
+        // This renderer only draws and presents together, so start that by what
+        // the two usually take
+        waitUntilUs(targetUs - (int64_t)m_RenderCostUs);
+
+        row->renderStartUs = (int64_t)LiGetMicroseconds();
+        renderFrame(frame);
+        row->presentUs = (int64_t)LiGetMicroseconds();
+        row->drawEndUs = row->renderStartUs;
+        row->presentStartUs = row->renderStartUs;
+
+        m_RenderCostUs += ((row->presentUs - row->renderStartUs) - m_RenderCostUs) / 16;
+        return;
+    }
+
+    row->drawEndUs = (int64_t)LiGetMicroseconds();
+
+    waitUntilUs(targetUs - presentCostUs);
+
+    row->presentStartUs = (int64_t)LiGetMicroseconds();
+    m_VsyncRenderer->presentPreparedFrame();
+    row->presentUs = (int64_t)LiGetMicroseconds();
+
+    int64_t drawUs = row->drawEndUs - row->renderStartUs;
+    int64_t presentCallUs = row->presentUs - row->presentStartUs;
+
+    m_DrawCostsUs[m_NextDrawCost] = (uint32_t)qBound<int64_t>(0, drawUs, UINT32_MAX);
+    m_NextDrawCost = (m_NextDrawCost + 1) % PACER_CADENCE_DRAW_SAMPLES;
+    m_DrawCostCount = qMin(m_DrawCostCount + 1, PACER_CADENCE_DRAW_SAMPLES);
+    m_PresentCostUs += (presentCallUs - m_PresentCostUs) / 16;
+
+    m_VideoStats->totalPacerTimeUs += pacerTimeUs;
+    finishFrame(frame, (uint64_t)(drawUs + presentCallUs));
 }
 
 // Sleeps until a moment on the LiGetMicroseconds() clock, spinning for the last

@@ -19,6 +19,9 @@
 #define PACER_CADENCE_TRANSIT_SAMPLES 128
 #define PACER_CADENCE_INTERVAL_SAMPLES 32
 
+// Draw times remembered when choosing how early to start drawing
+#define PACER_CADENCE_DRAW_SAMPLES 64
+
 class IVsyncSource {
 public:
     virtual ~IVsyncSource() {}
@@ -68,6 +71,10 @@ private:
 
     void waitUntilUs(int64_t targetUs);
 
+    void presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row);
+
+    void finishFrame(AVFrame* frame, uint64_t renderTimeUs);
+
     QQueue<AVFrame*> m_RenderQueue;
     QQueue<AVFrame*> m_PacingQueue;
     QQueue<int> m_PacingQueueHistory;
@@ -114,6 +121,11 @@ private:
     double m_DelayUs;
     bool m_Tearing;
     double m_RenderCostUs;
+    uint32_t m_DrawCostsUs[PACER_CADENCE_DRAW_SAMPLES];
+    int m_DrawCostCount;
+    int m_NextDrawCost;
+    double m_PresentCostUs;
+    double m_DrawMarginUs;
 
     // Host timestamp steps. See scheduleFrame().
     bool m_HostStepsEnabled;

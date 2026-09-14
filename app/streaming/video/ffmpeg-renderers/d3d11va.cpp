@@ -748,6 +748,14 @@ bool D3D11VARenderer::prepareDecoderContextInGetFormat(AVCodecContext *context, 
 
 void D3D11VARenderer::renderFrame(AVFrame* frame)
 {
+    if (prepareFrame(frame)) {
+        presentPreparedFrame();
+    }
+}
+
+// Draws a frame into the back buffer without presenting it
+bool D3D11VARenderer::prepareFrame(AVFrame* frame)
+{
     // Acquire the context lock for rendering to prevent concurrent
     // access from inside FFmpeg's decoding code
     if (m_DecodeDevice == m_RenderDevice) {
@@ -768,20 +776,6 @@ void D3D11VARenderer::renderFrame(AVFrame* frame)
     // Render overlays on top of the video stream
     for (int i = 0; i < Overlay::OverlayMax; i++) {
         renderOverlay((Overlay::OverlayType)i);
-    }
-
-    UINT flags;
-
-    if (m_AllowTearing && m_TearNextPresent) {
-        // If tearing is allowed, use DXGI_PRESENT_ALLOW_TEARING with syncInterval 0.
-        // It is not valid to use any other syncInterval values in tearing mode.
-        flags = DXGI_PRESENT_ALLOW_TEARING;
-    }
-    else {
-        // Otherwise, we'll submit as fast as possible and DWM will discard excess
-        // frames for us. If frame pacing is also enabled or we're in full-screen,
-        // our Vsync source will keep us in sync with VBlank.
-        flags = 0;
     }
 
     HRESULT hr;
@@ -809,8 +803,40 @@ void D3D11VARenderer::renderFrame(AVFrame* frame)
         m_LastColorTrc = frame->color_trc;
     }
 
+    // Start the GPU on this now, so Present() has as little as possible left to wait for
+    m_RenderDeviceContext->Flush();
+
+    if (m_DecodeDevice == m_RenderDevice) {
+        // Release the context lock
+        unlockContext(this);
+    }
+
+    return true;
+}
+
+// Presents the frame prepareFrame() drew
+void D3D11VARenderer::presentPreparedFrame()
+{
+    UINT flags;
+
+    if (m_AllowTearing && m_TearNextPresent) {
+        // If tearing is allowed, use DXGI_PRESENT_ALLOW_TEARING with syncInterval 0.
+        // It is not valid to use any other syncInterval values in tearing mode.
+        flags = DXGI_PRESENT_ALLOW_TEARING;
+    }
+    else {
+        // Otherwise, we'll submit as fast as possible and DWM will discard excess
+        // frames for us. If frame pacing is also enabled or we're in full-screen,
+        // our Vsync source will keep us in sync with VBlank.
+        flags = 0;
+    }
+
+    if (m_DecodeDevice == m_RenderDevice) {
+        lockContext(this);
+    }
+
     // Present according to the decoder parameters
-    hr = m_SwapChain->Present(0, flags);
+    HRESULT hr = m_SwapChain->Present(0, flags);
 
     if (m_DecodeDevice == m_RenderDevice) {
         // Release the context lock

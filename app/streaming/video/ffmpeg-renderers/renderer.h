@@ -205,6 +205,18 @@ public:
         // Nothing
     }
 
+    // Draws a frame without presenting it, for a caller that times the present
+    // itself. Returns false when the renderer can only draw and present together,
+    // in which case nothing was drawn and renderFrame() should be used instead.
+    virtual bool prepareFrame(AVFrame*) {
+        return false;
+    }
+
+    // Presents what prepareFrame() drew
+    virtual void presentPreparedFrame() {
+        // Nothing
+    }
+
     // Called on the same thread as renderFrame() during destruction of the renderer
     virtual void cleanupRenderContext() {
         // Nothing
