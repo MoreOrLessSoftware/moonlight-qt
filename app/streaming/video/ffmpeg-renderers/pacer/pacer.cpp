@@ -49,9 +49,22 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 // timestamps exactly. ML_PACING_SMOOTH sets it as a percentage.
 #define CADENCE_SMOOTH_GAIN 0.25
 
-// A host time further than this many intervals from its prediction is a change
-// of pace or a stall, not jitter, and is followed straight away.
+// A host time further from its prediction than this many intervals, or than
+// CADENCE_SMOOTH_MAX_US, is a change of pace or a stall rather than jitter, and is
+// followed straight away.
 #define CADENCE_RESYNC_INTERVALS 0.5
+
+// Largest prediction error smoothing irons out. The host's own jitter at a steady
+// rate is a few hundred microseconds; anything bigger is the game's frame timing
+// or the host's stamps and is shown as it is. Half an interval alone let smoothing
+// move frames by several milliseconds at 30 FPS, which caused 375 of 449 spacing
+// errors over 5 ms in one session. ML_PACING_SMOOTH_MAX_US sets it, and 0 leaves
+// only the half interval.
+#define CADENCE_SMOOTH_MAX_US 2000
+
+// How quickly the tracked host interval follows a change of pace, as the share of
+// each new interval taken in
+#define CADENCE_INTERVAL_EMA_DIVISOR 8
 
 // Which point in the recent spread of arrivals frames wait for, and the margin on
 // top. Frames arriving later than that go out when they arrive.
@@ -59,13 +72,20 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 #define CADENCE_ARRIVAL_PERCENTILE 97
 #define CADENCE_DELAY_GUARD_US 500
 
-// How fast the delay may move per frame. Up quickly so late arrivals are covered,
-// down slowly because every change in it shifts the frames behind.
+// How fast the delay may move per frame. Up by at most a fixed step so late
+// arrivals are covered without jumps. Down by a share of the distance still to go,
+// at least a fixed step, so a delay built up in a slow scene is gone in about a
+// second rather than the 10-25 s a fixed 25 us per frame took.
 #define CADENCE_DELAY_RISE_US 250
 #define CADENCE_DELAY_FALL_US 25
+#define CADENCE_DELAY_FALL_DIVISOR 16
 
-// Longest a frame is held beyond the fastest recent arrival, in source intervals
-#define CADENCE_MAX_HOLD_INTERVALS 2
+// Longest a frame is held beyond the fastest recent arrival, in source intervals.
+// It caps the delay itself as well as its target, so when the source speeds up the
+// hold shrinks with it at once. Held longer, two frames are already waiting when a
+// frame comes up and it is dropped: after slow scenes a 100 FPS source was shown
+// at 50 FPS for seconds at a time.
+#define CADENCE_MAX_HOLD_INTERVALS 1.5
 
 // Tearing stops once the source reaches this fraction of the display's refresh
 // rate, where the display can show every frame without it, and resumes a little
@@ -96,6 +116,7 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_WaitTimer(nullptr),
     m_WaitTimerHighRes(false),
     m_SmoothGain(CADENCE_SMOOTH_GAIN),
+    m_SmoothMaxUs(CADENCE_SMOOTH_MAX_US),
     m_ArrivalPercentile(CADENCE_ARRIVAL_PERCENTILE),
     m_NoTearFraction(CADENCE_NO_TEAR_FRACTION),
     m_LearnFramesLeft(0),
@@ -365,6 +386,9 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
         if (qEnvironmentVariableIsSet("ML_PACING_SMOOTH")) {
             m_SmoothGain = qBound(1, qEnvironmentVariableIntValue("ML_PACING_SMOOTH"), 100) / 100.0;
         }
+        if (qEnvironmentVariableIsSet("ML_PACING_SMOOTH_MAX_US")) {
+            m_SmoothMaxUs = qBound(0, qEnvironmentVariableIntValue("ML_PACING_SMOOTH_MAX_US"), 100000);
+        }
         if (qEnvironmentVariableIsSet("ML_PACING_PERCENTILE")) {
             m_ArrivalPercentile = qBound(50, qEnvironmentVariableIntValue("ML_PACING_PERCENTILE"), 100);
         }
@@ -382,12 +406,13 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
         }
 #endif
 
-        QString settings = QString("smoothing gain %1%, arrival percentile %2, no tearing from %3% of the refresh rate, "
-                                   "%4 wait timer")
+        QString settings = QString("smoothing gain %1% on errors up to %5 us, arrival percentile %2, "
+                                   "no tearing from %3% of the refresh rate, %4 wait timer")
                 .arg((int)std::lround(m_SmoothGain * 100))
                 .arg(m_ArrivalPercentile)
                 .arg((int)std::lround(m_NoTearFraction * 100))
-                .arg(m_WaitTimerHighRes ? "high resolution" : "standard");
+                .arg(m_WaitTimerHighRes ? "high resolution" : "standard")
+                .arg((int)m_SmoothMaxUs);
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Frame pacing: following the host's cadence, %d FPS stream on a %d Hz display (%s)",
@@ -677,13 +702,18 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
         // Tracked for prediction. A single long gap is limited so it cannot drag the
         // prediction far, but a real change of pace still comes through in a few frames.
         m_IntervalUs = m_IntervalUs > 0 ?
-                    m_IntervalUs + (qBound(m_IntervalUs / 4, (double)hostIntervalUs, m_IntervalUs * 4) - m_IntervalUs) / 16 :
+                    m_IntervalUs + (qBound(m_IntervalUs / 4, (double)hostIntervalUs, m_IntervalUs * 4) - m_IntervalUs) / CADENCE_INTERVAL_EMA_DIVISOR :
                     (double)hostIntervalUs;
 
         double predictedUs = m_SmoothedUs + m_IntervalUs;
         double errorUs = hostUs - predictedUs;
 
-        if (std::fabs(errorUs) > m_IntervalUs * CADENCE_RESYNC_INTERVALS) {
+        double resyncUs = m_IntervalUs * CADENCE_RESYNC_INTERVALS;
+        if (m_SmoothMaxUs > 0) {
+            resyncUs = qMin(resyncUs, m_SmoothMaxUs);
+        }
+
+        if (std::fabs(errorUs) > resyncUs) {
             m_SmoothedUs = (double)hostUs;
         }
         else {
@@ -715,7 +745,24 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
         m_DelayUs = wantedDelayUs;
     }
     else {
-        m_DelayUs += qBound(-(double)CADENCE_DELAY_FALL_US, wantedDelayUs - m_DelayUs, (double)CADENCE_DELAY_RISE_US);
+        double stepUs = wantedDelayUs - m_DelayUs;
+
+        if (stepUs < 0) {
+            // A share of the way down, at least the fixed step, never past the target
+            stepUs = qMax(qMin(stepUs / CADENCE_DELAY_FALL_DIVISOR, -(double)CADENCE_DELAY_FALL_US), stepUs);
+        }
+        else {
+            stepUs = qMin(stepUs, (double)CADENCE_DELAY_RISE_US);
+        }
+
+        m_DelayUs += stepUs;
+
+        // The hold limit binds on the delay itself, so a delay built up while the
+        // source was slow cannot outlast the source speeding up
+        if (m_IntervalUs > 0) {
+            m_DelayUs = qMin(m_DelayUs, fastestUs + CADENCE_MAX_HOLD_INTERVALS * m_IntervalUs);
+        }
+
         targetUs = qMax(arrivalUs, (int64_t)(m_SmoothedUs + m_DelayUs));
         row->learning = 0;
     }
