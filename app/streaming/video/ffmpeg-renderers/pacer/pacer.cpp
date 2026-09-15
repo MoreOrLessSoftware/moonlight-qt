@@ -100,6 +100,11 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 #define CADENCE_NO_TEAR_FRACTION 0.96
 #define CADENCE_TEAR_HYSTERESIS 0.02
 
+// Least time between turning tearing on and off. With the hysteresis alone, a source
+// hovering at 94-96% of a 100 Hz display switched 25 times in 11 minutes, six of them
+// within 0.7 s of the switch before and the shortest after 0.22 s.
+#define CADENCE_TEAR_MIN_SWITCH_US 2000000
+
 // Longest believable gap between two host frames. Past it the timeline is learned again.
 #define CADENCE_MAX_HOST_GAP_US 1000000
 
@@ -171,6 +176,7 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_TimelineArrivals(0),
     m_DelayUs(0),
     m_Tearing(true),
+    m_LastTearSwitchUs(0),
     m_RenderCostUs(0),
     m_DrawCostsUs{},
     m_DrawCostCount(0),
@@ -947,7 +953,8 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
     }
 
     // Tear below the no-tearing threshold, judged from the median host interval so a
-    // single stall cannot flip it
+    // single stall cannot flip it, and switched at most once every
+    // CADENCE_TEAR_MIN_SWITCH_US
     int64_t medianIntervalUs = 0;
     if (m_HostIntervalCount > 0) {
         int64_t intervals[PACER_CADENCE_INTERVAL_SAMPLES];
@@ -957,17 +964,22 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
         medianIntervalUs = *median;
     }
 
-    if (medianIntervalUs > 0 && m_DisplayFps > 0) {
+    bool tearSwitchAllowed = m_LastTearSwitchUs == 0 ||
+            arrivalUs - m_LastTearSwitchUs >= CADENCE_TEAR_MIN_SWITCH_US;
+
+    if (medianIntervalUs > 0 && m_DisplayFps > 0 && tearSwitchAllowed) {
         double sourceFps = 1000000.0 / medianIntervalUs;
 
         if (m_Tearing && sourceFps >= m_NoTearFraction * m_DisplayFps) {
             m_Tearing = false;
+            m_LastTearSwitchUs = arrivalUs;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "Frame pacing: source at %.1f FPS on a %d Hz display, presenting without tearing",
                         sourceFps, m_DisplayFps);
         }
         else if (!m_Tearing && sourceFps < (m_NoTearFraction - CADENCE_TEAR_HYSTERESIS) * m_DisplayFps) {
             m_Tearing = true;
+            m_LastTearSwitchUs = arrivalUs;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "Frame pacing: source at %.1f FPS on a %d Hz display, presenting with tearing",
                         sourceFps, m_DisplayFps);
