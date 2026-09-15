@@ -32,6 +32,7 @@ public:
     virtual void presentPreparedFrame() override;
     virtual uint64_t captureDecodeBoundary() override;
     virtual bool waitForDecode(uint64_t decodeBoundary) override;
+    virtual bool getPresentFeedback(PPRESENT_FEEDBACK feedback) override;
 
     enum PixelShaders {
         GENERIC_YUV_420,
@@ -111,6 +112,14 @@ private:
     HANDLE m_DecodeReadyEvent;
     UINT64 m_GpuReadyFenceValue;
     bool m_GpuReadyEnabled;
+
+    // Reading DXGI frame statistics after each present. See getPresentFeedback().
+    Microsoft::WRL::ComPtr<IDXGISwapChainMedia> m_SwapChainMedia;
+    LARGE_INTEGER m_QpcFrequency;
+    bool m_FrameStatsEnabled;
+    bool m_FrameStatsFailureLogged;
+    int m_LastPresentationMode;
+    int m_PresentationModeChanges;
 
     std::array<Microsoft::WRL::ComPtr<ID3D11PixelShader>, PixelShaders::_COUNT> m_VideoPixelShaders;
     Microsoft::WRL::ComPtr<ID3D11Buffer> m_VideoVertexBuffer;

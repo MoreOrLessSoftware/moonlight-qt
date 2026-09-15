@@ -141,6 +141,15 @@ private:
 // the decoder thread to the thread that renders. Zero when there is none.
 #define ML_FRAME_DECODE_BOUNDARY(frame) ((frame)->best_effort_timestamp)
 
+// What the display has done with presented frames. See getPresentFeedback().
+typedef struct _PRESENT_FEEDBACK {
+    uint32_t presentId;         // Present count after the frame just presented, 0 if unknown
+    uint32_t displayedId;       // Present count of the latest frame the display has shown, 0 if unknown
+    int64_t displayedUs;        // When that frame was shown, on the LiGetMicroseconds() clock
+    int presentationMode;       // How it reached the screen: 0 composed, 1 hardware overlay, 2 none,
+                                // 3 composition failure (DXGI_FRAME_PRESENTATION_MODE), -1 if unknown
+} PRESENT_FEEDBACK, *PPRESENT_FEEDBACK;
+
 class IFFmpegRenderer : public Overlay::IOverlayRenderer {
 public:
     enum class RendererType {
@@ -231,6 +240,14 @@ public:
     // Blocks until the GPU work captureDecodeBoundary() marked is done, and returns
     // whether that meant waiting. Called from the thread that renders.
     virtual bool waitForDecode(uint64_t) {
+        return false;
+    }
+
+    // Reads back what the display has done with presented frames: which frame
+    // presentPreparedFrame() just presented, the latest frame the display has shown and
+    // when, and how it reached the screen. Called from the thread that renders, right
+    // after presentPreparedFrame(). Returns false when the renderer doesn't read these.
+    virtual bool getPresentFeedback(PPRESENT_FEEDBACK) {
         return false;
     }
 

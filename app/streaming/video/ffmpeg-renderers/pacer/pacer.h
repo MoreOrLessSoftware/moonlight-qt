@@ -118,6 +118,7 @@ private:
     int64_t m_TransitUs[PACER_CADENCE_TRANSIT_SAMPLES];
     int m_TransitCount;
     int m_NextTransit;
+    int m_TimelineArrivals;
     double m_DelayUs;
     bool m_Tearing;
     double m_RenderCostUs;
@@ -137,8 +138,15 @@ private:
     int64_t m_LastArrivalUs;
     double m_LastPacedHoldUs;
 
+    // Frames held up in the display's queue. See presentAt().
+    bool m_QueueDrainEnabled;
+    int m_BacklogFrames;
+    bool m_DrainNext;
+    int64_t m_LastDrainUs;
+
     // Trace bookkeeping
     uint64_t m_FrameIndex;
     uint32_t m_DroppedSinceRow;
+    uint32_t m_DrainedSinceRow;
     uint32_t m_EvictedFrames;
 };
