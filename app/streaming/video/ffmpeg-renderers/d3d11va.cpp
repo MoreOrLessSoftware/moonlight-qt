@@ -665,11 +665,11 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
     // event when the GPU gets to it; without one, frames are presented as before.
     // ML_PACING_GPU_READY=0 turns it off.
     //
-    // Only where the pacer follows the host's cadence, which takes tearing support and
-    // no full-screen exclusive (see getRendererAttributes() and Pacer::initialize()).
-    // The V-blank pacer renders exactly as before.
+    // Only where the pacer follows the host's cadence, which takes frame pacing enabled
+    // and tearing support (see supportsPresentTearing() and Pacer::initialize()). The
+    // V-blank pacer, including the one full-screen mode forces with frame pacing off,
+    // renders exactly as before.
     bool cadencePacing = params->enableFramePacing && m_AllowTearing &&
-            (SDL_GetWindowFlags(params->window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != SDL_WINDOW_FULLSCREEN &&
             !(qEnvironmentVariableIsSet("ML_PACING_CADENCE") && qEnvironmentVariableIntValue("ML_PACING_CADENCE") == 0);
 
     if (cadencePacing && m_FenceType == SupportedFenceType::Monitored &&
@@ -1600,9 +1600,13 @@ bool D3D11VARenderer::checkDecoderSupport(IDXGIAdapter* adapter)
     return true;
 }
 
+// Only with frame pacing enabled. Full-screen mode forces the V-blank pacer with frame
+// pacing off (see getRendererAttributes()), and that should stay as it was. The swapchain
+// is always windowed (SDL does the mode-setting for full-screen), so presents may tear
+// there as they may in a borderless window.
 bool D3D11VARenderer::supportsPresentTearing()
 {
-    return m_AllowTearing;
+    return m_AllowTearing && m_DecoderParams.enableFramePacing;
 }
 
 void D3D11VARenderer::setPresentTearing(bool tear)

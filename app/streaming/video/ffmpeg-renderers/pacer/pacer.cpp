@@ -443,12 +443,13 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
     m_RendererAttributes = m_VsyncRenderer->getRendererAttributes();
 
     // Follow the host's cadence where the renderer can choose per present whether to
-    // tear. Full-screen exclusive renderers rely on the V-blank pacer below to avoid
-    // tearing, and a renderer that can't tear keeps it too. ML_PACING_CADENCE=0 uses
-    // the V-blank pacer everywhere; D3D11VARenderer::initialize() checks it as well.
+    // tear, which it only reports when frame pacing was asked for, in a window or full
+    // screen. Pacing a renderer forces on without that, and a renderer that can't tear,
+    // keep the V-blank pacer below. ML_PACING_CADENCE=0 uses the V-blank pacer
+    // everywhere; D3D11VARenderer::initialize() checks it as well.
     bool cadenceAllowed = !(qEnvironmentVariableIsSet("ML_PACING_CADENCE") && qEnvironmentVariableIntValue("ML_PACING_CADENCE") == 0);
 
-    if (enablePacing && cadenceAllowed && !(m_RendererAttributes & RENDERER_ATTRIBUTE_FORCE_PACING) &&
+    if (enablePacing && cadenceAllowed &&
             m_VsyncRenderer->isRenderThreadSupported() && m_VsyncRenderer->supportsPresentTearing()) {
         if (qEnvironmentVariableIsSet("ML_PACING_SMOOTH")) {
             m_SmoothGain = qBound(1, qEnvironmentVariableIntValue("ML_PACING_SMOOTH"), 100) / 100.0;
