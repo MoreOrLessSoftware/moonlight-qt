@@ -67,6 +67,11 @@ D3D11VARenderer::D3D11VARenderer(int decoderSelectionPass)
       m_DecodeReadyEvent(nullptr),
       m_GpuReadyFenceValue(0),
       m_GpuReadyEnabled(false),
+      m_QpcFrequency{},
+      m_FrameStatsEnabled(false),
+      m_FrameStatsFailureLogged(false),
+      m_LastPresentationMode(-1),
+      m_PresentationModeChanges(0),
       m_OverlayLock(0),
       m_HwDeviceContext(nullptr)
 {
@@ -117,6 +122,7 @@ D3D11VARenderer::~D3D11VARenderer()
     m_RenderR2DFence.Reset();
 
     m_GpuReadyFence.Reset();
+    m_SwapChainMedia.Reset();
     if (m_GpuReadyEvent != nullptr) {
         CloseHandle(m_GpuReadyEvent);
     }
@@ -686,6 +692,24 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
                         hr);
             m_GpuReadyFence.Reset();
         }
+    }
+
+    // Read DXGI's frame statistics after every present where the pacer follows the
+    // host's cadence, which uses them to find frames held up in the display's queue.
+    // See getPresentFeedback(). ML_PACING_FRAME_STATS=0 turns this off.
+    bool frameStats = cadencePacing;
+    if (qEnvironmentVariableIsSet("ML_PACING_FRAME_STATS")) {
+        frameStats = qEnvironmentVariableIntValue("ML_PACING_FRAME_STATS") != 0;
+    }
+
+    if (frameStats) {
+        QueryPerformanceFrequency(&m_QpcFrequency);
+        m_SwapChain.As(&m_SwapChainMedia);
+        m_FrameStatsEnabled = m_QpcFrequency.QuadPart > 0;
+
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Reading DXGI frame statistics after every present%s",
+                    m_SwapChainMedia != nullptr ? "" : ", without the presentation mode");
     }
 
     // Disable Alt+Enter, PrintScreen, and window message snooping. This makes
@@ -1624,6 +1648,100 @@ bool D3D11VARenderer::waitForDecode(uint64_t decodeBoundary)
         m_GpuReadyEnabled = false;
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "Waiting for the GPU to finish decoding a frame failed; frames are presented without waiting from now on");
+    }
+
+    return true;
+}
+
+static const char* presentationModeName(int mode)
+{
+    switch (mode) {
+    case DXGI_FRAME_PRESENTATION_MODE_COMPOSED:
+        return "composed by DWM";
+    case DXGI_FRAME_PRESENTATION_MODE_OVERLAY:
+        return "hardware overlay";
+    case DXGI_FRAME_PRESENTATION_MODE_NONE:
+        return "none";
+    case DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE:
+        return "composition failure";
+    default:
+        return "unknown";
+    }
+}
+
+// Where initialize() enabled it, reads DXGI's frame statistics after each present:
+// the latest present the display has shown and when, and whether it went through the
+// compositor. Nothing else shows what happens after Present() returns, where a frame
+// can wait a refresh or more before it reaches the screen.
+bool D3D11VARenderer::getPresentFeedback(PPRESENT_FEEDBACK feedback)
+{
+    if (!m_FrameStatsEnabled) {
+        return false;
+    }
+
+    feedback->presentId = 0;
+    feedback->displayedId = 0;
+    feedback->displayedUs = 0;
+    feedback->presentationMode = -1;
+
+    UINT presentCount;
+    if (SUCCEEDED(m_SwapChain->GetLastPresentCount(&presentCount))) {
+        feedback->presentId = presentCount;
+    }
+
+    UINT displayedCount = 0;
+    LARGE_INTEGER syncQpc = {};
+    HRESULT hr = E_NOINTERFACE;
+
+    if (m_SwapChainMedia != nullptr) {
+        DXGI_FRAME_STATISTICS_MEDIA stats = {};
+        hr = m_SwapChainMedia->GetFrameStatisticsMedia(&stats);
+        if (SUCCEEDED(hr)) {
+            displayedCount = stats.PresentCount;
+            syncQpc = stats.SyncQPCTime;
+            feedback->presentationMode = (int)stats.CompositionMode;
+        }
+    }
+
+    if (FAILED(hr)) {
+        DXGI_FRAME_STATISTICS stats = {};
+        hr = m_SwapChain->GetFrameStatistics(&stats);
+        if (SUCCEEDED(hr)) {
+            displayedCount = stats.PresentCount;
+            syncQpc = stats.SyncQPCTime;
+        }
+    }
+
+    if (SUCCEEDED(hr) && displayedCount != 0 && syncQpc.QuadPart != 0) {
+        // SyncQPCTime is on the performance counter. Carry it onto our clock by how
+        // long ago it was.
+        int64_t nowUs = (int64_t)LiGetMicroseconds();
+        LARGE_INTEGER nowQpc;
+        QueryPerformanceCounter(&nowQpc);
+
+        feedback->displayedId = displayedCount;
+        feedback->displayedUs = nowUs - (nowQpc.QuadPart - syncQpc.QuadPart) * 1000000 / m_QpcFrequency.QuadPart;
+    }
+    else if (FAILED(hr) && hr != DXGI_ERROR_FRAME_STATISTICS_DISJOINT && !m_FrameStatsFailureLogged) {
+        m_FrameStatsFailureLogged = true;
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Reading DXGI frame statistics failed: %x",
+                    hr);
+    }
+
+    if (feedback->presentationMode >= 0 && feedback->presentationMode != m_LastPresentationMode) {
+        if (m_PresentationModeChanges < 20) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Frames reach the display: %s",
+                        presentationModeName(feedback->presentationMode));
+        }
+        else if (m_PresentationModeChanges == 20) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Presentation mode keeps changing; not logging further changes");
+        }
+
+        m_PresentationModeChanges++;
+        m_LastPresentationMode = feedback->presentationMode;
     }
 
     return true;

@@ -72,6 +72,13 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 #define CADENCE_ARRIVAL_PERCENTILE 97
 #define CADENCE_DELAY_GUARD_US 500
 
+// Arrivals at the start of a host timeline left out of the delay. The first frame or
+// two of a stream arrive late while it starts up, by 20 ms to a quarter of a second
+// in five sessions measured, where every later arrival was within a couple of
+// milliseconds. Counted in, they set the delay for the first paced frames, which were
+// then held up to 27 ms for about a second.
+#define CADENCE_STARTUP_ARRIVALS 10
+
 // How fast the delay may move per frame. Up by at most a fixed step so late
 // arrivals are covered without jumps. Down by a share of the distance still to go,
 // at least a fixed step, so a delay built up in a slow scene is gone in about a
@@ -126,6 +133,12 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 #define CADENCE_DRAW_PERCENTILE 95
 #define CADENCE_DRAW_MARGIN_US 200
 
+// A frame waiting in the display's queue behind every present for this long, while
+// presenting without tearing, is cleared by skipping one frame, at most once per
+// CADENCE_DRAIN_MIN_GAP_US. See presentAt().
+#define CADENCE_DRAIN_BACKLOG_SECONDS 2
+#define CADENCE_DRAIN_MIN_GAP_US 10000000
+
 Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_RenderThread(nullptr),
     m_VsyncThread(nullptr),
@@ -155,6 +168,7 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_TransitUs{},
     m_TransitCount(0),
     m_NextTransit(0),
+    m_TimelineArrivals(0),
     m_DelayUs(0),
     m_Tearing(true),
     m_RenderCostUs(0),
@@ -171,8 +185,13 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_HostStepLatenessUs(0),
     m_LastArrivalUs(0),
     m_LastPacedHoldUs(0),
+    m_QueueDrainEnabled(true),
+    m_BacklogFrames(0),
+    m_DrainNext(false),
+    m_LastDrainUs(0),
     m_FrameIndex(0),
     m_DroppedSinceRow(0),
+    m_DrainedSinceRow(0),
     m_EvictedFrames(0)
 {
 
@@ -443,6 +462,9 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
         if (qEnvironmentVariableIsSet("ML_PACING_HOST_STEPS")) {
             m_HostStepsEnabled = qEnvironmentVariableIntValue("ML_PACING_HOST_STEPS") != 0;
         }
+        if (qEnvironmentVariableIsSet("ML_PACING_QUEUE_DRAIN")) {
+            m_QueueDrainEnabled = qEnvironmentVariableIntValue("ML_PACING_QUEUE_DRAIN") != 0;
+        }
         if (qEnvironmentVariableIsSet("ML_PACING_NO_TEAR_PCT")) {
             m_NoTearFraction = qBound(10, qEnvironmentVariableIntValue("ML_PACING_NO_TEAR_PCT"), 1000) / 100.0;
         }
@@ -458,7 +480,7 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
 #endif
 
         QString settings = QString("smoothing gain %1% on errors up to %5 us, arrival percentile %2, "
-                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin, %8 us spin")
+                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin, %8 us spin, display queue drain %9")
                 .arg((int)std::lround(m_SmoothGain * 100))
                 .arg(m_ArrivalPercentile)
                 .arg((int)std::lround(m_NoTearFraction * 100))
@@ -466,7 +488,8 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
                 .arg((int)m_SmoothMaxUs)
                 .arg(m_HostStepsEnabled ? "handled" : "ignored")
                 .arg((int)m_DrawMarginUs)
-                .arg(m_WaitTimerHighRes ? m_SpinUs : qMax(m_SpinUs, CADENCE_SPIN_LOW_RES_US));
+                .arg(m_WaitTimerHighRes ? m_SpinUs : qMax(m_SpinUs, CADENCE_SPIN_LOW_RES_US))
+                .arg(m_QueueDrainEnabled ? "on" : "off");
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Frame pacing: following the host's cadence, %d FPS stream on a %d Hz display (%s)",
@@ -690,8 +713,18 @@ int Pacer::cadenceThread(void* context)
         int64_t targetUs = me->scheduleFrame(frame, &row);
 
         // Two frames already waiting behind this one means we have fallen behind the
-        // host, and showing it would only keep us there
-        if (waiting >= 2) {
+        // host, and showing it would only keep us there. A frame held up in the
+        // display's queue is cleared the same way. See presentAt().
+        bool drain = me->m_DrainNext;
+        if (waiting >= 2 || drain) {
+            if (drain) {
+                me->m_DrainNext = false;
+                me->m_LastDrainUs = (int64_t)LiGetMicroseconds();
+                me->m_DrainedSinceRow++;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "Frame pacing: a frame kept waiting in the display's queue; skipped one frame to clear it");
+            }
+
             me->m_VideoStats->pacerDroppedFrames++;
             me->m_DroppedSinceRow++;
             av_frame_free(&frame);
@@ -704,10 +737,12 @@ int Pacer::cadenceThread(void* context)
         if (me->m_Trace != nullptr) {
             row.queueDepth = (uint16_t)waiting;
             row.droppedBefore = (uint16_t)qMin<uint32_t>(me->m_DroppedSinceRow, 65535);
+            row.drainedBefore = (uint8_t)qMin<uint32_t>(me->m_DrainedSinceRow, 255);
             me->m_Trace->record(row);
         }
 
         me->m_DroppedSinceRow = 0;
+        me->m_DrainedSinceRow = 0;
     }
 
     // NB: This must happen on the same thread that calls renderFrame().
@@ -770,6 +805,7 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
         m_SmoothedUs = (double)hostUs;
         m_TransitCount = 0;
         m_NextTransit = 0;
+        m_TimelineArrivals = 0;
         m_LearnFramesLeft = qMax(CADENCE_MIN_LEARN_FRAMES, m_MaxVideoFps);
         m_HostStepActive = false;
     }
@@ -853,6 +889,17 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
     m_LastArrivalUs = arrivalUs;
 
     if (!hostStep) {
+        // The first arrivals of a timeline are dropped from the delay once they have
+        // been passed. See CADENCE_STARTUP_ARRIVALS.
+        if (m_TimelineArrivals < CADENCE_STARTUP_ARRIVALS) {
+            m_TimelineArrivals++;
+        }
+        else if (m_TimelineArrivals == CADENCE_STARTUP_ARRIVALS) {
+            m_TimelineArrivals++;
+            m_TransitCount = 0;
+            m_NextTransit = 0;
+        }
+
         // How late this frame arrived relative to its smoothed host time, and how long
         // frames have to wait for nearly all of the recent ones to have arrived
         m_TransitUs[m_NextTransit] = arrivalUs - (int64_t)m_SmoothedUs;
@@ -949,6 +996,7 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
 {
     int64_t presentCostUs = (int64_t)m_PresentCostUs;
 
+    row->presentationMode = -1;
     row->drawDueUs = targetUs - (int64_t)m_DrawLeadUs;
     waitUntilUs(row->drawDueUs);
 
@@ -977,6 +1025,41 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
     row->presentStartUs = (int64_t)LiGetMicroseconds();
     m_VsyncRenderer->presentPreparedFrame();
     row->presentUs = (int64_t)LiGetMicroseconds();
+
+    // What the display has done with frames so far, where the renderer reads it back.
+    // After the timestamp, so reading it never counts as part of the Present() call.
+    PRESENT_FEEDBACK feedback;
+    bool haveFeedback = m_VsyncRenderer->getPresentFeedback(&feedback);
+    if (haveFeedback) {
+        row->presentId = feedback.presentId;
+        row->displayedId = feedback.displayedId;
+        row->displayedUs = feedback.displayedUs;
+        row->presentationMode = (int8_t)feedback.presentationMode;
+    }
+
+    // Is a frame being held up in the display's queue?
+    //
+    // Presented without tearing, a frame waits for the display's next refresh. When two
+    // frames reach the queue within one refresh, one is left waiting behind every
+    // present from then on, since at the display's own rate nothing takes it out, and
+    // every frame reaches the screen a refresh later than it could. On a 60 Hz laptop
+    // panel streaming 60 FPS, the display was two presents behind for a whole session
+    // that started that way and one behind for one that didn't, a refresh of latency
+    // decided by how the session happened to start. A refresh without a new frame
+    // clears it, so a late frame or a host stall does that on its own; if nothing has
+    // after CADENCE_DRAIN_BACKLOG_SECONDS, the next frame is skipped.
+    // ML_PACING_QUEUE_DRAIN=0 turns this off.
+    if (m_QueueDrainEnabled && haveFeedback) {
+        bool backlog = !row->tear && !row->learning && feedback.displayedId != 0 &&
+                feedback.presentId >= feedback.displayedId + 2;
+        m_BacklogFrames = backlog ? m_BacklogFrames + 1 : 0;
+
+        if (m_BacklogFrames >= CADENCE_DRAIN_BACKLOG_SECONDS * qMax(CADENCE_MIN_LEARN_FRAMES, m_MaxVideoFps) &&
+                (m_LastDrainUs == 0 || row->presentUs - m_LastDrainUs >= CADENCE_DRAIN_MIN_GAP_US)) {
+            m_DrainNext = true;
+            m_BacklogFrames = 0;
+        }
+    }
 
     int64_t drawUs = row->drawEndUs - row->renderStartUs;
     int64_t presentCallUs = row->presentUs - row->presentStartUs;

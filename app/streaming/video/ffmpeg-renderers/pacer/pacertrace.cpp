@@ -82,6 +82,13 @@ PacerTrace::PacerTrace(int displayHz) :
     m_TearThirds{},
     m_TearSwitches(0),
     m_HostStepFrames(0),
+    m_PresentIds{},
+    m_PresentTimesUs{},
+    m_LastDisplayedId(0),
+    m_StatsRows(0),
+    m_QueuedCounts{},
+    m_ModeCounts{},
+    m_QueueDrains(0),
     m_WorstSpacingUs{},
     m_WorstFrame{}
 {
@@ -145,10 +152,19 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "#   before it instead of being paced by its stamp. Pairs touching one are left out of the spacing figures.\n"
                     << "# dequeue_us: when the pacing thread took the frame from the queue. draw_due_us: when drawing was\n"
                     << "#   meant to start; render_start_us - draw_due_us is how late the thread woke for it.\n"
+                    << "# drained_before: frames skipped since the previous row to clear a frame waiting in the display's queue.\n"
+                    << "# DXGI frame statistics, read by default (ML_PACING_FRAME_STATS=0 turns them off; zeros and -1 when not read):\n"
+                    << "#   present_id: the swapchain's present count after this frame. displayed_id, displayed_us: the\n"
+                    << "#   latest present the display had shown when this frame was presented, and when.\n"
+                    << "#   presentation_mode: how that frame reached the screen: 0 composed by DWM, 1 hardware overlay,\n"
+                    << "#   2 none, 3 composition failure, -1 unknown. queued_presents = present_id - displayed_id, this\n"
+                    << "#   frame included. display_latency_us: present_us to displayed_us for frame displayed_id, on the\n"
+                    << "#   first row that names it.\n"
                     << "frame,host_us,arrival_us,smoothed_us,delay_us,target_us,render_start_us,present_us,"
                        "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,draw_us,present_call_us,"
                        "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step,"
-                       "dequeue_us,draw_due_us\n";
+                       "dequeue_us,draw_due_us,present_id,displayed_id,displayed_us,presentation_mode,queued_presents,"
+                       "display_latency_us,drained_before\n";
 
     trace->m_Thread = SDL_CreateThread(PacerTrace::writerThread, "PacerTrace", trace);
     if (trace->m_Thread == nullptr) {
@@ -333,6 +349,35 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
         }
     }
 
+    int64_t queuedPresents = -1;
+    int64_t displayLatencyUs = -1;
+
+    m_QueueDrains += row.drainedBefore;
+
+    if (row.presentId != 0) {
+        m_StatsRows++;
+        m_ModeCounts[qBound(0, row.presentationMode + 1, 4)]++;
+
+        m_PresentIds[row.presentId % k_PresentHistory] = row.presentId;
+        m_PresentTimesUs[row.presentId % k_PresentHistory] = row.presentUs;
+
+        if (row.displayedId != 0 && row.displayedId <= row.presentId) {
+            queuedPresents = row.presentId - row.displayedId;
+            m_QueuedCounts[qMin<int64_t>(queuedPresents, 4)]++;
+
+            // The first row to name a newly shown frame gives its present-to-display time
+            if (row.displayedId != m_LastDisplayedId &&
+                    m_PresentIds[row.displayedId % k_PresentHistory] == row.displayedId) {
+                displayLatencyUs = row.displayedUs - m_PresentTimesUs[row.displayedId % k_PresentHistory];
+                if (displayLatencyUs >= 0) {
+                    m_Display.add(displayLatencyUs);
+                }
+            }
+
+            m_LastDisplayedId = row.displayedId;
+        }
+    }
+
     m_Stream << row.frame << ','
              << row.hostUs << ','
              << row.arrivalUs << ','
@@ -356,7 +401,14 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
              << (row.learning ? 1 : 0) << ','
              << (row.hostStep ? 1 : 0) << ','
              << row.dequeueUs << ','
-             << row.drawDueUs << '\n';
+             << row.drawDueUs << ','
+             << row.presentId << ','
+             << row.displayedId << ','
+             << row.displayedUs << ','
+             << (int)row.presentationMode << ','
+             << queuedPresents << ','
+             << displayLatencyUs << ','
+             << (int)row.drainedBefore << '\n';
 
     m_Previous = row;
     m_HavePrevious = true;
@@ -391,6 +443,21 @@ void PacerTrace::writeFooter()
              << m_TearThirds[2] << "\n"
              << "# host timestamp steps: " << m_HostStepFrames
              << " frames held as long as the frame before them, left out of the spacing figures\n";
+
+    if (m_StatsRows > 0) {
+        m_Stream << "# present to display (DXGI frame statistics, frames it reported shown): " << m_Display.describe() << "\n"
+                 << "# presents not yet shown when a frame was presented, that frame included, 0/1/2/3/4+: "
+                 << m_QueuedCounts[0] << '/' << m_QueuedCounts[1] << '/' << m_QueuedCounts[2] << '/'
+                 << m_QueuedCounts[3] << '/' << m_QueuedCounts[4] << "\n"
+                 << "# presentation mode of the latest shown frame, per present: composed " << m_ModeCounts[1]
+                 << ", hardware overlay " << m_ModeCounts[2] << ", none " << m_ModeCounts[3]
+                 << ", composition failure " << m_ModeCounts[4] << ", unknown " << m_ModeCounts[0] << "\n"
+                 << "# display queue drains (one frame skipped to clear a frame left waiting in the display's queue): "
+                 << m_QueueDrains << "\n";
+    }
+    else {
+        m_Stream << "# DXGI frame statistics: not read\n";
+    }
 
     int order[k_WorstPairs];
     for (int i = 0; i < k_WorstPairs; i++) {
