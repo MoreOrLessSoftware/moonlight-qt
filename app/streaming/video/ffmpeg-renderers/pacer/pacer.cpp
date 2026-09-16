@@ -105,6 +105,23 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 // within 0.7 s of the switch before and the shortest after 0.22 s.
 #define CADENCE_TEAR_MIN_SWITCH_US 2000000
 
+// Longest a tearing present is held to keep it out of the previous frame's scanout.
+// The display takes about one period at its top refresh rate to scan a frame out, and
+// a present landing inside that window tears across the picture. Over three sessions
+// about 1% of torn presents landed inside it, over half of them needing less than half
+// a millisecond to clear, so a short hold removes most tearing. Frames needing longer
+// are presented as they are rather than held that far, which also stops a hold from
+// pushing the frames behind it. At 2000 us, 13 of 156 presents that would have torn in
+// a 248 s session still did; at 3000 us it was 4 of 119, with the holds costing about
+// half a millisecond each. ML_PACING_TEAR_GUARD_US sets it, and 0 turns it off.
+#define CADENCE_TEAR_GUARD_US 3000
+
+// Held this far past the end of the scanout, so that the jitter in when Present()
+// returns does not leave the frame just inside it after all. Without it, 53 of 105
+// presents that would have torn in a 269 s session still landed inside the window,
+// missing it by 44 us at the median.
+#define CADENCE_TEAR_GUARD_MARGIN_US 400
+
 // Longest believable gap between two host frames. Past it the timeline is learned again.
 #define CADENCE_MAX_HOST_GAP_US 1000000
 
@@ -163,6 +180,7 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_SmoothMaxUs(CADENCE_SMOOTH_MAX_US),
     m_ArrivalPercentile(CADENCE_ARRIVAL_PERCENTILE),
     m_NoTearFraction(CADENCE_NO_TEAR_FRACTION),
+    m_TearGuardUs(CADENCE_TEAR_GUARD_US),
     m_LearnFramesLeft(0),
     m_LastHostUs(0),
     m_IntervalUs(0),
@@ -195,6 +213,7 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_BacklogFrames(0),
     m_DrainNext(false),
     m_LastDrainUs(0),
+    m_LastPresentUs(0),
     m_FrameIndex(0),
     m_DroppedSinceRow(0),
     m_DrainedSinceRow(0),
@@ -479,6 +498,9 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
         if (qEnvironmentVariableIsSet("ML_PACING_QUEUE_DRAIN")) {
             m_QueueDrainEnabled = qEnvironmentVariableIntValue("ML_PACING_QUEUE_DRAIN") != 0;
         }
+        if (qEnvironmentVariableIsSet("ML_PACING_TEAR_GUARD_US")) {
+            m_TearGuardUs = qBound(0, qEnvironmentVariableIntValue("ML_PACING_TEAR_GUARD_US"), 20000);
+        }
         if (qEnvironmentVariableIsSet("ML_PACING_NO_TEAR_PCT")) {
             m_NoTearFraction = qBound(10, qEnvironmentVariableIntValue("ML_PACING_NO_TEAR_PCT"), 1000) / 100.0;
         }
@@ -494,7 +516,7 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
 #endif
 
         QString settings = QString("smoothing gain %1% on errors up to %5 us, arrival percentile %2, "
-                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin, %8 us spin, display queue drain %9")
+                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin, %8 us spin, display queue drain %9, %10 us tear guard")
                 .arg((int)std::lround(m_SmoothGain * 100))
                 .arg(m_ArrivalPercentile)
                 .arg((int)std::lround(m_NoTearFraction * 100))
@@ -503,7 +525,8 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
                 .arg(m_HostStepsEnabled ? "handled" : "ignored")
                 .arg((int)m_DrawMarginUs)
                 .arg(m_WaitTimerHighRes ? m_SpinUs : qMax(m_SpinUs, CADENCE_SPIN_LOW_RES_US))
-                .arg(m_QueueDrainEnabled ? "on" : "off");
+                .arg(m_QueueDrainEnabled ? "on" : "off")
+                .arg(m_TearGuardUs);
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Frame pacing: following the host's cadence, %d FPS stream on a %d Hz display (%s)",
@@ -994,6 +1017,17 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
         }
     }
 
+    // Keep a tearing present out of the previous frame's scanout, where it would tear
+    // across the picture, as long as that means a short wait. See CADENCE_TEAR_GUARD_US.
+    if (m_Tearing && m_TearGuardUs > 0 && m_DisplayFps > 0 && m_LastPresentUs != 0) {
+        int64_t scanoutEndUs = m_LastPresentUs + 1000000 / m_DisplayFps + CADENCE_TEAR_GUARD_MARGIN_US;
+
+        if (targetUs < scanoutEndUs && scanoutEndUs - targetUs <= m_TearGuardUs) {
+            targetUs = scanoutEndUs;
+            row->tearGuard = 1;
+        }
+    }
+
     row->smoothedUs = (int64_t)m_SmoothedUs;
     row->delayUs = (int64_t)m_DelayUs;
     row->targetUs = targetUs;
@@ -1031,6 +1065,7 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
         row->renderStartUs = (int64_t)LiGetMicroseconds();
         renderFrame(frame);
         row->presentUs = (int64_t)LiGetMicroseconds();
+        m_LastPresentUs = row->presentUs;
         row->drawEndUs = row->renderStartUs;
         row->presentStartUs = row->renderStartUs;
 
@@ -1045,6 +1080,7 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
     row->presentStartUs = (int64_t)LiGetMicroseconds();
     m_VsyncRenderer->presentPreparedFrame();
     row->presentUs = (int64_t)LiGetMicroseconds();
+    m_LastPresentUs = row->presentUs;
 
     // What the display has done with frames so far, where the renderer reads it back.
     // After the timestamp, so reading it never counts as part of the Present() call.
