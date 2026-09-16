@@ -89,6 +89,7 @@ PacerTrace::PacerTrace(int displayHz) :
     m_QueuedCounts{},
     m_ModeCounts{},
     m_QueueDrains(0),
+    m_TearGuards(0),
     m_WorstSpacingUs{},
     m_WorstFrame{}
 {
@@ -153,6 +154,7 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "# dequeue_us: when the pacing thread took the frame from the queue. draw_due_us: when drawing was\n"
                     << "#   meant to start; render_start_us - draw_due_us is how late the thread woke for it.\n"
                     << "# drained_before: frames skipped since the previous row to clear a frame waiting in the display's queue.\n"
+                    << "# tear_guard: the frame was held out of the previous frame's scanout, so it would not tear across it.\n"
                     << "# DXGI frame statistics, read by default (ML_PACING_FRAME_STATS=0 turns them off; zeros and -1 when not read):\n"
                     << "#   present_id: the swapchain's present count after this frame. displayed_id, displayed_us: the\n"
                     << "#   latest present the display had shown when this frame was presented, and when.\n"
@@ -164,7 +166,7 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                        "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,draw_us,present_call_us,"
                        "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step,"
                        "dequeue_us,draw_due_us,present_id,displayed_id,displayed_us,presentation_mode,queued_presents,"
-                       "display_latency_us,drained_before\n";
+                       "display_latency_us,drained_before,tear_guard\n";
 
     trace->m_Thread = SDL_CreateThread(PacerTrace::writerThread, "PacerTrace", trace);
     if (trace->m_Thread == nullptr) {
@@ -353,6 +355,7 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
     int64_t displayLatencyUs = -1;
 
     m_QueueDrains += row.drainedBefore;
+    m_TearGuards += row.tearGuard;
 
     if (row.presentId != 0) {
         m_StatsRows++;
@@ -408,7 +411,8 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
              << (int)row.presentationMode << ','
              << queuedPresents << ','
              << displayLatencyUs << ','
-             << (int)row.drainedBefore << '\n';
+             << (int)row.drainedBefore << ','
+             << (int)row.tearGuard << '\n';
 
     m_Previous = row;
     m_HavePrevious = true;
@@ -442,7 +446,8 @@ void PacerTrace::writeFooter()
              << ", tear line top/middle/bottom third: " << m_TearThirds[0] << '/' << m_TearThirds[1] << '/'
              << m_TearThirds[2] << "\n"
              << "# host timestamp steps: " << m_HostStepFrames
-             << " frames held as long as the frame before them, left out of the spacing figures\n";
+             << " frames held as long as the frame before them, left out of the spacing figures\n"
+             << "# tearing presents held out of the previous frame's scanout: " << m_TearGuards << "\n";
 
     if (m_StatsRows > 0) {
         m_Stream << "# present to display (DXGI frame statistics, frames it reported shown): " << m_Display.describe() << "\n"

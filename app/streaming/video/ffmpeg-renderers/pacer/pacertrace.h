@@ -37,6 +37,7 @@ typedef struct _PACER_TRACE_ROW {
     uint8_t tear;               // Presented with tearing permission
     uint8_t hostStep;           // Part of a host timestamp step, held like the frame before it
     uint8_t drainedBefore;      // Frames skipped since the previous row to clear the display's queue
+    uint8_t tearGuard;          // Held out of the previous frame's scanout to avoid tearing across it
 } PACER_TRACE_ROW, *PPACER_TRACE_ROW;
 
 // Writes one CSV row per presented frame and a summary on close. Rows are handed
@@ -115,6 +116,7 @@ private:
     uint64_t m_QueuedCounts[5];
     uint64_t m_ModeCounts[5];
     uint64_t m_QueueDrains;
+    uint64_t m_TearGuards;
 
     Histogram m_Spacing;
     Histogram m_Late;

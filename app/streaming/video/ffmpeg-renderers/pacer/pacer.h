@@ -106,6 +106,7 @@ private:
     double m_SmoothMaxUs;
     int m_ArrivalPercentile;
     double m_NoTearFraction;
+    int m_TearGuardUs;
 
     // What has been learned about the host's cadence
     int m_LearnFramesLeft;
@@ -144,6 +145,7 @@ private:
     int m_BacklogFrames;
     bool m_DrainNext;
     int64_t m_LastDrainUs;
+    int64_t m_LastPresentUs;
 
     // Trace bookkeeping
     uint64_t m_FrameIndex;
