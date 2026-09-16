@@ -25,6 +25,8 @@ typedef struct _PACER_TRACE_ROW {
     uint32_t presentId;         // Present count after this frame, 0 if unknown
     uint32_t displayedId;       // Present count of the latest frame the display had shown, 0 if unknown
     int64_t displayedUs;        // When the display showed it
+    uint32_t displayedRefresh;  // The display's refresh count when it showed it
+    uint32_t syncRefresh;       // The display's refresh count at displayedUs
     int8_t presentationMode;    // How it reached the screen (see PRESENT_FEEDBACK), -1 if unknown
     int64_t renderStartUs;      // When drawing started
     int64_t drawEndUs;          // When drawing finished
@@ -117,6 +119,9 @@ private:
     uint64_t m_ModeCounts[5];
     uint64_t m_QueueDrains;
     uint64_t m_TearGuards;
+    uint32_t m_LastDisplayedRefresh;
+    uint64_t m_RefreshSpans[4];
+    uint64_t m_SkippedPresents;
 
     Histogram m_Spacing;
     Histogram m_Late;

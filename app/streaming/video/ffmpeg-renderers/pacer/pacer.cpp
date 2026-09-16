@@ -1090,6 +1090,8 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
         row->presentId = feedback.presentId;
         row->displayedId = feedback.displayedId;
         row->displayedUs = feedback.displayedUs;
+        row->displayedRefresh = feedback.displayedRefresh;
+        row->syncRefresh = feedback.syncRefresh;
         row->presentationMode = (int8_t)feedback.presentationMode;
     }
 
