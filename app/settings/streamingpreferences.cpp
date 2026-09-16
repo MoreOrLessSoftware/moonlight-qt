@@ -112,6 +112,10 @@ void StreamingPreferences::reload()
 
 #ifdef Q_OS_DARWIN
     recommendedFullScreenMode = WindowMode::WM_FULLSCREEN_DESKTOP;
+#elif defined(Q_OS_WIN32)
+    // The D3D11 renderer presents through a windowed flip-model swapchain either way,
+    // so borderless gets the same path to the display without changing display modes.
+    recommendedFullScreenMode = WindowMode::WM_FULLSCREEN_DESKTOP;
 #else
     // Wayland doesn't support modesetting, so use fullscreen desktop mode
     // unless we have a slow GPU (which can take advantage of wp_viewporter
