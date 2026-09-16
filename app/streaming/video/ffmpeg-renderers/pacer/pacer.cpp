@@ -436,9 +436,11 @@ void Pacer::handleVsync(int timeUntilNextVsyncMillis)
     enqueueFrameForRenderingAndUnlock(m_PacingQueue.dequeue());
 }
 
-bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
+bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
 {
-    m_MaxVideoFps = maxVideoFps;
+    SDL_Window* window = params->window;
+
+    m_MaxVideoFps = params->frameRate;
     m_DisplayFps = StreamUtils::getDisplayRefreshRate(window);
     m_RendererAttributes = m_VsyncRenderer->getRendererAttributes();
 
@@ -451,6 +453,11 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing)
 
     if (enablePacing && cadenceAllowed &&
             m_VsyncRenderer->isRenderThreadSupported() && m_VsyncRenderer->supportsPresentTearing()) {
+        // What the user chose, which the environment variables below override
+        m_SmoothGain = qBound(1, params->pacingSmoothingPercent, 100) / 100.0;
+        m_ArrivalPercentile = qBound(50, params->pacingArrivalPercentile, 100);
+        m_NoTearFraction = qBound(0, params->pacingTearPercent, 100) / 100.0;
+
         if (qEnvironmentVariableIsSet("ML_PACING_SMOOTH")) {
             m_SmoothGain = qBound(1, qEnvironmentVariableIntValue("ML_PACING_SMOOTH"), 100) / 100.0;
         }

@@ -46,7 +46,7 @@ public:
 
     void submitFrame(AVFrame* frame);
 
-    bool initialize(SDL_Window* window, int maxVideoFps, bool enablePacing);
+    bool initialize(PDECODER_PARAMETERS params, bool enablePacing);
 
     void signalVsync();
 

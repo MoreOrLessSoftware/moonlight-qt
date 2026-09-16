@@ -850,6 +850,198 @@ Flickable {
 
         GroupBox {
 
+            id: framePacingGroupBox
+            width: (parent.width - (parent.leftPadding + parent.rightPadding))
+            padding: 12
+            title: "<font color=\"skyblue\">" + qsTr("Frame Pacing") + "</font>"
+            font.pointSize: 12
+
+            Column {
+                anchors.fill: parent
+                spacing: 5
+
+                Label {
+                    width: parent.width
+                    text: qsTr("These settings apply when Frame pacing is enabled in Video Settings.")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                Label {
+                    width: parent.width
+                    enabled: framePacingCheck.checked
+                    text: qsTr("Tearing")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                AutoResizingComboBox {
+                    function createModel() {
+                        var model = Qt.createQmlObject('import QtQuick 2.0; ListModel {}', parent, '')
+
+                        model.append({ text: qsTr("Never"), val: 0 })
+                        model.append({ text: qsTr("Below 80% of the refresh rate"), val: 80 })
+                        model.append({ text: qsTr("Below 90% of the refresh rate"), val: 90 })
+                        model.append({ text: qsTr("Below 96% of the refresh rate (Recommended)"), val: 96 })
+                        model.append({ text: qsTr("Always"), val: 100 })
+
+                        // Keep a value chosen elsewhere, such as by the environment variable
+                        var saved = StreamingPreferences.pacingTearPercent
+                        for (var i = 0; i < model.count; i++) {
+                            if (saved === model.get(i).val) {
+                                return model
+                            }
+                        }
+
+                        model.append({ text: qsTr("Below %1% of the refresh rate").arg(saved), val: saved })
+                        return model
+                    }
+
+                    function reinitialize() {
+                        model = createModel()
+                        currentIndex = 0
+
+                        var saved = StreamingPreferences.pacingTearPercent
+                        for (var i = 0; i < model.count; i++) {
+                            if (saved === model.get(i).val) {
+                                currentIndex = i
+                                break
+                            }
+                        }
+
+                        activated(currentIndex)
+                    }
+
+                    Component.onCompleted: {
+                        reinitialize()
+                        languageChanged.connect(reinitialize)
+                    }
+
+                    id: pacingTearComboBox
+                    enabled: framePacingCheck.checked
+                    hoverEnabled: true
+                    textRole: "text"
+                    onActivated: {
+                        StreamingPreferences.pacingTearPercent = model.get(currentIndex).val
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Tearing gives the lowest latency and is rarely visible on a variable refresh rate display. Frames are presented tear-free once the stream reaches this share of your display's refresh rate.")
+                }
+
+                Label {
+                    width: parent.width
+                    enabled: framePacingCheck.checked
+                    text: qsTr("Cadence smoothing")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                AutoResizingComboBox {
+                    function createModel() {
+                        var model = Qt.createQmlObject('import QtQuick 2.0; ListModel {}', parent, '')
+
+                        model.append({ text: qsTr("Off"), val: 100 })
+                        model.append({ text: qsTr("Light"), val: 50 })
+                        model.append({ text: qsTr("Normal (Recommended)"), val: 25 })
+                        model.append({ text: qsTr("Strong"), val: 12 })
+
+                        return model
+                    }
+
+                    function reinitialize() {
+                        model = createModel()
+                        currentIndex = 0
+
+                        var saved = StreamingPreferences.pacingSmoothingPercent
+                        for (var i = 0; i < model.count; i++) {
+                            if (saved === model.get(i).val) {
+                                currentIndex = i
+                                break
+                            }
+                        }
+
+                        activated(currentIndex)
+                    }
+
+                    Component.onCompleted: {
+                        reinitialize()
+                        languageChanged.connect(reinitialize)
+                    }
+
+                    id: pacingSmoothingComboBox
+                    enabled: framePacingCheck.checked
+                    hoverEnabled: true
+                    textRole: "text"
+                    onActivated: {
+                        StreamingPreferences.pacingSmoothingPercent = model.get(currentIndex).val
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("How much of the host's frame timing jitter is ironed out. Off follows the host's timing exactly. Stronger smoothing evens out more jitter but takes slightly longer to follow real frame rate changes.")
+                }
+
+                Label {
+                    width: parent.width
+                    enabled: framePacingCheck.checked
+                    text: qsTr("Network jitter tolerance")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                AutoResizingComboBox {
+                    function createModel() {
+                        var model = Qt.createQmlObject('import QtQuick 2.0; ListModel {}', parent, '')
+
+                        model.append({ text: qsTr("Lowest latency"), val: 90 })
+                        model.append({ text: qsTr("Balanced (Recommended)"), val: 97 })
+                        model.append({ text: qsTr("Smoothest"), val: 99 })
+
+                        return model
+                    }
+
+                    function reinitialize() {
+                        model = createModel()
+                        currentIndex = 0
+
+                        var saved = StreamingPreferences.pacingArrivalPercentile
+                        for (var i = 0; i < model.count; i++) {
+                            if (saved === model.get(i).val) {
+                                currentIndex = i
+                                break
+                            }
+                        }
+
+                        activated(currentIndex)
+                    }
+
+                    Component.onCompleted: {
+                        reinitialize()
+                        languageChanged.connect(reinitialize)
+                    }
+
+                    id: pacingJitterComboBox
+                    enabled: framePacingCheck.checked
+                    hoverEnabled: true
+                    textRole: "text"
+                    onActivated: {
+                        StreamingPreferences.pacingArrivalPercentile = model.get(currentIndex).val
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("How long frames wait for late arrivals from the network. Lowest latency shows frames sooner but more of them arrive after their turn; smoothest waits longer so fewer do.")
+                }
+            }
+        }
+
+        GroupBox {
+
             id: audioSettingsGroupBox
             width: (parent.width - (parent.leftPadding + parent.rightPadding))
             padding: 12

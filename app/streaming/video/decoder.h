@@ -44,6 +44,11 @@ typedef struct _DECODER_PARAMETERS {
     bool enableVsync;
     bool enableFramePacing;
     bool testOnly;
+
+    // The user's frame pacing settings. See Pacer::initialize().
+    int pacingTearPercent;
+    int pacingSmoothingPercent;
+    int pacingArrivalPercentile;
 } DECODER_PARAMETERS, *PDECODER_PARAMETERS;
 
 #define WINDOW_STATE_CHANGE_SIZE 0x01

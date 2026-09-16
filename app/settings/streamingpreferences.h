@@ -123,6 +123,9 @@ public:
     Q_PROPERTY(bool absoluteMouseMode MEMBER absoluteMouseMode NOTIFY absoluteMouseModeChanged)
     Q_PROPERTY(bool absoluteTouchMode MEMBER absoluteTouchMode NOTIFY absoluteTouchModeChanged)
     Q_PROPERTY(bool framePacing MEMBER framePacing NOTIFY framePacingChanged)
+    Q_PROPERTY(int pacingTearPercent MEMBER pacingTearPercent NOTIFY pacingTearPercentChanged)
+    Q_PROPERTY(int pacingSmoothingPercent MEMBER pacingSmoothingPercent NOTIFY pacingSmoothingPercentChanged)
+    Q_PROPERTY(int pacingArrivalPercentile MEMBER pacingArrivalPercentile NOTIFY pacingArrivalPercentileChanged)
     Q_PROPERTY(bool connectionWarnings MEMBER connectionWarnings NOTIFY connectionWarningsChanged)
     Q_PROPERTY(bool configurationWarnings MEMBER configurationWarnings NOTIFY configurationWarningsChanged)
     Q_PROPERTY(bool richPresence MEMBER richPresence NOTIFY richPresenceChanged)
@@ -164,6 +167,9 @@ public:
     bool absoluteMouseMode;
     bool absoluteTouchMode;
     bool framePacing;
+    int pacingTearPercent;
+    int pacingSmoothingPercent;
+    int pacingArrivalPercentile;
     bool connectionWarnings;
     bool configurationWarnings;
     bool richPresence;
@@ -210,6 +216,9 @@ signals:
     void uiDisplayModeChanged();
     void windowModeChanged();
     void framePacingChanged();
+    void pacingTearPercentChanged();
+    void pacingSmoothingPercentChanged();
+    void pacingArrivalPercentileChanged();
     void connectionWarningsChanged();
     void configurationWarningsChanged();
     void richPresenceChanged();

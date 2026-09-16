@@ -34,6 +34,9 @@
 #define SER_ABSTOUCHMODE "abstouchmode"
 #define SER_STARTWINDOWED "startwindowed"
 #define SER_FRAMEPACING "framepacing"
+#define SER_PACINGTEARPCT "pacingtearpct"
+#define SER_PACINGSMOOTHING "pacingsmoothing"
+#define SER_PACINGPERCENTILE "pacingpercentile"
 #define SER_CONNWARNINGS "connwarnings"
 #define SER_CONFWARNINGS "confwarnings"
 #define SER_UIDISPLAYMODE "uidisplaymode"
@@ -137,6 +140,9 @@ void StreamingPreferences::reload()
     absoluteMouseMode = settings.value(SER_ABSMOUSEMODE, false).toBool();
     absoluteTouchMode = settings.value(SER_ABSTOUCHMODE, true).toBool();
     framePacing = settings.value(SER_FRAMEPACING, false).toBool();
+    pacingTearPercent = settings.value(SER_PACINGTEARPCT, 96).toInt();
+    pacingSmoothingPercent = settings.value(SER_PACINGSMOOTHING, 25).toInt();
+    pacingArrivalPercentile = settings.value(SER_PACINGPERCENTILE, 97).toInt();
     connectionWarnings = settings.value(SER_CONNWARNINGS, true).toBool();
     configurationWarnings = settings.value(SER_CONFWARNINGS, true).toBool();
     richPresence = settings.value(SER_RICHPRESENCE, true).toBool();
@@ -335,6 +341,9 @@ void StreamingPreferences::save()
     settings.setValue(SER_ABSMOUSEMODE, absoluteMouseMode);
     settings.setValue(SER_ABSTOUCHMODE, absoluteTouchMode);
     settings.setValue(SER_FRAMEPACING, framePacing);
+    settings.setValue(SER_PACINGTEARPCT, pacingTearPercent);
+    settings.setValue(SER_PACINGSMOOTHING, pacingSmoothingPercent);
+    settings.setValue(SER_PACINGPERCENTILE, pacingArrivalPercentile);
     settings.setValue(SER_CONNWARNINGS, connectionWarnings);
     settings.setValue(SER_CONFWARNINGS, configurationWarnings);
     settings.setValue(SER_RICHPRESENCE, richPresence);
