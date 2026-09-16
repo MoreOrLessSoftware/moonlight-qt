@@ -146,6 +146,8 @@ typedef struct _PRESENT_FEEDBACK {
     uint32_t presentId;         // Present count after the frame just presented, 0 if unknown
     uint32_t displayedId;       // Present count of the latest frame the display has shown, 0 if unknown
     int64_t displayedUs;        // When that frame was shown, on the LiGetMicroseconds() clock
+    uint32_t displayedRefresh;  // The display's refresh count when it was shown, 0 if unknown
+    uint32_t syncRefresh;       // The display's refresh count at displayedUs, 0 if unknown
     int presentationMode;       // How it reached the screen: 0 composed, 1 hardware overlay, 2 none,
                                 // 3 composition failure (DXGI_FRAME_PRESENTATION_MODE), -1 if unknown
 } PRESENT_FEEDBACK, *PPRESENT_FEEDBACK;

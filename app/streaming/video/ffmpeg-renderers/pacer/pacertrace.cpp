@@ -90,6 +90,9 @@ PacerTrace::PacerTrace(int displayHz) :
     m_ModeCounts{},
     m_QueueDrains(0),
     m_TearGuards(0),
+    m_LastDisplayedRefresh(0),
+    m_RefreshSpans{},
+    m_SkippedPresents(0),
     m_WorstSpacingUs{},
     m_WorstFrame{}
 {
@@ -161,12 +164,13 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "#   presentation_mode: how that frame reached the screen: 0 composed by DWM, 1 hardware overlay,\n"
                     << "#   2 none, 3 composition failure, -1 unknown. queued_presents = present_id - displayed_id, this\n"
                     << "#   frame included. display_latency_us: present_us to displayed_us for frame displayed_id, on the\n"
-                    << "#   first row that names it.\n"
+                    << "#   first row that names it. displayed_refresh, sync_refresh: the display's refresh count\n"
+                    << "#   when that frame was shown, and at displayed_us.\n"
                     << "frame,host_us,arrival_us,smoothed_us,delay_us,target_us,render_start_us,present_us,"
                        "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,draw_us,present_call_us,"
                        "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step,"
                        "dequeue_us,draw_due_us,present_id,displayed_id,displayed_us,presentation_mode,queued_presents,"
-                       "display_latency_us,drained_before,tear_guard\n";
+                       "display_latency_us,drained_before,tear_guard,displayed_refresh,sync_refresh\n";
 
     trace->m_Thread = SDL_CreateThread(PacerTrace::writerThread, "PacerTrace", trace);
     if (trace->m_Thread == nullptr) {
@@ -377,6 +381,21 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
                 }
             }
 
+            // How the display spent its refreshes on the frames it showed, and the
+            // presents it never showed at all
+            if (row.displayedId != m_LastDisplayedId) {
+                if (m_LastDisplayedId != 0 && row.displayedId > m_LastDisplayedId + 1) {
+                    m_SkippedPresents += row.displayedId - m_LastDisplayedId - 1;
+                }
+
+                if (m_LastDisplayedRefresh != 0 && row.displayedRefresh > m_LastDisplayedRefresh) {
+                    uint32_t refreshes = row.displayedRefresh - m_LastDisplayedRefresh;
+                    m_RefreshSpans[qMin<uint32_t>(refreshes, 4) - 1]++;
+                }
+
+                m_LastDisplayedRefresh = row.displayedRefresh;
+            }
+
             m_LastDisplayedId = row.displayedId;
         }
     }
@@ -412,7 +431,9 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
              << queuedPresents << ','
              << displayLatencyUs << ','
              << (int)row.drainedBefore << ','
-             << (int)row.tearGuard << '\n';
+             << (int)row.tearGuard << ','
+             << row.displayedRefresh << ','
+             << row.syncRefresh << '\n';
 
     m_Previous = row;
     m_HavePrevious = true;
@@ -458,7 +479,10 @@ void PacerTrace::writeFooter()
                  << ", hardware overlay " << m_ModeCounts[2] << ", none " << m_ModeCounts[3]
                  << ", composition failure " << m_ModeCounts[4] << ", unknown " << m_ModeCounts[0] << "\n"
                  << "# display queue drains (one frame skipped to clear a frame left waiting in the display's queue): "
-                 << m_QueueDrains << "\n";
+                 << m_QueueDrains << "\n"
+                 << "# refreshes between frames the display showed, 1/2/3/4+: " << m_RefreshSpans[0] << '/'
+                 << m_RefreshSpans[1] << '/' << m_RefreshSpans[2] << '/' << m_RefreshSpans[3]
+                 << "; presents it never showed: " << m_SkippedPresents << "\n";
     }
     else {
         m_Stream << "# DXGI frame statistics: not read\n";

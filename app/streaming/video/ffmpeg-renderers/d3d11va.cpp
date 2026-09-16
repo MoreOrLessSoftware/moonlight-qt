@@ -1705,6 +1705,8 @@ bool D3D11VARenderer::getPresentFeedback(PPRESENT_FEEDBACK feedback)
     feedback->presentId = 0;
     feedback->displayedId = 0;
     feedback->displayedUs = 0;
+    feedback->displayedRefresh = 0;
+    feedback->syncRefresh = 0;
     feedback->presentationMode = -1;
 
     UINT presentCount;
@@ -1713,6 +1715,8 @@ bool D3D11VARenderer::getPresentFeedback(PPRESENT_FEEDBACK feedback)
     }
 
     UINT displayedCount = 0;
+    UINT displayedRefresh = 0;
+    UINT syncRefresh = 0;
     LARGE_INTEGER syncQpc = {};
     HRESULT hr = E_NOINTERFACE;
 
@@ -1721,6 +1725,8 @@ bool D3D11VARenderer::getPresentFeedback(PPRESENT_FEEDBACK feedback)
         hr = m_SwapChainMedia->GetFrameStatisticsMedia(&stats);
         if (SUCCEEDED(hr)) {
             displayedCount = stats.PresentCount;
+            displayedRefresh = stats.PresentRefreshCount;
+            syncRefresh = stats.SyncRefreshCount;
             syncQpc = stats.SyncQPCTime;
             feedback->presentationMode = (int)stats.CompositionMode;
         }
@@ -1731,6 +1737,8 @@ bool D3D11VARenderer::getPresentFeedback(PPRESENT_FEEDBACK feedback)
         hr = m_SwapChain->GetFrameStatistics(&stats);
         if (SUCCEEDED(hr)) {
             displayedCount = stats.PresentCount;
+            displayedRefresh = stats.PresentRefreshCount;
+            syncRefresh = stats.SyncRefreshCount;
             syncQpc = stats.SyncQPCTime;
         }
     }
@@ -1743,6 +1751,8 @@ bool D3D11VARenderer::getPresentFeedback(PPRESENT_FEEDBACK feedback)
         QueryPerformanceCounter(&nowQpc);
 
         feedback->displayedId = displayedCount;
+        feedback->displayedRefresh = displayedRefresh;
+        feedback->syncRefresh = syncRefresh;
         feedback->displayedUs = nowUs - (nowQpc.QuadPart - syncQpc.QuadPart) * 1000000 / m_QpcFrequency.QuadPart;
     }
     else if (FAILED(hr) && hr != DXGI_ERROR_FRAME_STATISTICS_DISJOINT && !m_FrameStatsFailureLogged) {
