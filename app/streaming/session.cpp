@@ -298,6 +298,13 @@ bool Session::chooseDecoder(StreamingPreferences::VideoDecoderSelection vds,
     params.vds = vds;
     params.renderer = renderer;
 
+    // Frame pacing settings come straight from the preferences, since every caller
+    // paces the same way
+    StreamingPreferences* pacingPrefs = StreamingPreferences::get();
+    params.pacingTearPercent = pacingPrefs->pacingTearPercent;
+    params.pacingSmoothingPercent = pacingPrefs->pacingSmoothingPercent;
+    params.pacingArrivalPercentile = pacingPrefs->pacingArrivalPercentile;
+
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "V-sync %s",
                 enableVsync ? "enabled" : "disabled");
