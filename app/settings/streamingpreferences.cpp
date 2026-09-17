@@ -144,8 +144,8 @@ void StreamingPreferences::reload()
     absoluteMouseMode = settings.value(SER_ABSMOUSEMODE, false).toBool();
     absoluteTouchMode = settings.value(SER_ABSTOUCHMODE, true).toBool();
     framePacing = settings.value(SER_FRAMEPACING, false).toBool();
-    pacingTearPercent = settings.value(SER_PACINGTEARPCT, 96).toInt();
-    pacingSmoothingPercent = settings.value(SER_PACINGSMOOTHING, 25).toInt();
+    pacingTearPercent = settings.value(SER_PACINGTEARPCT, 0).toInt();
+    pacingSmoothingPercent = settings.value(SER_PACINGSMOOTHING, 50).toInt();
     pacingArrivalPercentile = settings.value(SER_PACINGPERCENTILE, 97).toInt();
     connectionWarnings = settings.value(SER_CONNWARNINGS, true).toBool();
     configurationWarnings = settings.value(SER_CONFWARNINGS, true).toBool();

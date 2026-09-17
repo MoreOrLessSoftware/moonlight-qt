@@ -879,10 +879,10 @@ Flickable {
                     function createModel() {
                         var model = Qt.createQmlObject('import QtQuick 2.0; ListModel {}', parent, '')
 
-                        model.append({ text: qsTr("Never"), val: 0 })
+                        model.append({ text: qsTr("Never (Recommended)"), val: 0 })
                         model.append({ text: qsTr("Below 80% of the refresh rate"), val: 80 })
                         model.append({ text: qsTr("Below 90% of the refresh rate"), val: 90 })
-                        model.append({ text: qsTr("Below 96% of the refresh rate (Recommended)"), val: 96 })
+                        model.append({ text: qsTr("Below 96% of the refresh rate"), val: 96 })
                         model.append({ text: qsTr("Always"), val: 100 })
 
                         // Keep a value chosen elsewhere, such as by the environment variable
@@ -928,7 +928,7 @@ Flickable {
                     ToolTip.delay: 1000
                     ToolTip.timeout: 5000
                     ToolTip.visible: hovered
-                    ToolTip.text: qsTr("Tearing gives the lowest latency and is rarely visible on a variable refresh rate display. Frames are presented tear-free once the stream reaches this share of your display's refresh rate.")
+                    ToolTip.text: qsTr("Tearing gives the lowest latency and is rarely visible on a variable refresh rate display. Frames are presented tear-free once the stream reaches this share of your display's refresh rate. Default: Never.")
                 }
 
                 Label {
@@ -945,8 +945,7 @@ Flickable {
 
                         model.append({ text: qsTr("Off"), val: 100 })
                         model.append({ text: qsTr("Light"), val: 50 })
-                        model.append({ text: qsTr("Normal (Recommended)"), val: 25 })
-                        model.append({ text: qsTr("Strong"), val: 12 })
+                        model.append({ text: qsTr("Normal"), val: 25 })
 
                         return model
                     }
@@ -982,7 +981,7 @@ Flickable {
                     ToolTip.delay: 1000
                     ToolTip.timeout: 5000
                     ToolTip.visible: hovered
-                    ToolTip.text: qsTr("How much of the host's frame timing jitter is ironed out. Off follows the host's timing exactly. Stronger smoothing evens out more jitter but takes slightly longer to follow real frame rate changes.")
+                    ToolTip.text: qsTr("How much of the host's frame timing jitter is ironed out. Off follows the host's timing exactly. Stronger smoothing evens out more jitter but takes slightly longer to follow real frame rate changes. Default: Light.")
                 }
 
                 Label {
@@ -1035,7 +1034,7 @@ Flickable {
                     ToolTip.delay: 1000
                     ToolTip.timeout: 5000
                     ToolTip.visible: hovered
-                    ToolTip.text: qsTr("How long frames wait for late arrivals from the network. Lowest latency shows frames sooner but more of them arrive after their turn; smoothest waits longer so fewer do.")
+                    ToolTip.text: qsTr("How long frames wait for late arrivals from the network. Lowest latency shows frames sooner but more of them arrive after their turn; smoothest waits longer so fewer do. Default: Balanced.")
                 }
             }
         }
