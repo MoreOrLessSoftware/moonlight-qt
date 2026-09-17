@@ -736,6 +736,20 @@ int Pacer::cadenceThread(void* context)
         me->m_EvictedFrames = 0;
         me->m_FrameQueueLock.unlock();
 
+        // Two frames already waiting behind this one means we have fallen behind the
+        // host, and showing it would only keep us there. Decided before waiting for the
+        // frame to decode: a frame about to be dropped is not worth waiting for, and
+        // waiting for each one kept a slow decoder falling further behind. With decodes
+        // taking about 9 ms at 120 FPS, 7 of 36 drops in one session threw away 4-8
+        // frames at once as the queue overflowed behind those waits.
+        if (waiting >= 2) {
+            me->m_VideoStats->pacerDroppedFrames++;
+            me->m_DroppedSinceRow++;
+            me->m_FrameIndex++;
+            av_frame_free(&frame);
+            continue;
+        }
+
         PACER_TRACE_ROW row = {};
         row.dequeueUs = (int64_t)LiGetMicroseconds();
 
@@ -749,18 +763,14 @@ int Pacer::cadenceThread(void* context)
 
         int64_t targetUs = me->scheduleFrame(frame, &row);
 
-        // Two frames already waiting behind this one means we have fallen behind the
-        // host, and showing it would only keep us there. A frame held up in the
-        // display's queue is cleared the same way. See presentAt().
-        bool drain = me->m_DrainNext;
-        if (waiting >= 2 || drain) {
-            if (drain) {
-                me->m_DrainNext = false;
-                me->m_LastDrainUs = (int64_t)LiGetMicroseconds();
-                me->m_DrainedSinceRow++;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                            "Frame pacing: a frame kept waiting in the display's queue; skipped one frame to clear it");
-            }
+        // A frame held up in the display's queue is cleared by skipping one. See
+        // presentAt().
+        if (me->m_DrainNext) {
+            me->m_DrainNext = false;
+            me->m_LastDrainUs = (int64_t)LiGetMicroseconds();
+            me->m_DrainedSinceRow++;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Frame pacing: a frame kept waiting in the display's queue; skipped one frame to clear it");
 
             me->m_VideoStats->pacerDroppedFrames++;
             me->m_DroppedSinceRow++;
