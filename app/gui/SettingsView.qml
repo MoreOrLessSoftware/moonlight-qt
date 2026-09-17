@@ -883,7 +883,7 @@ Flickable {
                         model.append({ text: qsTr("Below 80% of the refresh rate"), val: 80 })
                         model.append({ text: qsTr("Below 90% of the refresh rate"), val: 90 })
                         model.append({ text: qsTr("Below 96% of the refresh rate"), val: 96 })
-                        model.append({ text: qsTr("Always"), val: 100 })
+                        model.append({ text: qsTr("Below the refresh rate"), val: 100 })
 
                         // Keep a value chosen elsewhere, such as by the environment variable
                         var saved = StreamingPreferences.pacingTearPercent
