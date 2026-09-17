@@ -107,20 +107,25 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 
 // Longest a tearing present is held to keep it out of the previous frame's scanout.
 // The display takes about one period at its top refresh rate to scan a frame out, and
-// a present landing inside that window tears across the picture. Over three sessions
-// about 1% of torn presents landed inside it, over half of them needing less than half
-// a millisecond to clear, so a short hold removes most tearing. Frames needing longer
-// are presented as they are rather than held that far, which also stops a hold from
-// pushing the frames behind it. At 2000 us, 13 of 156 presents that would have torn in
-// a 248 s session still did; at 3000 us it was 4 of 119, with the holds costing about
-// half a millisecond each. ML_PACING_TEAR_GUARD_US sets it, and 0 turns it off.
-#define CADENCE_TEAR_GUARD_US 3000
+// a present landing inside that window tears across the picture, lower down the
+// closer it lands to the end. A frame needing longer is still held this far, which
+// moves its tear down the picture rather than leaving it where it was.
+//
+// A source capped just under the refresh rate lands inside the window often, but
+// barely: at 96 FPS on a 100 Hz panel with no hold, 378 of 8275 presents did, by 89 us
+// at the median and 510 us at the 90th percentile, nearly all tearing in the bottom
+// tenth of the picture. The hold used to be 3000 us, and a frame needing longer was
+// presented on schedule instead. With the margin below, holds pushed each frame
+// behind them further back until one passed that and went out on schedule, 7 ms
+// after the frame before it: 72 tears 70% of the way down in 31 s at 97 FPS.
+// ML_PACING_TEAR_GUARD_US sets it, and 0 turns it off.
+#define CADENCE_TEAR_GUARD_US 1000
 
 // Held this far past the end of the scanout, so that the jitter in when Present()
-// returns does not leave the frame just inside it after all. Without it, 53 of 105
-// presents that would have torn in a 269 s session still landed inside the window,
-// missing it by 44 us at the median.
-#define CADENCE_TEAR_GUARD_MARGIN_US 400
+// returns does not leave the frame just inside it after all. Kept small, since a
+// source a little under the refresh rate has only a few hundred microseconds a frame
+// to catch up from a hold: at 400 us, a 97 FPS source had almost none.
+#define CADENCE_TEAR_GUARD_MARGIN_US 100
 
 // Longest believable gap between two host frames. Past it the timeline is learned again.
 #define CADENCE_MAX_HOST_GAP_US 1000000
@@ -1028,12 +1033,12 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
     }
 
     // Keep a tearing present out of the previous frame's scanout, where it would tear
-    // across the picture, as long as that means a short wait. See CADENCE_TEAR_GUARD_US.
+    // across the picture, holding it no longer than CADENCE_TEAR_GUARD_US.
     if (m_Tearing && m_TearGuardUs > 0 && m_DisplayFps > 0 && m_LastPresentUs != 0) {
         int64_t scanoutEndUs = m_LastPresentUs + 1000000 / m_DisplayFps + CADENCE_TEAR_GUARD_MARGIN_US;
 
-        if (targetUs < scanoutEndUs && scanoutEndUs - targetUs <= m_TearGuardUs) {
-            targetUs = scanoutEndUs;
+        if (targetUs < scanoutEndUs) {
+            targetUs = qMin(scanoutEndUs, targetUs + m_TearGuardUs);
             row->tearGuard = 1;
         }
     }
