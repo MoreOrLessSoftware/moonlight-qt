@@ -945,7 +945,7 @@ Flickable {
 
                         model.append({ text: qsTr("Off"), val: 100 })
                         model.append({ text: qsTr("Light"), val: 50 })
-                        model.append({ text: qsTr("Normal"), val: 25 })
+                        model.append({ text: qsTr("Strong"), val: 25 })
 
                         return model
                     }
