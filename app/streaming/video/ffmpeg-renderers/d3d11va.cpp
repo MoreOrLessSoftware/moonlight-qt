@@ -962,10 +962,9 @@ void D3D11VARenderer::renderOverlay(Overlay::OverlayType type)
         return;
     }
 
-    // If the overlay is being updated, just skip rendering it this frame
-    if (!SDL_AtomicTryLock(&m_OverlayLock)) {
-        return;
-    }
+    // Wait out an update rather than skip the overlay: the lock only covers swapping these
+    // pointers, and a frame drawn without the overlay made it flash
+    SDL_AtomicLock(&m_OverlayLock);
 
     // Reference these objects so they don't immediately go away if the
     // overlay update thread tries to release them.
@@ -1230,17 +1229,24 @@ void D3D11VARenderer::notifyOverlayUpdated(Overlay::OverlayType type)
         return;
     }
 
-    SDL_AtomicLock(&m_OverlayLock);
-    ComPtr<ID3D11Texture2D> oldTexture = std::move(m_OverlayTextures[type]);
-    ComPtr<ID3D11Buffer> oldVertexBuffer = std::move(m_OverlayVertexBuffers[type]);
-    ComPtr<ID3D11ShaderResourceView> oldTextureResourceView = std::move(m_OverlayTextureResourceViews[type]);
-    SDL_AtomicUnlock(&m_OverlayLock);
-
-    // If the overlay is disabled, we're done
+    // If the overlay is disabled, take it down and we're done
     if (!overlayEnabled) {
+        ComPtr<ID3D11Texture2D> oldTexture;
+        ComPtr<ID3D11Buffer> oldVertexBuffer;
+        ComPtr<ID3D11ShaderResourceView> oldTextureResourceView;
+
+        SDL_AtomicLock(&m_OverlayLock);
+        oldTexture = std::move(m_OverlayTextures[type]);
+        oldVertexBuffer = std::move(m_OverlayVertexBuffers[type]);
+        oldTextureResourceView = std::move(m_OverlayTextureResourceViews[type]);
+        SDL_AtomicUnlock(&m_OverlayLock);
+
         SDL_FreeSurface(newSurface);
         return;
     }
+
+    // The old overlay stays up until the new one is ready below. Taking it down first left a
+    // gap while the new one was created, and a frame drawn in it had no overlay: it flashed.
 
     // Create a texture with our pixel data
     SDL_assert(!SDL_MUSTLOCK(newSurface));
@@ -1293,10 +1299,12 @@ void D3D11VARenderer::notifyOverlayUpdated(Overlay::OverlayType type)
     SDL_FreeSurface(newSurface);
     newSurface = nullptr;
 
+    // Swap the new overlay in. The old one is released once the lock is dropped, and a frame
+    // drawing it holds its own references.
     SDL_AtomicLock(&m_OverlayLock);
-    m_OverlayVertexBuffers[type] = std::move(newVertexBuffer);
-    m_OverlayTextures[type] = std::move(newTexture);
-    m_OverlayTextureResourceViews[type] = std::move(newTextureResourceView);
+    std::swap(m_OverlayVertexBuffers[type], newVertexBuffer);
+    std::swap(m_OverlayTextures[type], newTexture);
+    std::swap(m_OverlayTextureResourceViews[type], newTextureResourceView);
     SDL_AtomicUnlock(&m_OverlayLock);
 }
 
