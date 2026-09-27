@@ -13,6 +13,8 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 }
 
+class PyrowaveDecoder;
+
 class FFmpegVideoDecoder : public IVideoDecoder {
 public:
     FFmpegVideoDecoder(bool testOnly);
@@ -100,6 +102,18 @@ private:
     enum AVPixelFormat ffGetFormat(AVCodecContext* context,
                                    const enum AVPixelFormat* pixFmts);
 
+    // Stats for a frame that came in from the host
+    void recordReceivedFrame(PDECODE_UNIT du);
+
+    // Timing and metadata for a decoded frame, then hands it to the pacer. du is the
+    // frame it was decoded from, if known.
+    void deliverDecodedFrame(AVFrame* frame, const DECODE_UNIT* du);
+
+    // PyroWave decodes outside FFmpeg, straight into frames the D3D11 renderer draws
+    bool initializePyrowave(PDECODER_PARAMETERS params);
+    int submitPyrowaveDecodeUnit(PDECODE_UNIT du);
+    void pyrowaveDecoderThreadProc();
+
     void decoderThreadProc();
 
     static int decoderThreadProcThunk(void* context);
@@ -132,6 +146,7 @@ private:
     TestMode m_CurrentTestMode;
     SDL_Thread* m_DecoderThread;
     SDL_atomic_t m_DecoderThreadShouldQuit;
+    PyrowaveDecoder* m_Pyrowave;
 
     // Data buffers in the queued DU are not valid
     QQueue<DECODE_UNIT> m_FrameInfoQueue;

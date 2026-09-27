@@ -34,6 +34,10 @@ public:
     virtual bool waitForDecode(uint64_t decodeBoundary) override;
     virtual bool getPresentFeedback(PPRESENT_FEEDBACK feedback) override;
 
+    // For decoders outside FFmpeg (PyroWave): a pool of frames on the decode device
+    // that renders like the hardware decoder's. The caller owns the returned reference.
+    AVBufferRef* createFramesContext(AVPixelFormat swFormat, int width, int height, int poolSize, UINT bindFlags);
+
     enum PixelShaders {
         GENERIC_YUV_420,
         GENERIC_AYUV,
