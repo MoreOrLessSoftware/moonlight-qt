@@ -1801,6 +1801,15 @@ Flickable {
                 AutoResizingComboBox {
                     // ignore setting the index at first, and actually set it when the component is loaded
                     Component.onCompleted: {
+                        // PyroWave is only implemented for Windows (D3D11 + Vulkan interop)
+                        if (Qt.platform.os !== "windows") {
+                            for (var j = codecListModel.count - 1; j >= 0; j--) {
+                                if (codecListModel.get(j).val === StreamingPreferences.VCC_FORCE_PYROWAVE) {
+                                    codecListModel.remove(j)
+                                }
+                            }
+                        }
+
                         var saved_vcc = StreamingPreferences.videoCodecConfig
 
                         // Default to Automatic (relevant if HDR is enabled,
@@ -1837,6 +1846,10 @@ Flickable {
                         ListElement {
                             text: qsTr("AV1")
                             val: StreamingPreferences.VCC_FORCE_AV1
+                        }
+                        ListElement {
+                            text: qsTr("PyroWave (Experimental, 200+ Mbps LAN)")
+                            val: StreamingPreferences.VCC_FORCE_PYROWAVE
                         }
                     }
                     // ::onActivated must be used, as it only listens for when the index is changed by a human

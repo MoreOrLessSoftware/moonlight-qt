@@ -737,7 +737,10 @@ bool Session::initialize(QQuickWindow* qtWindow)
                 "Audio channel mask: %X",
                 CHANNEL_MASK_FROM_AUDIO_CONFIGURATION(m_StreamConfig.audioConfiguration));
 
-    // Start with all codecs and profiles in priority order
+    // Start with all codecs and profiles in priority order. PyroWave is only
+    // used when chosen explicitly, and is removed below otherwise.
+    m_SupportedVideoFormats.append(VIDEO_FORMAT_PYROWAVE_10BIT);
+    m_SupportedVideoFormats.append(VIDEO_FORMAT_PYROWAVE);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_AV1_HIGH10_444);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_AV1_MAIN10);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_H265_REXT10_444);
@@ -748,6 +751,10 @@ bool Session::initialize(QQuickWindow* qtWindow)
     m_SupportedVideoFormats.append(VIDEO_FORMAT_H265);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_H264_HIGH8_444);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_H264);
+
+    if (m_Preferences->videoCodecConfig != StreamingPreferences::VCC_FORCE_PYROWAVE) {
+        m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_PYROWAVE);
+    }
 
     switch (m_Preferences->videoCodecConfig)
     {
@@ -870,6 +877,11 @@ bool Session::initialize(QQuickWindow* qtWindow)
         // straight to H.264 if the user asked for AV1 and the host doesn't support it.
         m_SupportedVideoFormats.removeByMask(~(VIDEO_FORMAT_MASK_AV1 | VIDEO_FORMAT_MASK_H265));
         break;
+    case StreamingPreferences::VCC_FORCE_PYROWAVE:
+        // Fall back to HEVC, then H.264, if the host or this PC can't do PyroWave.
+        // PyroWave has no 4:4:4 mode here yet.
+        m_SupportedVideoFormats.removeByMask(~(VIDEO_FORMAT_MASK_PYROWAVE | VIDEO_FORMAT_H265 | VIDEO_FORMAT_H265_MAIN10 | VIDEO_FORMAT_H264));
+        break;
     }
 
     // NB: Since deprioritization puts codecs in reverse order (at the bottom of the list),
@@ -989,6 +1001,26 @@ bool Session::validateLaunch(SDL_Window* testWindow)
 
     if (m_Preferences->videoDecoderSelection == StreamingPreferences::VDS_FORCE_SOFTWARE) {
         emitLaunchWarning(tr("Your settings selection to force software decoding may cause poor streaming performance."));
+    }
+
+    if (m_SupportedVideoFormats & VIDEO_FORMAT_MASK_PYROWAVE) {
+        if (m_SupportedVideoFormats.maskByServerCodecModes(m_Computer->serverCodecModeSupport & SCM_MASK_PYROWAVE) == 0) {
+            emitLaunchWarning(tr("Your host PC doesn't support PyroWave. It needs the matching Sunshine build with libpyrowave-shared-0.dll next to sunshine.exe."));
+            m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_PYROWAVE);
+        }
+        else if (getDecoderAvailability(testWindow,
+                                        m_Preferences->videoDecoderSelection,
+                                        (m_Preferences->enableHdr && (m_SupportedVideoFormats & VIDEO_FORMAT_PYROWAVE_10BIT)) ?
+                                            VIDEO_FORMAT_PYROWAVE_10BIT : VIDEO_FORMAT_PYROWAVE,
+                                        m_StreamConfig.width,
+                                        m_StreamConfig.height,
+                                        m_StreamConfig.fps) == DecoderAvailability::None) {
+            emitLaunchWarning(tr("This PC can't decode PyroWave. It needs a D3D11 GPU with Vulkan 1.3 and libpyrowave-shared-0.dll next to Moonlight.exe."));
+            m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_PYROWAVE);
+        }
+        else {
+            m_SupportedVideoFormats.removeByMask(~(VIDEO_FORMAT_MASK_PYROWAVE | VIDEO_FORMAT_H264));
+        }
     }
 
     if (m_SupportedVideoFormats & VIDEO_FORMAT_MASK_AV1) {

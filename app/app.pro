@@ -399,12 +399,15 @@ win32:!winrt {
     SOURCES += \
         streaming/video/ffmpeg-renderers/dxva2.cpp \
         streaming/video/ffmpeg-renderers/d3d11va.cpp \
-        streaming/video/ffmpeg-renderers/pacer/dxvsyncsource.cpp
+        streaming/video/ffmpeg-renderers/pacer/dxvsyncsource.cpp \
+        streaming/video/pyrowave/pyrowavedecoder.cpp
 
     HEADERS += \
         streaming/video/ffmpeg-renderers/dxva2.h \
         streaming/video/ffmpeg-renderers/d3d11va.h \
-        streaming/video/ffmpeg-renderers/pacer/dxvsyncsource.h
+        streaming/video/ffmpeg-renderers/pacer/dxvsyncsource.h \
+        streaming/video/pyrowave/pyrowavedecoder.h \
+        streaming/video/pyrowave/pyrowave.h
 }
 macx {
     message(VideoToolbox renderer selected)

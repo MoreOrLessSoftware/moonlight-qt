@@ -16,6 +16,7 @@ extern "C" {
 #ifdef Q_OS_WIN32
 #include "ffmpeg-renderers/dxva2.h"
 #include "ffmpeg-renderers/d3d11va.h"
+#include "pyrowave/pyrowavedecoder.h"
 #endif
 
 #ifdef Q_OS_DARWIN
@@ -61,6 +62,11 @@ extern "C" {
 
 bool FFmpegVideoDecoder::isHardwareAccelerated()
 {
+    // PyroWave decodes on the GPU, in compute shaders
+    if (m_Pyrowave != nullptr) {
+        return true;
+    }
+
     return m_HwDecodeCfg != nullptr ||
             (getAVCodecCapabilities(m_VideoDecoderCtx->codec) & AV_CODEC_CAP_HARDWARE) != 0;
 }
@@ -77,6 +83,13 @@ bool FFmpegVideoDecoder::isHdrSupported()
 
 void FFmpegVideoDecoder::setHdrMode(bool enabled)
 {
+#ifdef Q_OS_WIN32
+    // PyroWave frames carry no colorimetry, so their decoder has to be told
+    if (m_Pyrowave != nullptr) {
+        m_Pyrowave->setHdrMode(enabled);
+    }
+#endif
+
     m_FrontendRenderer->setHdrMode(enabled);
 }
 
@@ -98,7 +111,12 @@ int FFmpegVideoDecoder::getDecoderCapabilities()
         // Start with the backend renderer's capabilities
         capabilities = m_BackendRenderer->getDecoderCapabilities();
 
-        if (!isHardwareAccelerated()) {
+        if (m_Pyrowave != nullptr) {
+            // Every PyroWave frame decodes on its own. There are no slices or
+            // reference frames to invalidate.
+            capabilities = 0;
+        }
+        else if (!isHardwareAccelerated()) {
             // Slice up to 4 times for parallel CPU decoding, once slice per core
             int slices = qMin(MAX_SLICES, SDL_GetCPUCount());
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -162,6 +180,11 @@ int FFmpegVideoDecoder::getDecoderColorspace()
 
 int FFmpegVideoDecoder::getDecoderColorRange()
 {
+    // PyroWave is always full range
+    if (m_Pyrowave != nullptr) {
+        return COLOR_RANGE_FULL;
+    }
+
     return m_FrontendRenderer->getDecoderColorRange();
 }
 
@@ -236,7 +259,8 @@ FFmpegVideoDecoder::FFmpegVideoDecoder(bool testOnly)
       m_NeedsSpsFixup(false),
       m_TestOnly(testOnly),
       m_CurrentTestMode(TestMode::TestFrameOnly),
-      m_DecoderThread(nullptr)
+      m_DecoderThread(nullptr),
+      m_Pyrowave(nullptr)
 {
     SDL_zero(m_ActiveWndVideoStats);
     SDL_zero(m_LastWndVideoStats);
@@ -287,6 +311,12 @@ void FFmpegVideoDecoder::reset()
     // since the codec context may be referencing objects that we
     // need to delete in the renderer destructor.
     avcodec_free_context(&m_VideoDecoderCtx);
+
+#ifdef Q_OS_WIN32
+    // Same for the PyroWave decoder, which holds the renderer's frame pool
+    delete m_Pyrowave;
+    m_Pyrowave = nullptr;
+#endif
 
     if (m_CurrentTestMode != TestMode::TestFrameOnly) {
         Session::get()->getOverlayManager().setOverlayRenderer(nullptr);
@@ -1631,8 +1661,80 @@ bool FFmpegVideoDecoder::tryInitializeNonHwAccelDecoder(PDECODER_PARAMETERS para
     return false;
 }
 
+bool FFmpegVideoDecoder::initializePyrowave(PDECODER_PARAMETERS params)
+{
+#ifdef Q_OS_WIN32
+    // Pass 1 keeps the renderer from deferring to DXVA2, which can't draw these frames
+    auto renderer = new D3D11VARenderer(1);
+    m_BackendRenderer = renderer;
+    if (!initializeRendererInternal(m_BackendRenderer, params)) {
+        reset();
+        return false;
+    }
+
+    m_Pyrowave = new PyrowaveDecoder();
+    if (!m_Pyrowave->initialize(renderer, params, m_BackendRenderer->getDecoderColorspace())) {
+        reset();
+        return false;
+    }
+
+    if (!createFrontendRenderer(params, false)) {
+        reset();
+        return false;
+    }
+
+    m_RequiredPixelFormat = AV_PIX_FMT_NONE;
+    m_OriginalVideoWidth = params->width;
+    m_OriginalVideoHeight = params->height;
+    m_StreamFps = params->frameRate;
+    m_VideoFormat = params->videoFormat;
+    m_NeedsSpsFixup = false;
+
+    // Setting everything up is the test. There's no test frame to decode.
+    m_CurrentTestMode = m_TestOnly ? TestMode::TestFrameOnly : TestMode::NoTesting;
+    if (m_CurrentTestMode == TestMode::TestFrameOnly) {
+        return true;
+    }
+
+    m_Pacer = new Pacer(m_FrontendRenderer, &m_ActiveWndVideoStats);
+    if (!m_Pacer->initialize(params,
+                             params->enableFramePacing || (params->enableVsync && (m_FrontendRenderer->getRendererAttributes() & RENDERER_ATTRIBUTE_FORCE_PACING)))) {
+        reset();
+        return false;
+    }
+
+    // Tell overlay manager to use this frontend renderer
+    Session::get()->getOverlayManager().setOverlayRenderer(m_FrontendRenderer);
+
+    // Allow the renderer to perform final preparations for rendering
+    m_FrontendRenderer->prepareToRender();
+
+    m_DecoderThread = SDL_CreateThread(FFmpegVideoDecoder::decoderThreadProcThunk, "PyroWave", (void*)this);
+    if (m_DecoderThread == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "Failed to create decoder thread: %s", SDL_GetError());
+        reset();
+        return false;
+    }
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Renderer '%s' chosen for PyroWave",
+                m_FrontendRenderer->getRendererName());
+    return true;
+#else
+    Q_UNUSED(params);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                 "PyroWave is only supported on Windows");
+    return false;
+#endif
+}
+
 bool FFmpegVideoDecoder::initialize(PDECODER_PARAMETERS params)
 {
+    if (params->videoFormat & VIDEO_FORMAT_MASK_PYROWAVE) {
+        return initializePyrowave(params);
+    }
+
     // Increase log level until the first frame is decoded
     av_log_set_level(AV_LOG_DEBUG);
 
@@ -1855,8 +1957,258 @@ int FFmpegVideoDecoder::decoderThreadProcThunk(void *context)
     return 0;
 }
 
+void FFmpegVideoDecoder::deliverDecodedFrame(AVFrame* frame, const DECODE_UNIT* du)
+{
+    // Attach HDR metadata to the frame if it's not already present. We will defer to
+    // any metadata contained in the bitstream itself since that is guaranteed to be
+    // correctly synchronized to each frame, unlike our async HDR metadata message.
+    SS_HDR_METADATA hdrMetadata;
+    if (LiGetHdrMetadata(&hdrMetadata)) {
+        if (av_frame_get_side_data(frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA) == nullptr) {
+            auto mdm = av_mastering_display_metadata_create_side_data(frame);
+
+            mdm->display_primaries[0][0] = av_make_q(hdrMetadata.displayPrimaries[0].x, 50000);
+            mdm->display_primaries[0][1] = av_make_q(hdrMetadata.displayPrimaries[0].y, 50000);
+            mdm->display_primaries[1][0] = av_make_q(hdrMetadata.displayPrimaries[1].x, 50000);
+            mdm->display_primaries[1][1] = av_make_q(hdrMetadata.displayPrimaries[1].y, 50000);
+            mdm->display_primaries[2][0] = av_make_q(hdrMetadata.displayPrimaries[2].x, 50000);
+            mdm->display_primaries[2][1] = av_make_q(hdrMetadata.displayPrimaries[2].y, 50000);
+
+            mdm->white_point[0] = av_make_q(hdrMetadata.whitePoint.x, 50000);
+            mdm->white_point[1] = av_make_q(hdrMetadata.whitePoint.y, 50000);
+
+            mdm->min_luminance = av_make_q(hdrMetadata.minDisplayLuminance, 10000);
+            mdm->max_luminance = av_make_q(hdrMetadata.maxDisplayLuminance, 1);
+
+            mdm->has_luminance = hdrMetadata.maxDisplayLuminance != 0 ? 1 : 0;
+            mdm->has_primaries = hdrMetadata.displayPrimaries[0].x != 0 ? 1 : 0;
+        }
+
+        if ((hdrMetadata.maxContentLightLevel != 0 || hdrMetadata.maxFrameAverageLightLevel != 0) &&
+                av_frame_get_side_data(frame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL) == nullptr) {
+            auto clm = av_content_light_metadata_create_side_data(frame);
+
+            clm->MaxCLL = hdrMetadata.maxContentLightLevel;
+            clm->MaxFALL = hdrMetadata.maxFrameAverageLightLevel;
+        }
+    }
+
+    // Some encoders (like RDNA3's AV1 encoder) include excess padding and expect us
+    // to crop it off. If we find our received frame looks close to our requested
+    // size (where "close" is arbitrarily defined as "within 64 pixels") then just
+    // crop the video to our requested size instead.
+    if (frame->width != m_OriginalVideoWidth || frame->height != m_OriginalVideoHeight) {
+        int cropWidth = frame->width - m_OriginalVideoWidth;
+        int cropHeight = frame->height - m_OriginalVideoHeight;
+
+        if (cropWidth >= 0 && cropWidth < 64 && cropHeight >= 0 && cropHeight < 64) {
+            if (m_FramesOut == 1) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "Cropping incoming frames from (%d, %d) to (%d, %d)",
+                            frame->width,
+                            frame->height,
+                            m_OriginalVideoWidth,
+                            m_OriginalVideoHeight);
+            }
+
+            // We assume that all padding is added to the right and bottom.
+            // This is true for the known affected encoders.
+            frame->crop_right = cropWidth;
+            frame->crop_bottom = cropHeight;
+            av_frame_apply_cropping(frame, 0);
+        }
+    }
+
+    // Some decoders don't propagate color metadata from the bitstream,
+    // so we will try to guess it here if it was unset.
+    if (frame->color_range == AVCOL_RANGE_UNSPECIFIED) {
+        switch (getDecoderColorRange()) {
+        case COLOR_RANGE_LIMITED:
+            frame->color_range = AVCOL_RANGE_MPEG;
+            break;
+        case COLOR_RANGE_FULL:
+            frame->color_range = AVCOL_RANGE_JPEG;
+            break;
+        }
+    }
+    if (frame->colorspace == AVCOL_SPC_UNSPECIFIED) {
+        switch (getDecoderColorspace()) {
+        case COLORSPACE_REC_601:
+            frame->colorspace = AVCOL_SPC_SMPTE170M;
+            break;
+        case COLORSPACE_REC_709:
+            frame->colorspace = AVCOL_SPC_BT709;
+            break;
+        case COLORSPACE_REC_2020:
+            frame->colorspace = AVCOL_SPC_BT2020_NCL;
+            break;
+        }
+
+        // HDR forces BT.2020 regardless of decoder preference
+        if (LiGetCurrentHostDisplayHdrMode()) {
+            frame->colorspace = AVCOL_SPC_BT2020_NCL;
+        }
+    }
+    if (frame->color_primaries == AVCOL_PRI_UNSPECIFIED) {
+        switch (frame->colorspace) {
+        case AVCOL_SPC_BT709:
+            frame->color_primaries = AVCOL_PRI_BT709;
+            break;
+        case AVCOL_SPC_SMPTE170M:
+            frame->color_primaries = AVCOL_PRI_SMPTE170M;
+            break;
+        case AVCOL_SPC_BT2020_NCL:
+        case AVCOL_SPC_BT2020_CL:
+            frame->color_primaries = AVCOL_PRI_BT2020;
+            break;
+        default:
+            break;
+        }
+    }
+    if (frame->color_trc == AVCOL_TRC_UNSPECIFIED) {
+        switch (frame->colorspace) {
+        case AVCOL_SPC_BT709:
+            frame->color_trc = AVCOL_TRC_BT709;
+            break;
+        case AVCOL_SPC_SMPTE170M:
+            frame->color_trc = AVCOL_TRC_SMPTE170M;
+            break;
+        case AVCOL_SPC_BT2020_NCL:
+        case AVCOL_SPC_BT2020_CL:
+            frame->color_trc = AVCOL_TRC_BT2020_10;
+            break;
+        default:
+            break;
+        }
+
+        // HDR forces SMPTE 2084 PQ regardless of decoder preference
+        if (LiGetCurrentHostDisplayHdrMode()) {
+            frame->color_trc = AVCOL_TRC_SMPTE2084;
+        }
+    }
+
+    // Reset failed decodes count if we reached this far
+    m_ConsecutiveFailedDecodes = 0;
+
+    // Restore default log level after a successful decode
+    av_log_set_level(AV_LOG_INFO);
+
+    // Capture a frame timestamp to measuring pacing delay
+    frame->pkt_dts = LiGetMicroseconds();
+
+    // Mark the GPU work behind this frame, so it can be waited for exactly.
+    // Zero when the renderer has nothing to wait for.
+    ML_FRAME_DECODE_BOUNDARY(frame) = (int64_t)m_FrontendRenderer->captureDecodeBoundary();
+
+#ifdef Q_OS_WIN32
+    // The boundary is signaled on the context PyroWave packs frames on, and a signal
+    // only reaches the GPU when that context is flushed. Without this the renderer
+    // could wait for it until the next frame's packing.
+    if (m_Pyrowave != nullptr && ML_FRAME_DECODE_BOUNDARY(frame) != 0) {
+        m_Pyrowave->flush();
+    }
+#endif
+
+    // Zero means there is no host capture time for this frame
+    frame->pts = 0;
+
+    if (du != nullptr) {
+        // Data buffers in the DU are not valid here!
+
+        // Count time in avcodec_send_packet() and avcodec_receive_frame()
+        // as time spent decoding. Also count time spent in the decode unit
+        // queue because that's directly caused by decoder latency.
+        m_ActiveWndVideoStats.totalDecodeTimeUs += (LiGetMicroseconds() - du->enqueueTimeUs);
+
+        // Store the host's capture time in microseconds. Frame pacing
+        // follows the host's cadence from these.
+        frame->pts = (int64_t)du->presentationTimeUs;
+
+        // And when its packets arrived, for the pacing trace
+        uint64_t sinceFirstUs = (uint64_t)qBound<int64_t>(0, frame->pkt_dts - (int64_t)du->receiveTimeUs, UINT32_MAX);
+        uint64_t sinceLastUs = (uint64_t)qBound<int64_t>(0, frame->pkt_dts - (int64_t)du->enqueueTimeUs, UINT32_MAX);
+        ML_FRAME_RECEIVE_TIMING(frame) = (int64_t)(sinceFirstUs << 32 | sinceLastUs);
+    }
+    else {
+        ML_FRAME_RECEIVE_TIMING(frame) = 0;
+    }
+
+    m_ActiveWndVideoStats.decodedFrames++;
+
+    // Queue the frame for rendering (or render now if pacer is disabled)
+    m_Pacer->submitFrame(frame);
+}
+
+void FFmpegVideoDecoder::pyrowaveDecoderThreadProc()
+{
+    // Each frame decodes synchronously, so there is never output waiting
+    while (!SDL_AtomicGet(&m_DecoderThreadShouldQuit)) {
+        VIDEO_FRAME_HANDLE handle;
+        PDECODE_UNIT du;
+
+        // Block until we receive a new frame from the host
+        if (!LiWaitForNextVideoFrame(&handle, &du)) {
+            // This might be a signal from the main thread to exit
+            continue;
+        }
+
+        LiCompleteVideoFrame(handle, submitPyrowaveDecodeUnit(du));
+    }
+}
+
+int FFmpegVideoDecoder::submitPyrowaveDecodeUnit(PDECODE_UNIT du)
+{
+#ifdef Q_OS_WIN32
+    recordReceivedFrame(du);
+
+    // Gather the frame into one buffer
+    m_DecodeBuffer.reserve(du->fullLength);
+    int offset = 0;
+    for (PLENTRY entry = du->bufferList; entry != nullptr; entry = entry->next) {
+        memcpy(&m_DecodeBuffer.data()[offset], entry->data, entry->length);
+        offset += entry->length;
+    }
+
+    m_ActiveWndVideoStats.totalReassemblyTimeUs += (du->enqueueTimeUs - du->receiveTimeUs);
+
+    AVFrame* frame = m_Pyrowave->decode((const uint8_t*)m_DecodeBuffer.constData(), offset);
+    if (frame == nullptr) {
+        // If we've failed a bunch of decodes in a row, the decoder/renderer is
+        // clearly unhealthy, so let's generate a synthetic reset event to trigger
+        // the event loop to destroy and recreate the decoder.
+        if (++m_ConsecutiveFailedDecodes == FAILED_DECODES_RESET_THRESHOLD) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "Resetting decoder due to consistent failure");
+
+            SDL_Event event;
+            event.type = SDL_RENDER_DEVICE_RESET;
+            SDL_PushEvent(&event);
+
+            // Don't consume any additional data
+            SDL_AtomicSet(&m_DecoderThreadShouldQuit, 1);
+        }
+
+        // Every frame is a key frame, so the next one recovers on its own
+        return DR_OK;
+    }
+
+    m_FramesIn++;
+    m_FramesOut++;
+    deliverDecodedFrame(frame, du);
+    return DR_OK;
+#else
+    Q_UNUSED(du);
+    return DR_NEED_IDR;
+#endif
+}
+
 void FFmpegVideoDecoder::decoderThreadProc()
 {
+    if (m_Pyrowave != nullptr) {
+        pyrowaveDecoderThreadProc();
+        return;
+    }
+
     while (!SDL_AtomicGet(&m_DecoderThreadShouldQuit)) {
         if (m_FramesIn == m_FramesOut) {
             VIDEO_FRAME_HANDLE handle;
@@ -1893,176 +2245,14 @@ void FFmpegVideoDecoder::decoderThreadProc()
                     SDL_assert(m_FrameInfoQueue.size() == m_FramesIn - m_FramesOut);
                     m_FramesOut++;
 
-                    // Attach HDR metadata to the frame if it's not already present. We will defer to
-                    // any metadata contained in the bitstream itself since that is guaranteed to be
-                    // correctly synchronized to each frame, unlike our async HDR metadata message.
-                    SS_HDR_METADATA hdrMetadata;
-                    if (LiGetHdrMetadata(&hdrMetadata)) {
-                        if (av_frame_get_side_data(frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA) == nullptr) {
-                            auto mdm = av_mastering_display_metadata_create_side_data(frame);
-
-                            mdm->display_primaries[0][0] = av_make_q(hdrMetadata.displayPrimaries[0].x, 50000);
-                            mdm->display_primaries[0][1] = av_make_q(hdrMetadata.displayPrimaries[0].y, 50000);
-                            mdm->display_primaries[1][0] = av_make_q(hdrMetadata.displayPrimaries[1].x, 50000);
-                            mdm->display_primaries[1][1] = av_make_q(hdrMetadata.displayPrimaries[1].y, 50000);
-                            mdm->display_primaries[2][0] = av_make_q(hdrMetadata.displayPrimaries[2].x, 50000);
-                            mdm->display_primaries[2][1] = av_make_q(hdrMetadata.displayPrimaries[2].y, 50000);
-
-                            mdm->white_point[0] = av_make_q(hdrMetadata.whitePoint.x, 50000);
-                            mdm->white_point[1] = av_make_q(hdrMetadata.whitePoint.y, 50000);
-
-                            mdm->min_luminance = av_make_q(hdrMetadata.minDisplayLuminance, 10000);
-                            mdm->max_luminance = av_make_q(hdrMetadata.maxDisplayLuminance, 1);
-
-                            mdm->has_luminance = hdrMetadata.maxDisplayLuminance != 0 ? 1 : 0;
-                            mdm->has_primaries = hdrMetadata.displayPrimaries[0].x != 0 ? 1 : 0;
-                        }
-
-                        if ((hdrMetadata.maxContentLightLevel != 0 || hdrMetadata.maxFrameAverageLightLevel != 0) &&
-                                av_frame_get_side_data(frame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL) == nullptr) {
-                            auto clm = av_content_light_metadata_create_side_data(frame);
-
-                            clm->MaxCLL = hdrMetadata.maxContentLightLevel;
-                            clm->MaxFALL = hdrMetadata.maxFrameAverageLightLevel;
-                        }
+                    // Data buffers in the DU are not valid here!
+                    DECODE_UNIT du;
+                    bool haveDu = !m_FrameInfoQueue.isEmpty();
+                    if (haveDu) {
+                        du = m_FrameInfoQueue.dequeue();
                     }
 
-                    // Some encoders (like RDNA3's AV1 encoder) include excess padding and expect us
-                    // to crop it off. If we find our received frame looks close to our requested
-                    // size (where "close" is arbitrarily defined as "within 64 pixels") then just
-                    // crop the video to our requested size instead.
-                    if (frame->width != m_OriginalVideoWidth || frame->height != m_OriginalVideoHeight) {
-                        int cropWidth = frame->width - m_OriginalVideoWidth;
-                        int cropHeight = frame->height - m_OriginalVideoHeight;
-
-                        if (cropWidth >= 0 && cropWidth < 64 && cropHeight >= 0 && cropHeight < 64) {
-                            if (m_FramesOut == 1) {
-                                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                                            "Cropping incoming frames from (%d, %d) to (%d, %d)",
-                                            frame->width,
-                                            frame->height,
-                                            m_OriginalVideoWidth,
-                                            m_OriginalVideoHeight);
-                            }
-
-                            // We assume that all padding is added to the right and bottom.
-                            // This is true for the known affected encoders.
-                            frame->crop_right = cropWidth;
-                            frame->crop_bottom = cropHeight;
-                            av_frame_apply_cropping(frame, 0);
-                        }
-                    }
-
-                    // Some decoders don't propagate color metadata from the bitstream,
-                    // so we will try to guess it here if it was unset.
-                    if (frame->color_range == AVCOL_RANGE_UNSPECIFIED) {
-                        switch (getDecoderColorRange()) {
-                        case COLOR_RANGE_LIMITED:
-                            frame->color_range = AVCOL_RANGE_MPEG;
-                            break;
-                        case COLOR_RANGE_FULL:
-                            frame->color_range = AVCOL_RANGE_JPEG;
-                            break;
-                        }
-                    }
-                    if (frame->colorspace == AVCOL_SPC_UNSPECIFIED) {
-                        switch (getDecoderColorspace()) {
-                        case COLORSPACE_REC_601:
-                            frame->colorspace = AVCOL_SPC_SMPTE170M;
-                            break;
-                        case COLORSPACE_REC_709:
-                            frame->colorspace = AVCOL_SPC_BT709;
-                            break;
-                        case COLORSPACE_REC_2020:
-                            frame->colorspace = AVCOL_SPC_BT2020_NCL;
-                            break;
-                        }
-
-                        // HDR forces BT.2020 regardless of decoder preference
-                        if (LiGetCurrentHostDisplayHdrMode()) {
-                            frame->colorspace = AVCOL_SPC_BT2020_NCL;
-                        }
-                    }
-                    if (frame->color_primaries == AVCOL_PRI_UNSPECIFIED) {
-                        switch (frame->colorspace) {
-                        case AVCOL_SPC_BT709:
-                            frame->color_primaries = AVCOL_PRI_BT709;
-                            break;
-                        case AVCOL_SPC_SMPTE170M:
-                            frame->color_primaries = AVCOL_PRI_SMPTE170M;
-                            break;
-                        case AVCOL_SPC_BT2020_NCL:
-                        case AVCOL_SPC_BT2020_CL:
-                            frame->color_primaries = AVCOL_PRI_BT2020;
-                            break;
-                        default:
-                            break;
-                        }
-                    }
-                    if (frame->color_trc == AVCOL_TRC_UNSPECIFIED) {
-                        switch (frame->colorspace) {
-                        case AVCOL_SPC_BT709:
-                            frame->color_trc = AVCOL_TRC_BT709;
-                            break;
-                        case AVCOL_SPC_SMPTE170M:
-                            frame->color_trc = AVCOL_TRC_SMPTE170M;
-                            break;
-                        case AVCOL_SPC_BT2020_NCL:
-                        case AVCOL_SPC_BT2020_CL:
-                            frame->color_trc = AVCOL_TRC_BT2020_10;
-                            break;
-                        default:
-                            break;
-                        }
-
-                        // HDR forces SMPTE 2084 PQ regardless of decoder preference
-                        if (LiGetCurrentHostDisplayHdrMode()) {
-                            frame->color_trc = AVCOL_TRC_SMPTE2084;
-                        }
-                    }
-
-                    // Reset failed decodes count if we reached this far
-                    m_ConsecutiveFailedDecodes = 0;
-
-                    // Restore default log level after a successful decode
-                    av_log_set_level(AV_LOG_INFO);
-
-                    // Capture a frame timestamp to measuring pacing delay
-                    frame->pkt_dts = LiGetMicroseconds();
-
-                    // Mark the GPU work behind this frame, so it can be waited for exactly.
-                    // Zero when the renderer has nothing to wait for.
-                    ML_FRAME_DECODE_BOUNDARY(frame) = (int64_t)m_FrontendRenderer->captureDecodeBoundary();
-
-                    // Zero means there is no host capture time for this frame
-                    frame->pts = 0;
-
-                    if (!m_FrameInfoQueue.isEmpty()) {
-                        // Data buffers in the DU are not valid here!
-                        DECODE_UNIT du = m_FrameInfoQueue.dequeue();
-
-                        // Count time in avcodec_send_packet() and avcodec_receive_frame()
-                        // as time spent decoding. Also count time spent in the decode unit
-                        // queue because that's directly caused by decoder latency.
-                        m_ActiveWndVideoStats.totalDecodeTimeUs += (LiGetMicroseconds() - du.enqueueTimeUs);
-
-                        // Store the host's capture time in microseconds. Frame pacing
-                        // follows the host's cadence from these.
-                        frame->pts = (int64_t)du.presentationTimeUs;
-
-                        // And when its packets arrived, for the pacing trace
-                        uint64_t sinceFirstUs = (uint64_t)qBound<int64_t>(0, frame->pkt_dts - (int64_t)du.receiveTimeUs, UINT32_MAX);
-                        uint64_t sinceLastUs = (uint64_t)qBound<int64_t>(0, frame->pkt_dts - (int64_t)du.enqueueTimeUs, UINT32_MAX);
-                        ML_FRAME_RECEIVE_TIMING(frame) = (int64_t)(sinceFirstUs << 32 | sinceLastUs);
-                    }
-                    else {
-                        ML_FRAME_RECEIVE_TIMING(frame) = 0;
-                    }
-
-                    m_ActiveWndVideoStats.decodedFrames++;
-
-                    // Queue the frame for rendering (or render now if pacer is disabled)
-                    m_Pacer->submitFrame(frame);
+                    deliverDecodedFrame(frame, haveDu ? &du : nullptr);
                 }
                 else if (err == AVERROR(EAGAIN)) {
                     VIDEO_FRAME_HANDLE handle;
@@ -2116,18 +2306,8 @@ void FFmpegVideoDecoder::decoderThreadProc()
     }
 }
 
-int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
+void FFmpegVideoDecoder::recordReceivedFrame(PDECODE_UNIT du)
 {
-    PLENTRY entry = du->bufferList;
-    int err;
-
-    SDL_assert(m_CurrentTestMode != TestMode::TestFrameOnly);
-
-    // If this is the first frame, reject anything that's not an IDR frame
-    if (m_FramesIn == 0 && du->frameType != FRAME_TYPE_IDR) {
-        return DR_NEED_IDR;
-    }
-
     if (!m_LastFrameNumber) {
         m_ActiveWndVideoStats.measurementStartUs = LiGetMicroseconds();
         m_LastFrameNumber = du->frameNumber;
@@ -2178,6 +2358,21 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
 
     m_ActiveWndVideoStats.receivedFrames++;
     m_ActiveWndVideoStats.totalFrames++;
+}
+
+int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
+{
+    PLENTRY entry = du->bufferList;
+    int err;
+
+    SDL_assert(m_CurrentTestMode != TestMode::TestFrameOnly);
+
+    // If this is the first frame, reject anything that's not an IDR frame
+    if (m_FramesIn == 0 && du->frameType != FRAME_TYPE_IDR) {
+        return DR_NEED_IDR;
+    }
+
+    recordReceivedFrame(du);
 
     int requiredBufferSize = du->fullLength;
     if (du->frameType == FRAME_TYPE_IDR) {

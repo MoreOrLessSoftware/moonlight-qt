@@ -835,6 +835,50 @@ bool D3D11VARenderer::prepareDecoderContextInGetFormat(AVCodecContext *context, 
     return true;
 }
 
+AVBufferRef* D3D11VARenderer::createFramesContext(AVPixelFormat swFormat, int width, int height, int poolSize, UINT bindFlags)
+{
+    AVBufferRef* framesRef = av_hwframe_ctx_alloc(m_HwDeviceContext);
+    if (framesRef == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "Failed to allocate hwframes context");
+        return nullptr;
+    }
+
+    auto framesContext = (AVHWFramesContext*)framesRef->data;
+    auto d3d11vaFramesContext = (AVD3D11VAFramesContext*)framesContext->hwctx;
+
+    framesContext->format = AV_PIX_FMT_D3D11;
+    framesContext->sw_format = swFormat;
+    framesContext->width = width;
+    framesContext->height = height;
+    framesContext->initial_pool_size = poolSize;
+
+    // Same as prepareDecoderContextInGetFormat() for the frames themselves
+    d3d11vaFramesContext->BindFlags = bindFlags;
+    if (m_BindDecoderOutputTextures) {
+        d3d11vaFramesContext->BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+    }
+    if (m_DecodeDevice != m_RenderDevice) {
+        d3d11vaFramesContext->MiscFlags |= D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+    }
+
+    int err = av_hwframe_ctx_init(framesRef);
+    if (err < 0) {
+        av_buffer_unref(&framesRef);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "Failed initialize hwframes context: %d",
+                     err);
+        return nullptr;
+    }
+
+    if (!setupFrameRenderingResources(framesContext)) {
+        av_buffer_unref(&framesRef);
+        return nullptr;
+    }
+
+    return framesRef;
+}
+
 void D3D11VARenderer::renderFrame(AVFrame* frame)
 {
     if (prepareFrame(frame)) {
@@ -1467,6 +1511,11 @@ bool D3D11VARenderer::checkDecoderSupport(IDXGIAdapter* adapter)
 {
     HRESULT hr;
     Microsoft::WRL::ComPtr<ID3D11VideoDevice> videoDevice;
+
+    // PyroWave decodes in Vulkan compute rather than with the GPU's video decoder
+    if (m_DecoderParams.videoFormat & VIDEO_FORMAT_MASK_PYROWAVE) {
+        return true;
+    }
 
     DXGI_ADAPTER_DESC adapterDesc;
     hr = adapter->GetDesc(&adapterDesc);
