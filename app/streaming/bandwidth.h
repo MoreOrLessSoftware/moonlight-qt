@@ -95,13 +95,18 @@ private:
         size_t bytes = 0;                              ///< The number of bytes recorded in this bucket.
     };
 
-    const std::chrono::seconds windowSeconds;          ///< T he duration of the tracking window.
+    const std::chrono::seconds windowSeconds;          ///< The duration of the tracking window.
     const int bucketIntervalMs;                        ///< The duration of each bucket (in milliseconds).
     std::uint32_t bucketCount;                         ///< The total number of buckets covering the window.
     std::vector<Bucket> buckets;                       ///< Fixed-size circular buffer of buckets.
     std::mutex mtx;                                    ///< Mutex to ensure thread-safe access.
 
-    bool isValid(const Bucket &bucket, std::chrono::steady_clock::time_point now) const;
     void updateBucket(size_t bytes, std::chrono::steady_clock::time_point now);
-    double getBucketMbps(const Bucket &bucket) const;
+
+    // Start of the interval the bucket for 'now' covers
+    std::chrono::steady_clock::time_point bucketStartFor(std::chrono::steady_clock::time_point now) const;
+
+    // Bytes recorded in the interval starting at 'start', or 0 if the bucket that
+    // interval maps to holds an older interval (nothing was recorded in this one)
+    size_t bytesInInterval(std::chrono::steady_clock::time_point start) const;
 };
