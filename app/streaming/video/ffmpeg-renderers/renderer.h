@@ -141,13 +141,6 @@ private:
 // the decoder thread to the thread that renders. Zero when there is none.
 #define ML_FRAME_DECODE_BOUNDARY(frame) ((frame)->best_effort_timestamp)
 
-// How long before the decoder handed the frame over its first and last packets arrived,
-// in microseconds, carried on the frame for the pacing trace. The first is in the high
-// 32 bits and the last in the low 32. Zero when not known.
-#define ML_FRAME_RECEIVE_TIMING(frame) ((frame)->duration)
-#define ML_FRAME_FIRST_PACKET_US(frame) ((frame)->pkt_dts - (int64_t)((uint64_t)ML_FRAME_RECEIVE_TIMING(frame) >> 32))
-#define ML_FRAME_LAST_PACKET_US(frame) ((frame)->pkt_dts - (int64_t)((uint64_t)ML_FRAME_RECEIVE_TIMING(frame) & 0xFFFFFFFF))
-
 // What the display has done with presented frames. See getPresentFeedback().
 typedef struct _PRESENT_FEEDBACK {
     uint32_t presentId;         // Present count after the frame just presented, 0 if unknown

@@ -963,14 +963,11 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
                        length - offset,
                        "Network drop/jitter: %.2f%% / %.2f%%\n"
                        "Network latency: %s\n"
-                       "Frame receive time: %.2f ms\n"
                        "Decoding time: %.2f ms\n"
                        "Frame queue/render: %.2f / %.2f ms\n",
                        (float)stats.networkDroppedFrames / stats.totalFrames * 100,
                        (float)stats.pacerDroppedFrames / stats.decodedFrames * 100,
                        rttString,
-                       // First packet to last, so how long a frame takes to arrive in full
-                       stats.receivedFrames != 0 ? (double)(stats.totalReassemblyTimeUs / 1000.0) / stats.receivedFrames : 0.0,
                        (double)(stats.totalDecodeTimeUs / 1000.0) / stats.decodedFrames,
                        (double)(stats.totalPacerTimeUs / 1000.0) / stats.renderedFrames,
                        (double)(stats.totalRenderTimeUs / 1000.0) / stats.renderedFrames);
@@ -986,7 +983,7 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
 void FFmpegVideoDecoder::logVideoStats(VIDEO_STATS& stats, const char* title)
 {
     if (stats.renderedFps > 0 || stats.renderedFrames != 0) {
-        char videoStatsStr[1024];
+        char videoStatsStr[512];
         stringifyVideoStats(stats, videoStatsStr, sizeof(videoStatsStr));
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -1940,14 +1937,6 @@ void FFmpegVideoDecoder::decoderThreadProc()
                         // Store the host's capture time in microseconds. Frame pacing
                         // follows the host's cadence from these.
                         frame->pts = (int64_t)du.presentationTimeUs;
-
-                        // And when its packets arrived, for the pacing trace
-                        uint64_t sinceFirstUs = (uint64_t)qBound<int64_t>(0, frame->pkt_dts - (int64_t)du.receiveTimeUs, UINT32_MAX);
-                        uint64_t sinceLastUs = (uint64_t)qBound<int64_t>(0, frame->pkt_dts - (int64_t)du.enqueueTimeUs, UINT32_MAX);
-                        ML_FRAME_RECEIVE_TIMING(frame) = (int64_t)(sinceFirstUs << 32 | sinceLastUs);
-                    }
-                    else {
-                        ML_FRAME_RECEIVE_TIMING(frame) = 0;
                     }
 
                     m_ActiveWndVideoStats.decodedFrames++;

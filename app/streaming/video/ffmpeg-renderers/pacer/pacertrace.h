@@ -16,10 +16,7 @@
 typedef struct _PACER_TRACE_ROW {
     uint64_t frame;             // Sequence number, counting frames the pacer dropped
     int64_t hostUs;             // Host capture time (host clock)
-    int64_t arrivalUs;          // When the frame could be drawn: decoded, and done on the GPU where that is waited for
-    int64_t firstPacketUs;      // When its first packet arrived, 0 if unknown
-    int64_t lastPacketUs;       // When its last packet arrived and it went to the decoder, 0 if unknown
-    int64_t decodedUs;          // When the decoder handed it over
+    int64_t arrivalUs;          // When the decoder handed the frame over
     int64_t smoothedUs;         // Host capture time after smoothing (host clock)
     int64_t delayUs;            // Offset mapping smoothed host time onto our clock
     int64_t targetUs;           // When Present() was meant to return
@@ -42,9 +39,7 @@ typedef struct _PACER_TRACE_ROW {
     uint8_t tear;               // Presented with tearing permission
     uint8_t hostStep;           // Part of a host timestamp step, held like the frame before it
     uint8_t drainedBefore;      // Frames skipped since the previous row to clear the display's queue
-    uint8_t outranBefore;       // Frames skipped since the previous row because they came too soon after a present
     uint8_t tearGuard;          // Held out of the previous frame's scanout to avoid tearing across it
-    int32_t refreshFloorUs;     // How long it was held to come a refresh after the previous present, 0 if not
 } PACER_TRACE_ROW, *PPACER_TRACE_ROW;
 
 // Writes one CSV row per presented frame and a summary on close. Rows are handed
@@ -124,8 +119,6 @@ private:
     uint64_t m_ModeCounts[5];
     uint64_t m_QueueDrains;
     uint64_t m_TearGuards;
-    uint64_t m_RefreshFloors;
-    uint64_t m_OutranFrames;
     uint32_t m_LastDisplayedRefresh;
     uint64_t m_RefreshSpans[4];
     uint64_t m_SkippedPresents;
@@ -137,10 +130,6 @@ private:
     Histogram m_PresentCall;
     Histogram m_HostJitter;
     Histogram m_Display;
-    Histogram m_Receive;
-    Histogram m_Decode;
-    Histogram m_DecodeWait;
-    Histogram m_RefreshFloorHold;
 
     static const int k_WorstPairs = 10;
     int64_t m_WorstSpacingUs[k_WorstPairs];
