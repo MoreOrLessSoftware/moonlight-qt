@@ -90,6 +90,8 @@ PacerTrace::PacerTrace(int displayHz) :
     m_ModeCounts{},
     m_QueueDrains(0),
     m_TearGuards(0),
+    m_RefreshFloors(0),
+    m_OutranFrames(0),
     m_LastDisplayedRefresh(0),
     m_RefreshSpans{},
     m_SkippedPresents(0),
@@ -166,11 +168,20 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "#   frame included. display_latency_us: present_us to displayed_us for frame displayed_id, on the\n"
                     << "#   first row that names it. displayed_refresh, sync_refresh: the display's refresh count\n"
                     << "#   when that frame was shown, and at displayed_us.\n"
+                    << "# first_packet_us, last_packet_us: when the frame's first and last packets arrived, 0 if unknown.\n"
+                    << "#   decoded_us: when the decoder handed it over; arrival_us is later where the pacer waited for the\n"
+                    << "#   GPU to finish decoding it. receive_us = last_packet_us - first_packet_us, decode_us = decoded_us -\n"
+                    << "#   last_packet_us, decode_wait_us = arrival_us - decoded_us (-1 where unknown).\n"
+                    << "# refresh_floor_us: how long a present without tearing was held so it came at least a refresh\n"
+                    << "#   after the previous one, 0 if it was not.\n"
+                    << "# outran_before: frames skipped since the previous row because they came too soon after a present\n"
+                    << "#   to hold within the refresh floor's limit: the source outrunning the display, or a stray extra frame.\n"
                     << "frame,host_us,arrival_us,smoothed_us,delay_us,target_us,render_start_us,present_us,"
                        "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,draw_us,present_call_us,"
                        "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step,"
                        "dequeue_us,draw_due_us,present_id,displayed_id,displayed_us,presentation_mode,queued_presents,"
-                       "display_latency_us,drained_before,tear_guard,displayed_refresh,sync_refresh\n";
+                       "display_latency_us,drained_before,tear_guard,displayed_refresh,sync_refresh,"
+                       "first_packet_us,last_packet_us,decoded_us,receive_us,decode_us,decode_wait_us,refresh_floor_us,outran_before\n";
 
     trace->m_Thread = SDL_CreateThread(PacerTrace::writerThread, "PacerTrace", trace);
     if (trace->m_Thread == nullptr) {
@@ -282,6 +293,11 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
     int64_t drawUs = row.drawEndUs - row.renderStartUs;
     int64_t presentCallUs = row.presentUs - row.presentStartUs;
 
+    bool havePackets = row.firstPacketUs != 0 && row.lastPacketUs != 0;
+    int64_t receiveUs = havePackets ? row.lastPacketUs - row.firstPacketUs : -1;
+    int64_t decodeUs = havePackets ? row.decodedUs - row.lastPacketUs : -1;
+    int64_t decodeWaitUs = row.decodedUs != 0 ? row.arrivalUs - row.decodedUs : -1;
+
     int tearLinePct = -1;
     if (row.tear && m_HavePrevious && m_PeriodUs > 0 &&
             presentIntervalUs >= 0 && presentIntervalUs < m_PeriodUs) {
@@ -312,6 +328,14 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
     else {
         m_Hold.add(holdUs);
         m_Draw.add(drawUs);
+
+        if (havePackets) {
+            m_Receive.add(receiveUs);
+            m_Decode.add(decodeUs);
+        }
+        if (decodeWaitUs >= 0) {
+            m_DecodeWait.add(decodeWaitUs);
+        }
         m_PresentCall.add(presentCallUs);
 
         if (lateUs > 1000) {
@@ -360,6 +384,11 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
 
     m_QueueDrains += row.drainedBefore;
     m_TearGuards += row.tearGuard;
+    m_OutranFrames += row.outranBefore;
+    if (row.refreshFloorUs > 0) {
+        m_RefreshFloors++;
+        m_RefreshFloorHold.add(row.refreshFloorUs);
+    }
 
     if (row.presentId != 0) {
         m_StatsRows++;
@@ -433,7 +462,15 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
              << (int)row.drainedBefore << ','
              << (int)row.tearGuard << ','
              << row.displayedRefresh << ','
-             << row.syncRefresh << '\n';
+             << row.syncRefresh << ','
+             << row.firstPacketUs << ','
+             << row.lastPacketUs << ','
+             << row.decodedUs << ','
+             << receiveUs << ','
+             << decodeUs << ','
+             << decodeWaitUs << ','
+             << row.refreshFloorUs << ','
+             << (int)row.outranBefore << '\n';
 
     m_Previous = row;
     m_HavePrevious = true;
@@ -458,6 +495,9 @@ void PacerTrace::writeFooter()
              << m_ShortFrames << " shown more than half a refresh sooner; host stalls excluded: " << m_SourceStalls << "\n"
              << "# host cadence jitter |host interval - median host interval|: " << m_HostJitter.describe() << "\n"
              << "# missed schedule by over 1 ms: " << m_MissedTargets << " frames, lateness " << m_Late.describe() << "\n"
+             << "# receive, first packet to last: " << m_Receive.describe() << "\n"
+             << "# decoder, last packet to handed over: " << m_Decode.describe() << "\n"
+             << "# waiting for the GPU to finish decoding: " << m_DecodeWait.describe() << "\n"
              << "# hold arrival to present: " << m_Hold.describe() << "\n"
              << "# drawing: " << m_Draw.describe() << "\n"
              << "# Present() call: " << m_PresentCall.describe() << "\n"
@@ -468,7 +508,10 @@ void PacerTrace::writeFooter()
              << m_TearThirds[2] << "\n"
              << "# host timestamp steps: " << m_HostStepFrames
              << " frames held as long as the frame before them, left out of the spacing figures\n"
-             << "# tearing presents held out of the previous frame's scanout: " << m_TearGuards << "\n";
+             << "# tearing presents held out of the previous frame's scanout: " << m_TearGuards << "\n"
+             << "# presents held to come a refresh after the previous one: " << m_RefreshFloors
+             << ", held " << m_RefreshFloorHold.describe() << "\n"
+             << "# frames skipped for coming too soon after a present (source outran the display): " << m_OutranFrames << "\n";
 
     if (m_StatsRows > 0) {
         m_Stream << "# present to display (DXGI frame statistics, frames it reported shown): " << m_Display.describe() << "\n"

@@ -107,6 +107,7 @@ private:
     int m_ArrivalPercentile;
     double m_NoTearFraction;
     int m_TearGuardUs;
+    int m_RefreshFloorUs;
 
     // What has been learned about the host's cadence
     int m_LearnFramesLeft;
@@ -144,6 +145,7 @@ private:
     bool m_QueueDrainEnabled;
     int m_BacklogFrames;
     bool m_DrainNext;
+    bool m_OutranNext;
     int64_t m_LastDrainUs;
     int64_t m_LastPresentUs;
 
@@ -151,5 +153,6 @@ private:
     uint64_t m_FrameIndex;
     uint32_t m_DroppedSinceRow;
     uint32_t m_DrainedSinceRow;
+    uint32_t m_OutranSinceRow;
     uint32_t m_EvictedFrames;
 };
