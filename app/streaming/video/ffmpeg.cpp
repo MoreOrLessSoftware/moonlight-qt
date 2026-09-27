@@ -903,6 +903,19 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
         }
         break;
 
+    case VIDEO_FORMAT_PYROWAVE:
+        codecString = "PyroWave";
+        break;
+
+    case VIDEO_FORMAT_PYROWAVE_10BIT:
+        if (LiGetCurrentHostDisplayHdrMode()) {
+            codecString = "PyroWave 10-bit HDR";
+        }
+        else {
+            codecString = "PyroWave 10-bit SDR";
+        }
+        break;
+
     default:
         SDL_assert(false);
         codecString = "UNKNOWN";
@@ -910,30 +923,18 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
     }
 
     if (stats.receivedFps > 0) {
-        if (m_VideoDecoderCtx != nullptr) {
-#ifdef DISPLAY_BITRATE
-            double avgVideoMbps = m_BwTracker.GetAverageMbps();
-            double peakVideoMbps = m_BwTracker.GetPeakMbps();
-#endif
-
+        // PyroWave decodes without an FFmpeg codec context
+        if (m_VideoDecoderCtx != nullptr || m_Pyrowave != nullptr) {
             ret = snprintf(&output[offset],
                            length - offset,
                            "Video stream: %.2f FPS (%dx%d %s)\n"
-#ifdef DISPLAY_BITRATE
-                           "Bitrate: %.1f Mbps, Peak (%us): %.1f\n"
-#endif
-                           ,
+                           "Video bitrate: %.0f Mbps\n",
                            stats.totalFps,
-                           m_VideoDecoderCtx->width,
-                           m_VideoDecoderCtx->height,
-                           codecString
-#ifdef DISPLAY_BITRATE
-                           ,
-                           avgVideoMbps,
-                           m_BwTracker.GetWindowSeconds(),
-                           peakVideoMbps
-#endif
-                           );
+                           m_VideoDecoderCtx != nullptr ? m_VideoDecoderCtx->width : m_OriginalVideoWidth,
+                           m_VideoDecoderCtx != nullptr ? m_VideoDecoderCtx->height : m_OriginalVideoHeight,
+                           codecString,
+                           // Frame data as it arrives, without FEC or packet headers
+                           m_BwTracker.GetAverageMbps());
             if (ret < 0 || ret >= length - offset) {
                 SDL_assert(false);
                 return;
