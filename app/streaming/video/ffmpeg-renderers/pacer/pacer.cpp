@@ -127,21 +127,6 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 // to catch up from a hold: at 400 us, a 97 FPS source had almost none.
 #define CADENCE_TEAR_GUARD_MARGIN_US 100
 
-// Longest a present without tearing is held so that it comes at least a refresh after
-// the one before. A display can't show frames closer together than its refresh period,
-// so a frame presented sooner waits in the display's queue, and while frames keep
-// coming at the refresh rate it keeps the ones behind it waiting too. With a 95 FPS
-// source on a 100 Hz panel, 17% of host intervals were shorter than a refresh and 15%
-// of frames waited behind another in the queue, 16.6 ms from Present() to the screen at
-// the 95th percentile against 0.5 ms without them. Holding such a frame the fraction of
-// a millisecond it is early keeps the queue empty. The hold is measured from the last
-// Present() with no margin, so a source running at the refresh rate is not pushed back
-// a little further with each frame; a frame that would need longer than this means the
-// source is outrunning the display, and is skipped. While the host's cadence is being
-// learned there is no limit. See scheduleFrame(). ML_PACING_REFRESH_FLOOR_US sets it, and
-// 0 turns it off.
-#define CADENCE_REFRESH_FLOOR_US 2000
-
 // Longest believable gap between two host frames. Past it the timeline is learned again.
 #define CADENCE_MAX_HOST_GAP_US 1000000
 
@@ -201,7 +186,6 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_ArrivalPercentile(CADENCE_ARRIVAL_PERCENTILE),
     m_NoTearFraction(CADENCE_NO_TEAR_FRACTION),
     m_TearGuardUs(CADENCE_TEAR_GUARD_US),
-    m_RefreshFloorUs(CADENCE_REFRESH_FLOOR_US),
     m_LearnFramesLeft(0),
     m_LastHostUs(0),
     m_IntervalUs(0),
@@ -233,13 +217,11 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_QueueDrainEnabled(true),
     m_BacklogFrames(0),
     m_DrainNext(false),
-    m_OutranNext(false),
     m_LastDrainUs(0),
     m_LastPresentUs(0),
     m_FrameIndex(0),
     m_DroppedSinceRow(0),
     m_DrainedSinceRow(0),
-    m_OutranSinceRow(0),
     m_EvictedFrames(0)
 {
 
@@ -524,9 +506,6 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
         if (qEnvironmentVariableIsSet("ML_PACING_TEAR_GUARD_US")) {
             m_TearGuardUs = qBound(0, qEnvironmentVariableIntValue("ML_PACING_TEAR_GUARD_US"), 20000);
         }
-        if (qEnvironmentVariableIsSet("ML_PACING_REFRESH_FLOOR_US")) {
-            m_RefreshFloorUs = qBound(0, qEnvironmentVariableIntValue("ML_PACING_REFRESH_FLOOR_US"), 20000);
-        }
         if (qEnvironmentVariableIsSet("ML_PACING_NO_TEAR_PCT")) {
             m_NoTearFraction = qBound(10, qEnvironmentVariableIntValue("ML_PACING_NO_TEAR_PCT"), 1000) / 100.0;
         }
@@ -542,7 +521,7 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
 #endif
 
         QString settings = QString("smoothing gain %1% on errors up to %5 us, arrival percentile %2, "
-                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin, %8 us spin, display queue drain %9, %10 us tear guard, %11 us refresh floor")
+                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin, %8 us spin, display queue drain %9, %10 us tear guard")
                 .arg((int)std::lround(m_SmoothGain * 100))
                 .arg(m_ArrivalPercentile)
                 .arg((int)std::lround(m_NoTearFraction * 100))
@@ -552,8 +531,7 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
                 .arg((int)m_DrawMarginUs)
                 .arg(m_WaitTimerHighRes ? m_SpinUs : qMax(m_SpinUs, CADENCE_SPIN_LOW_RES_US))
                 .arg(m_QueueDrainEnabled ? "on" : "off")
-                .arg(m_TearGuardUs)
-                .arg(m_RefreshFloorUs);
+                .arg(m_TearGuardUs);
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Frame pacing: following the host's cadence, %d FPS stream on a %d Hz display (%s)",
@@ -780,14 +758,6 @@ int Pacer::cadenceThread(void* context)
         PACER_TRACE_ROW row = {};
         row.dequeueUs = (int64_t)LiGetMicroseconds();
 
-        // When the frame's packets arrived and when the decoder handed it over, before
-        // waiting for the decode below moves its arrival
-        row.decodedUs = frame->pkt_dts;
-        if (ML_FRAME_RECEIVE_TIMING(frame) != 0) {
-            row.firstPacketUs = ML_FRAME_FIRST_PACKET_US(frame);
-            row.lastPacketUs = ML_FRAME_LAST_PACKET_US(frame);
-        }
-
         // Wait for the GPU to finish decoding the frame, and count it as arriving once it
         // has, so it is scheduled from when it can actually be drawn. Only a wait that
         // blocked moves the arrival: a frame that finished decoding while it queued
@@ -813,17 +783,6 @@ int Pacer::cadenceThread(void* context)
             continue;
         }
 
-        // A frame that would have to be held too long to come a refresh after the one before
-        // is skipped. See scheduleFrame().
-        if (me->m_OutranNext) {
-            me->m_OutranNext = false;
-            me->m_OutranSinceRow++;
-            me->m_VideoStats->pacerDroppedFrames++;
-            me->m_DroppedSinceRow++;
-            av_frame_free(&frame);
-            continue;
-        }
-
         me->m_VsyncRenderer->setPresentTearing(row.tear != 0);
         me->presentAt(frame, targetUs, &row);
 
@@ -831,13 +790,11 @@ int Pacer::cadenceThread(void* context)
             row.queueDepth = (uint16_t)waiting;
             row.droppedBefore = (uint16_t)qMin<uint32_t>(me->m_DroppedSinceRow, 65535);
             row.drainedBefore = (uint8_t)qMin<uint32_t>(me->m_DrainedSinceRow, 255);
-            row.outranBefore = (uint8_t)qMin<uint32_t>(me->m_OutranSinceRow, 255);
             me->m_Trace->record(row);
         }
 
         me->m_DroppedSinceRow = 0;
         me->m_DrainedSinceRow = 0;
-        me->m_OutranSinceRow = 0;
     }
 
     // NB: This must happen on the same thread that calls renderFrame().
@@ -1083,35 +1040,6 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
         if (targetUs < scanoutEndUs) {
             targetUs = qMin(scanoutEndUs, targetUs + m_TearGuardUs);
             row->tearGuard = 1;
-        }
-    }
-
-    // Keep a present without tearing at least a refresh after the one before, holding it no
-    // longer than CADENCE_REFRESH_FLOOR_US.
-    //
-    // While the host's cadence is being learned, frames go out as they arrive, and they arrive
-    // bunched: at the start of a stream and again after a loading screen, when the timeline is
-    // learned anew. Presented as they came, 24 to 39 of the first 100 frames waited behind others
-    // in the display's queue, up to 22 ms from Present() to the screen, a rough first second
-    // each time. Those frames are held as long as it takes instead. Should frames keep coming
-    // faster than the display can show them, the pacer drops one once two wait behind the one
-    // it holds, rather than the display falling a refresh behind.
-    if (!m_Tearing && m_RefreshFloorUs > 0 && m_DisplayFps > 0 && m_LastPresentUs != 0) {
-        int64_t earliestUs = m_LastPresentUs + 1000000 / m_DisplayFps;
-
-        if (targetUs < earliestUs && (row->learning || earliestUs - targetUs <= m_RefreshFloorUs)) {
-            row->refreshFloorUs = (int32_t)(earliestUs - targetUs);
-            targetUs = earliestUs;
-        }
-        else if (targetUs < earliestUs) {
-            // The source is outrunning the display. Presented on schedule, this frame would
-            // wait in the display's queue, and with frames still coming at the refresh rate
-            // nothing would take it out: at a 100 FPS source on a 100 Hz panel, holds grew to
-            // the limit about every 20 frames as the host ran 0.5% fast, each frame then went
-            // out 2 ms early, and the display fell further behind each time, 0.5 ms to 12 ms
-            // from Present() to the screen in 5 s. Skipping it costs one frame and no latency.
-            // It also drops a stray extra frame arriving well within a refresh of the last one.
-            m_OutranNext = true;
         }
     }
 
