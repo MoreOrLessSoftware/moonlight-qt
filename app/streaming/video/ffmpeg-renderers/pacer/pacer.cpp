@@ -758,6 +758,14 @@ int Pacer::cadenceThread(void* context)
         PACER_TRACE_ROW row = {};
         row.dequeueUs = (int64_t)LiGetMicroseconds();
 
+        // When the frame's packets arrived and when the decoder handed it over, before
+        // waiting for the decode below moves its arrival
+        row.decodedUs = frame->pkt_dts;
+        if (ML_FRAME_RECEIVE_TIMING(frame) != 0) {
+            row.firstPacketUs = ML_FRAME_FIRST_PACKET_US(frame);
+            row.lastPacketUs = ML_FRAME_LAST_PACKET_US(frame);
+        }
+
         // Wait for the GPU to finish decoding the frame, and count it as arriving once it
         // has, so it is scheduled from when it can actually be drawn. Only a wait that
         // blocked moves the arrival: a frame that finished decoding while it queued
