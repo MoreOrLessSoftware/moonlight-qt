@@ -16,7 +16,10 @@
 typedef struct _PACER_TRACE_ROW {
     uint64_t frame;             // Sequence number, counting frames the pacer dropped
     int64_t hostUs;             // Host capture time (host clock)
-    int64_t arrivalUs;          // When the decoder handed the frame over
+    int64_t arrivalUs;          // When the frame could be drawn: decoded, and done on the GPU where that is waited for
+    int64_t firstPacketUs;      // When its first packet arrived, 0 if unknown
+    int64_t lastPacketUs;       // When its last packet arrived and it went to the decoder, 0 if unknown
+    int64_t decodedUs;          // When the decoder handed it over
     int64_t smoothedUs;         // Host capture time after smoothing (host clock)
     int64_t delayUs;            // Offset mapping smoothed host time onto our clock
     int64_t targetUs;           // When Present() was meant to return
@@ -130,6 +133,9 @@ private:
     Histogram m_PresentCall;
     Histogram m_HostJitter;
     Histogram m_Display;
+    Histogram m_Receive;
+    Histogram m_Decode;
+    Histogram m_DecodeWait;
 
     static const int k_WorstPairs = 10;
     int64_t m_WorstSpacingUs[k_WorstPairs];
