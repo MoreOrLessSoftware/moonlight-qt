@@ -210,6 +210,26 @@ echo Copying GC mapping list
 copy %SOURCE_ROOT%\app\SDL_GameControllerDB\gamecontrollerdb.txt %DEPLOY_FOLDER%
 if !ERRORLEVEL! NEQ 0 goto Error
 
+rem PyroWave is loaded at runtime, so without it the codec just isn't offered. Set
+rem PYROWAVE_DLL to the libpyrowave-shared-0.dll to package, or keep a pyrowave build
+rem next to this repo (..\pyrowave\output\bin). Only x64 is built for now.
+if not defined PYROWAVE_DLL (
+    if /I "%ARCH%" EQU "x64" (
+        set PYROWAVE_DLL=%SOURCE_ROOT%\..\pyrowave\output\bin\libpyrowave-shared-0.dll
+    )
+)
+if defined PYROWAVE_DLL (
+    if exist "!PYROWAVE_DLL!" (
+        echo Copying PyroWave library from !PYROWAVE_DLL!
+        copy "!PYROWAVE_DLL!" %DEPLOY_FOLDER%\libpyrowave-shared-0.dll
+        if !ERRORLEVEL! NEQ 0 goto Error
+    ) else (
+        echo WARNING: PyroWave library not found at !PYROWAVE_DLL!, packaging without PyroWave
+    )
+) else (
+    echo WARNING: PYROWAVE_DLL not set, packaging without PyroWave
+)
+
 if not x%QT_PATH:\5.=%==x%QT_PATH% (
     echo Copying qt.conf for Qt 5
     copy %SOURCE_ROOT%\app\qt_qt5.conf %DEPLOY_FOLDER%\qt.conf
