@@ -251,6 +251,9 @@ FFmpegVideoDecoder::FFmpegVideoDecoder(bool testOnly)
       m_ConsecutiveFailedDecodes(0),
       m_Pacer(nullptr),
       m_BwTracker(10, 250),
+      m_NetworkBwTracker(10, 250),
+      m_LastNetworkBytes(0),
+      m_LastNetworkPackets(0),
       m_FramesIn(0),
       m_FramesOut(0),
       m_LastFrameNumber(0),
@@ -928,13 +931,15 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
             ret = snprintf(&output[offset],
                            length - offset,
                            "Video stream: %.2f FPS (%dx%d %s)\n"
-                           "Video bitrate: %.0f Mbps\n",
+                           "Video bitrate: %.0f Mbps (network: %.0f Mbps)\n",
                            stats.totalFps,
                            m_VideoDecoderCtx != nullptr ? m_VideoDecoderCtx->width : m_OriginalVideoWidth,
                            m_VideoDecoderCtx != nullptr ? m_VideoDecoderCtx->height : m_OriginalVideoHeight,
                            codecString,
                            // Frame data as it arrives, without FEC or packet headers
-                           m_BwTracker.GetAverageMbps());
+                           m_BwTracker.GetAverageMbps(),
+                           // All video packets received, with FEC and IP/UDP/RTP headers
+                           m_NetworkBwTracker.GetAverageMbps());
             if (ret < 0 || ret >= length - offset) {
                 SDL_assert(false);
                 return;
@@ -2212,6 +2217,21 @@ void FFmpegVideoDecoder::recordReceivedFrame(PDECODE_UNIT du)
     }
 
     m_BwTracker.AddBytes(du->fullLength);
+
+    {
+        // Everything that arrived on the video socket since the last frame. The counters
+        // start at zero with the stream and wrap, so take differences as uint32_t.
+        const RTP_VIDEO_STATS* rtpStats = LiGetRTPVideoStats();
+        uint32_t bytes = rtpStats->byteCountReceived;
+        uint32_t packets = rtpStats->packetCountReceived;
+
+        // Add the IPv4 and UDP headers (28 bytes a packet) so this compares with what
+        // the OS reports. Ethernet framing adds another 14 bytes a packet on the wire.
+        m_NetworkBwTracker.AddBytes((size_t)(uint32_t)(bytes - m_LastNetworkBytes) +
+                                    (size_t)(uint32_t)(packets - m_LastNetworkPackets) * 28);
+        m_LastNetworkBytes = bytes;
+        m_LastNetworkPackets = packets;
+    }
 
     // Flip stats windows roughly every second
     if (LiGetMicroseconds() > m_ActiveWndVideoStats.measurementStartUs + 1000000) {
