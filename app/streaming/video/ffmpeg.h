@@ -128,6 +128,12 @@ private:
     int m_ConsecutiveFailedDecodes;
     Pacer* m_Pacer;
     BandwidthTracker m_BwTracker;
+
+    // Everything received on the video socket (FEC, headers, frames later dropped),
+    // from moonlight-common-c's running counters
+    BandwidthTracker m_NetworkBwTracker;
+    uint32_t m_LastNetworkBytes;
+    uint32_t m_LastNetworkPackets;
     VIDEO_STATS m_ActiveWndVideoStats;
     VIDEO_STATS m_LastWndVideoStats;
     VIDEO_STATS m_GlobalVideoStats;
