@@ -494,8 +494,8 @@ bool PyrowaveDecoder::createPackResources()
 
 void PyrowaveDecoder::setFrameColorProperties(AVFrame* frame)
 {
-    // The host converts to YCbCr with its usual shaders, always in full range for
-    // PyroWave, with left-sited chroma
+    // The host converts to YCbCr with its usual shaders, with left-sited chroma, in
+    // the range we ask for, which is always full range for PyroWave
     frame->color_range = AVCOL_RANGE_JPEG;
     frame->chroma_location = AVCHROMA_LOC_LEFT;
 
