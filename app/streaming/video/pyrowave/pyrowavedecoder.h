@@ -34,9 +34,18 @@ public:
 
     bool initialize(D3D11VARenderer* renderer, PDECODER_PARAMETERS params, int colorspace);
 
-    // Decodes a whole frame. Returns a frame from the renderer's pool, or nullptr if the
-    // frame couldn't be decoded.
-    AVFrame* decode(const uint8_t* data, size_t length);
+    // How much of a frame arrived (see CAPABILITY_PARTIAL_FRAMES): all of it, all but
+    // packets that were lost, or the start of it, cut short at its deadline
+    enum class PartialFrame {
+        None,
+        Lost,
+        Late,
+    };
+
+    // Decodes a frame. A partial frame's data is what arrived up to the first gap.
+    // Returns a frame from the renderer's pool, or nullptr if the frame couldn't be
+    // decoded.
+    AVFrame* decode(const uint8_t* data, size_t length, PartialFrame partial);
 
     // The host switched to HDR (PQ) or back to SDR
     void setHdrMode(bool enabled);

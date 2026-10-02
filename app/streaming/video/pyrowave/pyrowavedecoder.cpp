@@ -5,6 +5,7 @@
 #include "streaming/video/ffmpeg-renderers/pacer/pacer.h"
 
 #include <mutex>
+#include <vector>
 
 #include <vulkan/vulkan_core.h>
 #include "pyrowave.h"
@@ -32,6 +33,7 @@ struct PyrowaveApi
     decltype(&::pyrowave_decoder_clear) decoderClear;
     decltype(&::pyrowave_decoder_push_packet) decoderPushPacket;
     decltype(&::pyrowave_decoder_decode_is_ready) decoderDecodeIsReady;
+    decltype(&::pyrowave_decoder_decode_is_ready_with_sideband) decoderDecodeIsReadyWithSideband; // May be null
     decltype(&::pyrowave_decoder_decode_gpu_buffer) decoderDecodeGpuBuffer;
     decltype(&::pyrowave_decoder_destroy) decoderDestroy;
 };
@@ -90,6 +92,11 @@ static const PyrowaveApi* loadPyrowaveApi()
         if (!resolved) {
             return;
         }
+
+        // Optional: without it, frames cut short at their deadline need as much of their
+        // data as frames that lost packets
+        api.decoderDecodeIsReadyWithSideband = reinterpret_cast<decltype(api.decoderDecodeIsReadyWithSideband)>(
+                    GetProcAddress(dll, "pyrowave_decoder_decode_is_ready_with_sideband"));
 
         // The API and ABI can change between minor versions until 1.0
         uint32_t major, minor, patch;
@@ -540,12 +547,52 @@ void PyrowaveDecoder::flush()
     unlockContext();
 }
 
-AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length)
+// The length of data up to the end of its last complete block. A frame cut short ends
+// wherever its data stopped arriving, usually partway into a block, and PyroWave rejects
+// the whole of data if its last block is incomplete. Every block, and the sequence header,
+// starts with 8 bytes whose second 16-bit word holds the block's length in 32-bit words in
+// its low 12 bits, and in its top bit whether it is a sequence header, which is 8 bytes long.
+// A block's index is in the top 24 bits of its second 32-bit word. lastBlockIndex is the
+// index of the last complete block, or -1 if there is none.
+static size_t completeBlocksLength(const uint8_t* data, size_t length, int64_t* lastBlockIndex)
+{
+    size_t offset = 0;
+
+    *lastBlockIndex = -1;
+    while (length - offset >= 8) {
+        uint16_t bits;
+        memcpy(&bits, data + offset + 2, sizeof(bits));
+
+        bool sequenceHeader = (bits & 0x8000) != 0;
+        size_t size = sequenceHeader ? 8 : (size_t)(bits & 0xFFF) * 4;
+        if (size < 8 || size > length - offset) {
+            break;
+        }
+        if (!sequenceHeader) {
+            uint32_t word;
+            memcpy(&word, data + offset + 4, sizeof(word));
+            *lastBlockIndex = word >> 8;
+        }
+        offset += size;
+    }
+
+    return offset;
+}
+
+AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFrame partial)
 {
     pyrowave_result result;
+    int64_t lastBlockIndex = -1;
 
-    // Each frame arrives whole, so anything left from an earlier one is stale
+    // Each frame arrives on its own, so anything left from an earlier one is stale
     m_Api->decoderClear(m_Handles->decoder);
+
+    if (partial != PartialFrame::None) {
+        length = completeBlocksLength(data, length, &lastBlockIndex);
+        if (length == 0) {
+            return nullptr;
+        }
+    }
 
     result = m_Api->decoderPushPacket(m_Handles->decoder, data, length);
     if (result != PYROWAVE_SUCCESS) {
@@ -559,12 +606,38 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length)
     }
 
     if (!m_Api->decoderDecodeIsReady(m_Handles->decoder, false)) {
-        // Missing blocks decode as zero (a little blur), which beats dropping the frame
-        if (!m_Api->decoderDecodeIsReady(m_Handles->decoder, true)) {
+        // Missing blocks decode as zero (a little blur), which beats dropping the frame.
+        // PyroWave's own test wants the two coarsest bands complete and 90% of the blocks.
+        // A frame cut short at its deadline is missing the finest detail at the end of
+        // the frame, which is most of the blocks, and was only cut with most of its data
+        // here (see LiSetPartialFrameDeadline()). Dropping it would leave the frame before
+        // on screen for another frame, worse than the late frame we cut it short to avoid,
+        // so it only needs the coarse bands.
+        //
+        // PyroWave's test takes any block of those bands that it doesn't have as missing,
+        // but the encoder leaves out blocks with nothing in them, which flat or dark parts
+        // of a frame have even in its coarse bands. A partial frame is what arrived up to
+        // its first gap, and blocks are sent in index order, coarsest first, so every block
+        // up to the last one here that isn't here was left out on purpose. Only the blocks
+        // after it are missing, which the mask says.
+        bool ready;
+        if (partial != PartialFrame::None && m_Api->decoderDecodeIsReadyWithSideband != nullptr) {
+            size_t wordCount = (size_t)(lastBlockIndex + 1) / 32 + 1;
+            std::vector<uint32_t> expectedBlocks(wordCount, 0);
+            expectedBlocks[wordCount - 1] = ~0u << ((lastBlockIndex + 1) % 32);
+
+            ready = m_Api->decoderDecodeIsReadyWithSideband(m_Handles->decoder, true, 2,
+                                                            partial == PartialFrame::Late ? 0.0f : 0.9f,
+                                                            expectedBlocks.data(), wordCount);
+        }
+        else {
+            ready = m_Api->decoderDecodeIsReady(m_Handles->decoder, true);
+        }
+        if (!ready) {
             return nullptr;
         }
 
-        if (!m_LoggedDecodeFailure) {
+        if (partial != PartialFrame::Late && !m_LoggedDecodeFailure) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                         "PyroWave: decoding an incomplete frame");
             m_LoggedDecodeFailure = true;

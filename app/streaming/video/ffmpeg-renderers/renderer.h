@@ -148,6 +148,16 @@ private:
 #define ML_FRAME_FIRST_PACKET_US(frame) ((frame)->pkt_dts - (int64_t)((uint64_t)ML_FRAME_RECEIVE_TIMING(frame) >> 32))
 #define ML_FRAME_LAST_PACKET_US(frame) ((frame)->pkt_dts - (int64_t)((uint64_t)ML_FRAME_RECEIVE_TIMING(frame) & 0xFFFFFFFF))
 
+// Whether the frame was decoded from only part of its data (see CAPABILITY_PARTIAL_FRAMES),
+// and roughly what percentage of its packets had arrived, carried on the frame for the
+// pacing trace
+#define ML_FRAME_PARTIAL_NONE 0
+#define ML_FRAME_PARTIAL_LOST 1 // Packets were lost
+#define ML_FRAME_PARTIAL_LATE 2 // Cut short at its deadline
+#define ML_FRAME_SET_PARTIAL(frame, kind, percent) ((frame)->opaque = (void*)(intptr_t)(((kind) << 8) | (percent)))
+#define ML_FRAME_PARTIAL_KIND(frame) ((int)((intptr_t)(frame)->opaque >> 8))
+#define ML_FRAME_PARTIAL_PERCENT(frame) ((int)((intptr_t)(frame)->opaque & 0xFF))
+
 // What the display has done with presented frames. See getPresentFeedback().
 typedef struct _PRESENT_FEEDBACK {
     uint32_t presentId;         // Present count after the frame just presented, 0 if unknown

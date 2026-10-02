@@ -166,6 +166,27 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 #define CADENCE_DRAIN_BACKLOG_SECONDS 2
 #define CADENCE_DRAIN_MIN_GAP_US 10000000
 
+// A frame still arriving when it should be ready to draw is cut short then, where the
+// decoder can show what arrived of it (PyroWave), rather than shown late. See
+// updatePartialDeadline().
+//
+// On a link the stream nearly filled, receiving a frame took 10.8 ms at the median at
+// 76 FPS, and 163 frames in two minutes took over 15 ms. Their first packets arrived on
+// time; the rest of the frame was slow. Each was shown 5-6 ms late and the frame after
+// it 4-6 ms early. PyroWave sends the coarsest detail first, so a frame cut short is
+// missing its finest detail rather than part of the picture.
+//
+// The cut is when the frame's data must be in for it to be ready to draw on time: its
+// draw start less this percentile of recent times from a frame's last packet to its
+// being ready (decoding, and waiting for the GPU to finish it), less a margin. Frames
+// with less than the minimum share of their packets in are left to arrive late, since
+// so little of a frame is barely recognisable. ML_PACING_PARTIAL=0 turns this off;
+// ML_PACING_PARTIAL_MIN_PCT and ML_PACING_PARTIAL_MARGIN_US set the other two.
+#define CADENCE_PARTIAL_READY_PERCENTILE 90
+#define CADENCE_PARTIAL_MIN_PERCENT 50
+#define CADENCE_PARTIAL_MARGIN_US 0
+#define CADENCE_PARTIAL_MIN_SAMPLES 16
+
 Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_RenderThread(nullptr),
     m_VsyncThread(nullptr),
@@ -214,6 +235,13 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_HostStepLatenessUs(0),
     m_LastArrivalUs(0),
     m_LastPacedHoldUs(0),
+    m_PartialEnabled(true),
+    m_PartialMinPercent(CADENCE_PARTIAL_MIN_PERCENT),
+    m_PartialMarginUs(CADENCE_PARTIAL_MARGIN_US),
+    m_ReadyCostsUs{},
+    m_ReadyCostCount(0),
+    m_NextReadyCost(0),
+    m_PartialDeadlineSet(true),
     m_QueueDrainEnabled(true),
     m_BacklogFrames(0),
     m_DrainNext(false),
@@ -509,6 +537,15 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
         if (qEnvironmentVariableIsSet("ML_PACING_NO_TEAR_PCT")) {
             m_NoTearFraction = qBound(10, qEnvironmentVariableIntValue("ML_PACING_NO_TEAR_PCT"), 1000) / 100.0;
         }
+        if (qEnvironmentVariableIsSet("ML_PACING_PARTIAL")) {
+            m_PartialEnabled = qEnvironmentVariableIntValue("ML_PACING_PARTIAL") != 0;
+        }
+        if (qEnvironmentVariableIsSet("ML_PACING_PARTIAL_MIN_PCT")) {
+            m_PartialMinPercent = qBound(0, qEnvironmentVariableIntValue("ML_PACING_PARTIAL_MIN_PCT"), 100);
+        }
+        if (qEnvironmentVariableIsSet("ML_PACING_PARTIAL_MARGIN_US")) {
+            m_PartialMarginUs = qBound(-20000, qEnvironmentVariableIntValue("ML_PACING_PARTIAL_MARGIN_US"), 20000);
+        }
 
         m_LearnFramesLeft = qMax(CADENCE_MIN_LEARN_FRAMES, m_MaxVideoFps);
 
@@ -521,7 +558,8 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
 #endif
 
         QString settings = QString("smoothing gain %1% on errors up to %5 us, arrival percentile %2, "
-                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin, %8 us spin, display queue drain %9, %10 us tear guard")
+                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin, %8 us spin, display queue drain %9, %10 us tear guard, "
+                                   "late frames cut short %11")
                 .arg((int)std::lround(m_SmoothGain * 100))
                 .arg(m_ArrivalPercentile)
                 .arg((int)std::lround(m_NoTearFraction * 100))
@@ -531,7 +569,10 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
                 .arg((int)m_DrawMarginUs)
                 .arg(m_WaitTimerHighRes ? m_SpinUs : qMax(m_SpinUs, CADENCE_SPIN_LOW_RES_US))
                 .arg(m_QueueDrainEnabled ? "on" : "off")
-                .arg(m_TearGuardUs);
+                .arg(m_TearGuardUs)
+                .arg(m_PartialEnabled ?
+                         QString("with %1% of their packets in, %2 us margin").arg(m_PartialMinPercent).arg(m_PartialMarginUs) :
+                         QString("off"));
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Frame pacing: following the host's cadence, %d FPS stream on a %d Hz display (%s)",
@@ -765,6 +806,8 @@ int Pacer::cadenceThread(void* context)
             row.firstPacketUs = ML_FRAME_FIRST_PACKET_US(frame);
             row.lastPacketUs = ML_FRAME_LAST_PACKET_US(frame);
         }
+        row.partial = (uint8_t)ML_FRAME_PARTIAL_KIND(frame);
+        row.partialPercent = (uint8_t)ML_FRAME_PARTIAL_PERCENT(frame);
 
         // Wait for the GPU to finish decoding the frame, and count it as arriving once it
         // has, so it is scheduled from when it can actually be drawn. Only a wait that
@@ -852,8 +895,16 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
     }
     m_DrawLeadUs += m_DrawMarginUs;
 
+    // How long frames take from their last packet to being ready to draw
+    if (row->lastPacketUs != 0 && arrivalUs >= row->lastPacketUs) {
+        m_ReadyCostsUs[m_NextReadyCost] = (uint32_t)qMin<int64_t>(arrivalUs - row->lastPacketUs, UINT32_MAX);
+        m_NextReadyCost = (m_NextReadyCost + 1) % PACER_CADENCE_READY_SAMPLES;
+        m_ReadyCostCount = qMin(m_ReadyCostCount + 1, PACER_CADENCE_READY_SAMPLES);
+    }
+
     if (hostUs <= 0) {
         // Nothing to pace against
+        updatePartialDeadline(hostUs, false);
         return arrivalUs;
     }
 
@@ -1057,7 +1108,40 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
     row->intervalUs = (int32_t)qMin<int64_t>(medianIntervalUs, INT32_MAX);
     row->tear = m_Tearing ? 1 : 0;
 
+    updatePartialDeadline(hostUs, !row->learning && !hostStep && !m_HostStepActive);
+
     return targetUs;
+}
+
+// Tells the receive side when the frames after this one are cut short if they are still
+// arriving (see CADENCE_PARTIAL_READY_PERCENTILE). A frame is ready to draw on time if
+// it arrives by its smoothed host time plus the delay, so its data must be in that much
+// earlier than it takes to get ready. The smoothed time is taken to sit as far from the
+// host's stamp as this frame's did. Off while the cadence is being learned and during a
+// host timestamp step, where frames aren't paced by their stamps.
+void Pacer::updatePartialDeadline(int64_t hostUs, bool paced)
+{
+    if (!m_PartialEnabled) {
+        return;
+    }
+
+    if (!paced || m_ReadyCostCount < CADENCE_PARTIAL_MIN_SAMPLES) {
+        if (m_PartialDeadlineSet) {
+            LiSetPartialFrameDeadline(false, 0, 0);
+            m_PartialDeadlineSet = false;
+        }
+        return;
+    }
+
+    uint32_t costs[PACER_CADENCE_READY_SAMPLES];
+    std::copy(m_ReadyCostsUs, m_ReadyCostsUs + m_ReadyCostCount, costs);
+    uint32_t* percentile = costs + (m_ReadyCostCount - 1) * CADENCE_PARTIAL_READY_PERCENTILE / 100;
+    std::nth_element(costs, percentile, costs + m_ReadyCostCount);
+
+    int64_t offsetUs = (int64_t)(m_SmoothedUs - (double)hostUs + m_DelayUs) - (int64_t)*percentile - m_PartialMarginUs;
+
+    LiSetPartialFrameDeadline(true, offsetUs, m_PartialMinPercent);
+    m_PartialDeadlineSet = true;
 }
 
 // Draws a frame and presents it so that Present() returns at the target.
