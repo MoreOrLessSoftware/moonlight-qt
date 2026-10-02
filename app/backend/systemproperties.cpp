@@ -3,6 +3,8 @@
 
 #include <QGuiApplication>
 #include <QLibraryInfo>
+#include <QLocale>
+#include <QDate>
 
 #include "streaming/session.h"
 #include "streaming/streamutils.h"
@@ -46,7 +48,12 @@ private:
 
 SystemProperties::SystemProperties()
 {
-    versionString = QString(VERSION_STR);
+#ifdef DISPLAY_VERSION_STR
+    versionString = QString(DISPLAY_VERSION_STR);
+#else
+    // No git tag at build time, so show the build date and time as YYYY.MM.DD.hhmm
+    versionString = QLocale::c().toDateTime(QString(__DATE__ " " __TIME__).simplified(), "MMM d yyyy HH:mm:ss").toString("yyyy.MM.dd.HHmm");
+#endif
     hasDesktopEnvironment = WMUtils::isRunningDesktopEnvironment();
     isRunningWayland = WMUtils::isRunningWayland();
     isRunningXWayland = isRunningWayland && QGuiApplication::platformName() == "xcb";
