@@ -153,6 +153,20 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         SDL_PushEvent(&quitExitEvent);
         break;
 
+    case KeyComboDisconnectOnly:
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Detected disconnect-only key combo");
+
+        // Leave the app running on the host even if quitAppAfter is set
+        Session::get()->setLeaveHostAppRunning();
+
+        // Push a quit event to the main loop
+        SDL_Event disconnectEvent;
+        disconnectEvent.type = SDL_QUIT;
+        disconnectEvent.quit.timestamp = SDL_GetTicks();
+        SDL_PushEvent(&disconnectEvent);
+        break;
+
     case KeyComboToggleKeyboardGrab:
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Detected keyboard grab toggle combo");
