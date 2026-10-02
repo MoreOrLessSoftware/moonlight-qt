@@ -581,3 +581,12 @@ macx {
 
 VERSION = "$$cat(version.txt)"
 DEFINES += VERSION_STR=\\\"$$cat(version.txt)\\\"
+
+# Display version shown in the UI: the git tag if HEAD is exactly on one.
+# Otherwise it's left undefined and the build date is used (see systemproperties.cpp).
+# This is separate from VERSION_STR, which the update checker and Windows
+# resources require to stay a plain numeric version.
+GIT_TAG = $$system("git -C \"$$PWD\" describe --tags --exact-match 2>&1", lines, GIT_TAG_STATUS)
+equals(GIT_TAG_STATUS, 0):!isEmpty(GIT_TAG) {
+    DEFINES += DISPLAY_VERSION_STR=\\\"$$first(GIT_TAG)\\\"
+}
