@@ -82,6 +82,11 @@ PacerTrace::PacerTrace(int displayHz) :
     m_TearThirds{},
     m_TearSwitches(0),
     m_HostStepFrames(0),
+    m_LostPartials(0),
+    m_LatePartials(0),
+    m_LatePartialsMissed(0),
+    m_LatePartialPercentTotal(0),
+    m_LatePartialPercentMin(100),
     m_PresentIds{},
     m_PresentTimesUs{},
     m_LastDisplayedId(0),
@@ -170,12 +175,15 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "#   decoded_us: when the decoder handed it over; arrival_us is later where the pacer waited for the\n"
                     << "#   GPU to finish decoding it. receive_us = last_packet_us - first_packet_us, decode_us = decoded_us -\n"
                     << "#   last_packet_us, decode_wait_us = arrival_us - decoded_us (-1 where unknown).\n"
+                    << "# partial: the frame was decoded from part of its data: 0 no, 1 packets were lost, 2 it was still\n"
+                    << "#   arriving at its deadline and was cut short (last_packet_us is then when it was cut). partial_pct:\n"
+                    << "#   roughly what percentage of its packets had arrived, 100 when partial is 0.\n"
                     << "frame,host_us,arrival_us,smoothed_us,delay_us,target_us,render_start_us,present_us,"
                        "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,draw_us,present_call_us,"
                        "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step,"
                        "dequeue_us,draw_due_us,present_id,displayed_id,displayed_us,presentation_mode,queued_presents,"
                        "display_latency_us,drained_before,tear_guard,displayed_refresh,sync_refresh,"
-                       "first_packet_us,last_packet_us,decoded_us,receive_us,decode_us,decode_wait_us\n";
+                       "first_packet_us,last_packet_us,decoded_us,receive_us,decode_us,decode_wait_us,partial,partial_pct\n";
 
     trace->m_Thread = SDL_CreateThread(PacerTrace::writerThread, "PacerTrace", trace);
     if (trace->m_Thread == nullptr) {
@@ -314,6 +322,18 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
 
     if (row.hostStep) {
         m_HostStepFrames++;
+    }
+
+    if (row.partial == 1) {
+        m_LostPartials++;
+    }
+    else if (row.partial == 2) {
+        m_LatePartials++;
+        m_LatePartialPercentTotal += row.partialPercent;
+        m_LatePartialPercentMin = qMin<int>(m_LatePartialPercentMin, row.partialPercent);
+        if (!row.learning && lateUs > 1000) {
+            m_LatePartialsMissed++;
+        }
     }
 
     if (row.learning) {
@@ -457,7 +477,9 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
              << row.decodedUs << ','
              << receiveUs << ','
              << decodeUs << ','
-             << decodeWaitUs << '\n';
+             << decodeWaitUs << ','
+             << (int)row.partial << ','
+             << (row.partial != 0 ? (int)row.partialPercent : 100) << '\n';
 
     m_Previous = row;
     m_HavePrevious = true;
@@ -495,7 +517,15 @@ void PacerTrace::writeFooter()
              << m_TearThirds[2] << "\n"
              << "# host timestamp steps: " << m_HostStepFrames
              << " frames held as long as the frame before them, left out of the spacing figures\n"
-             << "# tearing presents held out of the previous frame's scanout: " << m_TearGuards << "\n";
+             << "# tearing presents held out of the previous frame's scanout: " << m_TearGuards << "\n"
+             << "# partial frames: " << m_LatePartials << " cut short at their deadline";
+
+    if (m_LatePartials > 0) {
+        m_Stream << " with " << m_LatePartialPercentTotal / m_LatePartials << "% of their packets in on average, "
+                 << m_LatePartialPercentMin << "% at least, " << m_LatePartialsMissed
+                 << " still missing their schedule by over 1 ms";
+    }
+    m_Stream << "; " << m_LostPartials << " with lost packets\n";
 
     if (m_StatsRows > 0) {
         m_Stream << "# present to display (DXGI frame statistics, frames it reported shown): " << m_Display.describe() << "\n"

@@ -113,8 +113,10 @@ int FFmpegVideoDecoder::getDecoderCapabilities()
 
         if (m_Pyrowave != nullptr) {
             // Every PyroWave frame decodes on its own. There are no slices or
-            // reference frames to invalidate.
-            capabilities = 0;
+            // reference frames to invalidate. Frames missing some of their data
+            // can still be decoded, a little blurred where it is missing, so they
+            // are taken rather than dropped or waited for. See PyrowaveDecoder::decode().
+            capabilities = CAPABILITY_PARTIAL_FRAMES;
         }
         else if (!isHardwareAccelerated()) {
             // Slice up to 4 times for parallel CPU decoding, once slice per core
@@ -2025,9 +2027,19 @@ void FFmpegVideoDecoder::deliverDecodedFrame(AVFrame* frame, const DECODE_UNIT* 
         uint64_t sinceFirstUs = (uint64_t)qBound<int64_t>(0, frame->pkt_dts - (int64_t)du->receiveTimeUs, UINT32_MAX);
         uint64_t sinceLastUs = (uint64_t)qBound<int64_t>(0, frame->pkt_dts - (int64_t)du->enqueueTimeUs, UINT32_MAX);
         ML_FRAME_RECEIVE_TIMING(frame) = (int64_t)(sinceFirstUs << 32 | sinceLastUs);
+
+        if (du->partialFrame) {
+            ML_FRAME_SET_PARTIAL(frame,
+                                 du->partialLate ? ML_FRAME_PARTIAL_LATE : ML_FRAME_PARTIAL_LOST,
+                                 qBound(0, du->partialPercent, 100));
+        }
+        else {
+            ML_FRAME_SET_PARTIAL(frame, ML_FRAME_PARTIAL_NONE, 100);
+        }
     }
     else {
         ML_FRAME_RECEIVE_TIMING(frame) = 0;
+        ML_FRAME_SET_PARTIAL(frame, ML_FRAME_PARTIAL_NONE, 100);
     }
 
     m_ActiveWndVideoStats.decodedFrames++;
@@ -2058,17 +2070,30 @@ int FFmpegVideoDecoder::submitPyrowaveDecodeUnit(PDECODE_UNIT du)
 #ifdef Q_OS_WIN32
     recordReceivedFrame(du);
 
-    // Gather the frame into one buffer
+    // Gather the frame into one buffer. A partial frame's blocks can only be found up to
+    // its first gap, since the data after one starts partway into a block.
     m_DecodeBuffer.reserve(du->fullLength);
     int offset = 0;
     for (PLENTRY entry = du->bufferList; entry != nullptr; entry = entry->next) {
+        if (entry->bufferType == BUFFER_TYPE_MISSING) {
+            break;
+        }
         memcpy(&m_DecodeBuffer.data()[offset], entry->data, entry->length);
         offset += entry->length;
     }
 
     m_ActiveWndVideoStats.totalReassemblyTimeUs += (du->enqueueTimeUs - du->receiveTimeUs);
 
-    AVFrame* frame = m_Pyrowave->decode((const uint8_t*)m_DecodeBuffer.constData(), offset);
+    PyrowaveDecoder::PartialFrame partial = PyrowaveDecoder::PartialFrame::None;
+    if (du->partialFrame) {
+        partial = du->partialLate ? PyrowaveDecoder::PartialFrame::Late : PyrowaveDecoder::PartialFrame::Lost;
+    }
+
+    AVFrame* frame = m_Pyrowave->decode((const uint8_t*)m_DecodeBuffer.constData(), offset, partial);
+    if (frame == nullptr && partial != PyrowaveDecoder::PartialFrame::None) {
+        // Too little of it arrived to show. That says nothing about the decoder's health.
+        return DR_OK;
+    }
     if (frame == nullptr) {
         // If we've failed a bunch of decodes in a row, the decoder/renderer is
         // clearly unhealthy, so let's generate a synthetic reset event to trigger

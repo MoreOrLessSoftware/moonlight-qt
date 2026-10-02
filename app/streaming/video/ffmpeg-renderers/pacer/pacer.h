@@ -22,6 +22,10 @@
 // Draw times remembered when choosing how early to start drawing
 #define PACER_CADENCE_DRAW_SAMPLES 64
 
+// Times from a frame's last packet to its being ready to draw, remembered when choosing
+// when a frame still arriving is cut short
+#define PACER_CADENCE_READY_SAMPLES 64
+
 class IVsyncSource {
 public:
     virtual ~IVsyncSource() {}
@@ -74,6 +78,8 @@ private:
     void presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row);
 
     void finishFrame(AVFrame* frame, uint64_t renderTimeUs);
+
+    void updatePartialDeadline(int64_t hostUs, bool paced);
 
     QQueue<AVFrame*> m_RenderQueue;
     QQueue<AVFrame*> m_PacingQueue;
@@ -139,6 +145,15 @@ private:
     double m_HostStepLatenessUs;
     int64_t m_LastArrivalUs;
     double m_LastPacedHoldUs;
+
+    // Frames cut short at their deadline. See updatePartialDeadline().
+    bool m_PartialEnabled;
+    int m_PartialMinPercent;
+    int m_PartialMarginUs;
+    uint32_t m_ReadyCostsUs[PACER_CADENCE_READY_SAMPLES];
+    int m_ReadyCostCount;
+    int m_NextReadyCost;
+    bool m_PartialDeadlineSet;
 
     // Frames held up in the display's queue. See presentAt().
     bool m_QueueDrainEnabled;
