@@ -127,6 +127,9 @@ public:
 
     void setShouldExit(bool quitHostApp = false);
 
+    // Disconnect without quitting the host app, regardless of the quitAppAfter preference
+    void setLeaveHostAppRunning() { m_LeaveHostAppRunning = true; }
+
 signals:
     void stageStarting(QString stage);
 
@@ -266,6 +269,7 @@ private:
     int m_FlushingWindowEventsRef;
     QStringList m_LaunchWarnings;
     bool m_ShouldExit;
+    bool m_LeaveHostAppRunning;
 
     bool m_AsyncConnectionSuccess;
     int m_PortTestResults;
