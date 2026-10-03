@@ -103,7 +103,7 @@ Flickable {
             id: basicSettingsGroupBox
             width: (parent.width - (parent.leftPadding + parent.rightPadding))
             padding: 12
-            title: "<font color=\"skyblue\">" + qsTr("Basic Settings") + "</font>"
+            title: "<font color=\"skyblue\">" + qsTr("Video Settings") + "</font>"
             font.pointSize: 12
 
             Column {
@@ -668,6 +668,76 @@ Flickable {
 
                 Label {
                     width: parent.width
+                    id: resVCCTitle
+                    text: qsTr("Video codec")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                AutoResizingComboBox {
+                    // ignore setting the index at first, and actually set it when the component is loaded
+                    Component.onCompleted: {
+                        // PyroWave is only implemented for Windows (D3D11 + Vulkan interop)
+                        if (Qt.platform.os !== "windows") {
+                            for (var j = codecListModel.count - 1; j >= 0; j--) {
+                                if (codecListModel.get(j).val === StreamingPreferences.VCC_FORCE_PYROWAVE) {
+                                    codecListModel.remove(j)
+                                }
+                            }
+                        }
+
+                        var saved_vcc = StreamingPreferences.videoCodecConfig
+
+                        // Default to Automatic (relevant if HDR is enabled,
+                        // where we will match none of the codecs in the list)
+                        currentIndex = 0
+
+                        for(var i = 0; i < codecListModel.count; i++) {
+                            var el_vcc = codecListModel.get(i).val;
+                            if (saved_vcc === el_vcc) {
+                                currentIndex = i
+                                break
+                            }
+                        }
+
+                        activated(currentIndex)
+                    }
+
+                    id: codecComboBox
+                    textRole: "text"
+                    model: ListModel {
+                        id: codecListModel
+                        ListElement {
+                            text: qsTr("Automatic (Recommended)")
+                            val: StreamingPreferences.VCC_AUTO
+                        }
+                        ListElement {
+                            text: qsTr("H.264")
+                            val: StreamingPreferences.VCC_FORCE_H264
+                        }
+                        ListElement {
+                            text: qsTr("HEVC (H.265)")
+                            val: StreamingPreferences.VCC_FORCE_HEVC
+                        }
+                        ListElement {
+                            text: qsTr("AV1")
+                            val: StreamingPreferences.VCC_FORCE_AV1
+                        }
+                        ListElement {
+                            text: qsTr("PyroWave (Experimental, 200+ Mbps LAN)")
+                            val: StreamingPreferences.VCC_FORCE_PYROWAVE
+                        }
+                    }
+                    // ::onActivated must be used, as it only listens for when the index is changed by a human
+                    onActivated : {
+                        if (enabled) {
+                            StreamingPreferences.videoCodecConfig = codecListModel.get(currentIndex).val
+                        }
+                    }
+                }
+
+                Label {
+                    width: parent.width
                     id: bitrateTitle
                     text: qsTr("Video bitrate:")
                     font.pointSize: 12
@@ -849,27 +919,62 @@ Flickable {
                     }
                 }
 
-                CheckBox {
-                    id: enableHdr
+                Row {
+                    spacing: 5
                     width: parent.width
-                    text: qsTr("Enable HDR")
-                    font.pointSize: 12
 
-                    enabled: SystemProperties.supportsHdr
-                    checked: enabled && StreamingPreferences.enableHdr
-                    onCheckedChanged: {
-                        StreamingPreferences.enableHdr = checked
+                    CheckBox {
+                        id: enableHdr
+                        hoverEnabled: true
+                        text: qsTr("Enable HDR")
+                        font.pointSize: 12
+
+                        enabled: SystemProperties.supportsHdr
+                        checked: enabled && StreamingPreferences.enableHdr
+                        onCheckedChanged: {
+                            StreamingPreferences.enableHdr = checked
+                        }
+
+                        // Updating StreamingPreferences.videoCodecConfig is handled above
+
+                        ToolTip.delay: 1000
+                        ToolTip.timeout: 5000
+                        ToolTip.visible: hovered
+                        ToolTip.text: enabled ?
+                                          qsTr("The stream will be HDR-capable, but some games may require an HDR monitor on your host PC to enable HDR mode.")
+                                        :
+                                          qsTr("HDR streaming is not supported on this PC.")
                     }
 
-                    // Updating StreamingPreferences.videoCodecConfig is handled above
+                    CheckBox {
+                        id: enableYUV444
+                        hoverEnabled: true
+                        text: qsTr("Enable YUV 4:4:4")
+                        font.pointSize: 12
 
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 5000
-                    ToolTip.visible: hovered
-                    ToolTip.text: enabled ?
-                                      qsTr("The stream will be HDR-capable, but some games may require an HDR monitor on your host PC to enable HDR mode.")
-                                    :
-                                      qsTr("HDR streaming is not supported on this PC.")
+                        checked: StreamingPreferences.enableYUV444
+                        onCheckedChanged: {
+                            // This is called on init, so only reset to default bitrate when checked state changes.
+                            if (StreamingPreferences.enableYUV444 != checked) {
+                                StreamingPreferences.enableYUV444 = checked
+                                if (StreamingPreferences.autoAdjustBitrate) {
+                                    StreamingPreferences.bitrateKbps = StreamingPreferences.getDefaultBitrate(StreamingPreferences.width,
+                                                                                                              StreamingPreferences.height,
+                                                                                                              StreamingPreferences.fps,
+                                                                                                              StreamingPreferences.enableYUV444);
+                                    slider.value = StreamingPreferences.bitrateKbps
+                                }
+                            }
+                        }
+
+                        ToolTip.delay: 1000
+                        ToolTip.timeout: 5000
+                        ToolTip.visible: hovered
+                        ToolTip.text: enabled ?
+                                          qsTr("Good for streaming desktop and text-heavy games, but not recommended for fast-paced games.")
+                                        :
+                                          qsTr("YUV 4:4:4 is not supported on this PC.")
+                    }
                 }
             }
         }
@@ -1198,6 +1303,424 @@ Flickable {
                 }
             }
         }
+    }
+
+    Column {
+        padding: 10
+        rightPadding: 20
+        anchors.left: settingsColumn1.right
+        id: settingsColumn2
+        width: settingsPage.width / 2
+        spacing: 15
+
+        GroupBox {
+            id: inputSettingsGroupBox
+            width: (parent.width - (parent.leftPadding + parent.rightPadding))
+            padding: 12
+            title: "<font color=\"skyblue\">" + qsTr("Input Settings") + "</font>"
+            font.pointSize: 12
+
+            Column {
+                anchors.fill: parent
+                spacing: 5
+
+                CheckBox {
+                    id: absoluteMouseCheck
+                    hoverEnabled: true
+                    width: parent.width
+                    text: qsTr("Optimize mouse for remote desktop instead of games")
+                    font.pointSize:  12
+                    checked: StreamingPreferences.absoluteMouseMode
+                    onCheckedChanged: {
+                        StreamingPreferences.absoluteMouseMode = checked
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 10000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("This enables seamless mouse control without capturing the client's mouse cursor. It is ideal for remote desktop usage but will not work in most games.") + " " +
+                                  qsTr("You can toggle this while streaming using Ctrl+Alt+Shift+M.") + "\n\n" +
+                                  qsTr("NOTE: Due to a bug in GeForce Experience, this option may not work properly if your host PC has multiple monitors.")
+                }
+
+                Row {
+                    spacing: 5
+                    width: parent.width
+
+                    CheckBox {
+                        id: captureSysKeysCheck
+                        hoverEnabled: true
+                        text: qsTr("Capture system keyboard shortcuts")
+                        font.pointSize: 12
+                        enabled: SystemProperties.hasDesktopEnvironment
+                        checked: StreamingPreferences.captureSysKeysMode !== StreamingPreferences.CSK_OFF || !SystemProperties.hasDesktopEnvironment
+
+                        ToolTip.delay: 1000
+                        ToolTip.timeout: 10000
+                        ToolTip.visible: hovered
+                        ToolTip.text: qsTr("This enables the capture of system-wide keyboard shortcuts like Alt+Tab that would normally be handled by the client OS while streaming.") + "\n\n" +
+                                      qsTr("NOTE: Certain keyboard shortcuts like Ctrl+Alt+Del on Windows cannot be intercepted by any application, including Moonlight.")
+                    }
+
+                    AutoResizingComboBox {
+                        // ignore setting the index at first, and actually set it when the component is loaded
+                        Component.onCompleted: {
+                            if (!visible) {
+                                // Do nothing if the control won't even be visible
+                                return
+                            }
+
+                            var saved_syskeysmode = StreamingPreferences.captureSysKeysMode
+                            currentIndex = 0
+                            for (var i = 0; i < captureSysKeysModeListModel.count; i++) {
+                                var el_syskeysmode = captureSysKeysModeListModel.get(i).val;
+                                if (saved_syskeysmode === el_syskeysmode) {
+                                    currentIndex = i
+                                    break
+                                }
+                            }
+
+                            activated(currentIndex)
+                        }
+
+                        enabled: captureSysKeysCheck.checked && captureSysKeysCheck.enabled
+                        textRole: "text"
+                        model: ListModel {
+                            id: captureSysKeysModeListModel
+                            ListElement {
+                                text: qsTr("in fullscreen")
+                                val: StreamingPreferences.CSK_FULLSCREEN
+                            }
+                            ListElement {
+                                text: qsTr("always")
+                                val: StreamingPreferences.CSK_ALWAYS
+                            }
+                        }
+
+                        function updatePref() {
+                            if (!enabled) {
+                                StreamingPreferences.captureSysKeysMode = StreamingPreferences.CSK_OFF
+                            }
+                            else {
+                                StreamingPreferences.captureSysKeysMode = captureSysKeysModeListModel.get(currentIndex).val
+                            }
+                        }
+
+                        // ::onActivated must be used, as it only listens for when the index is changed by a human
+                        onActivated: {
+                            updatePref()
+                        }
+
+                        // This handles transition of the checkbox state
+                        onEnabledChanged: {
+                            updatePref()
+                        }
+                    }
+                }
+
+                CheckBox {
+                    id: absoluteTouchCheck
+                    hoverEnabled: true
+                    width: parent.width
+                    text: qsTr("Use touchscreen as a virtual trackpad")
+                    font.pointSize:  12
+                    checked: !StreamingPreferences.absoluteTouchMode
+                    onCheckedChanged: {
+                        StreamingPreferences.absoluteTouchMode = !checked
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("When checked, the touchscreen acts like a trackpad. When unchecked, the touchscreen will directly control the mouse pointer.")
+                }
+
+                CheckBox {
+                    id: swapMouseButtonsCheck
+                    hoverEnabled: true
+                    width: parent.width
+                    text: qsTr("Swap left and right mouse buttons")
+                    font.pointSize:  12
+                    checked: StreamingPreferences.swapMouseButtons
+                    onCheckedChanged: {
+                        StreamingPreferences.swapMouseButtons = checked
+                    }
+                }
+
+                CheckBox {
+                    id: reverseScrollButtonsCheck
+                    hoverEnabled: true
+                    width: parent.width
+                    text: qsTr("Reverse mouse scrolling direction")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.reverseScrollDirection
+                    onCheckedChanged: {
+                        StreamingPreferences.reverseScrollDirection = checked
+                    }
+                }
+            }
+        }
+
+        GroupBox {
+            id: gamepadSettingsGroupBox
+            width: (parent.width - (parent.leftPadding + parent.rightPadding))
+            padding: 12
+            title: "<font color=\"skyblue\">" + qsTr("Gamepad Settings") + "</font>"
+            font.pointSize: 12
+
+            Column {
+                anchors.fill: parent
+                spacing: 5
+
+                CheckBox {
+                    id: swapFaceButtonsCheck
+                    width: parent.width
+                    text: qsTr("Swap A/B and X/Y gamepad buttons")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.swapFaceButtons
+                    onCheckedChanged: {
+                        StreamingPreferences.swapFaceButtons = checked
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("This switches gamepads into a Nintendo-style button layout")
+                }
+
+                CheckBox {
+                    id: singleControllerCheck
+                    width: parent.width
+                    text: qsTr("Force gamepad #1 always connected")
+                    font.pointSize:  12
+                    checked: !StreamingPreferences.multiController
+                    onCheckedChanged: {
+                        StreamingPreferences.multiController = !checked
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Forces a single gamepad to always stay connected to the host, even if no gamepads are actually connected to this PC.") + " " +
+                                  qsTr("Only enable this option when streaming a game that doesn't support gamepads being connected after startup.")
+                }
+
+                CheckBox {
+                    id: gamepadMouseCheck
+                    hoverEnabled: true
+                    width: parent.width
+                    text: qsTr("Enable mouse control with gamepads by holding the 'Start' button")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.gamepadMouse
+                    onCheckedChanged: {
+                        StreamingPreferences.gamepadMouse = checked
+                    }
+                }
+
+                CheckBox {
+                    id: backgroundGamepadCheck
+                    width: parent.width
+                    text: qsTr("Process gamepad input when Moonlight is in the background")
+                    font.pointSize: 12
+                    visible: SystemProperties.hasDesktopEnvironment
+                    checked: StreamingPreferences.backgroundGamepad
+                    onCheckedChanged: {
+                        StreamingPreferences.backgroundGamepad = checked
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Allows Moonlight to capture gamepad inputs even if it's not the current window in focus")
+                }
+            }
+        }
+
+        GroupBox {
+            id: advancedSettingsGroupBox
+            width: (parent.width - (parent.leftPadding + parent.rightPadding))
+            padding: 12
+            title: "<font color=\"skyblue\">" + qsTr("Advanced Settings") + "</font>"
+            font.pointSize: 12
+
+            Column {
+                anchors.fill: parent
+                spacing: 5
+
+                Label {
+                    width: parent.width
+                    id: resVDSTitle
+                    text: qsTr("Video decoder")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                AutoResizingComboBox {
+                    // ignore setting the index at first, and actually set it when the component is loaded
+                    Component.onCompleted: {
+                        var saved_vds = StreamingPreferences.videoDecoderSelection
+                        currentIndex = 0
+                        for (var i = 0; i < decoderListModel.count; i++) {
+                            var el_vds = decoderListModel.get(i).val;
+                            if (saved_vds === el_vds) {
+                                currentIndex = i
+                                break
+                            }
+                        }
+                        activated(currentIndex)
+                    }
+
+                    id: decoderComboBox
+                    textRole: "text"
+                    model: ListModel {
+                        id: decoderListModel
+                        ListElement {
+                            text: qsTr("Automatic (Recommended)")
+                            val: StreamingPreferences.VDS_AUTO
+                        }
+                        ListElement {
+                            text: qsTr("Force software decoding")
+                            val: StreamingPreferences.VDS_FORCE_SOFTWARE
+                        }
+                        ListElement {
+                            text: qsTr("Force hardware decoding")
+                            val: StreamingPreferences.VDS_FORCE_HARDWARE
+                        }
+                    }
+                    // ::onActivated must be used, as it only listens for when the index is changed by a human
+                    onActivated: {
+                        if (enabled) {
+                            StreamingPreferences.videoDecoderSelection = decoderListModel.get(currentIndex).val
+                        }
+                    }
+                }
+
+                Label {
+                    width: parent.width
+                    id: rendererTitle
+                    text: qsTr("Renderer")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                    visible: SystemProperties.isDarwin
+                }
+
+                AutoResizingComboBox {
+                    // ignore setting the index at first, and actually set it when the component is loaded
+                    Component.onCompleted: {
+                        var saved_rs = StreamingPreferences.rendererSelection
+
+                        // Default to Automatic
+                        currentIndex = 0
+
+                        for(var i = 0; i < rendererListModel.count; i++) {
+                            var el_rs = rendererListModel.get(i).val;
+                            if (saved_rs === el_rs) {
+                                currentIndex = i
+                                break
+                            }
+                        }
+
+                        activated(currentIndex)
+                    }
+
+                    id: rendererComboBox
+                    visible: SystemProperties.isDarwin
+                    textRole: "text"
+                    model: ListModel {
+                        id: rendererListModel
+                        ListElement {
+                            text: qsTr("Automatic (Recommended)")
+                            val: StreamingPreferences.RS_AUTO
+                        }
+                        ListElement {
+                            text: "Vulkan"
+                            val: StreamingPreferences.RS_VULKAN
+                        }
+                        ListElement {
+                            text: "Metal"
+                            val: StreamingPreferences.RS_METAL
+                        }
+                        ListElement {
+                            text: "AVSampleBufferDisplayLayer"
+                            val: StreamingPreferences.RS_AVSBDL
+                        }
+                    }
+                    // ::onActivated must be used, as it only listens for when the index is changed by a human
+                    onActivated : {
+                        StreamingPreferences.rendererSelection = rendererListModel.get(currentIndex).val
+                    }
+                }
+
+                CheckBox {
+                    id: unlockBitrate
+                    width: parent.width
+                    text: qsTr("Unlock bitrate limit (Experimental)")
+                    font.pointSize: 12
+
+                    checked: StreamingPreferences.unlockBitrate
+                    onCheckedChanged: {
+                        StreamingPreferences.unlockBitrate = checked
+                        StreamingPreferences.bitrateKbps = Math.min(StreamingPreferences.bitrateKbps, slider.to)
+                        slider.value = StreamingPreferences.bitrateKbps
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("This unlocks extremely high video bitrates for use with Sunshine hosts. It should only be used when streaming over an Ethernet LAN connection.")
+                }
+
+                CheckBox {
+                    id: enableMdns
+                    width: parent.width
+                    text: qsTr("Automatically find PCs on the local network (Recommended)")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.enableMdns
+                    onCheckedChanged: {
+                        // This is called on init, so only do the work if we've
+                        // actually changed the value.
+                        if (StreamingPreferences.enableMdns != checked) {
+                            StreamingPreferences.enableMdns = checked
+
+                            // Restart polling so the mDNS change takes effect
+                            if (window.pollingActive) {
+                                ComputerManager.stopPollingAsync()
+                                ComputerManager.startPolling()
+                            }
+                        }
+                    }
+                }
+
+                CheckBox {
+                    id: detectNetworkBlocking
+                    width: parent.width
+                    text: qsTr("Automatically detect blocked connections (Recommended)")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.detectNetworkBlocking
+                    onCheckedChanged: {
+                        StreamingPreferences.detectNetworkBlocking = checked
+                    }
+                }
+
+                CheckBox {
+                    id: showPerformanceOverlay
+                    width: parent.width
+                    text: qsTr("Show performance stats while streaming")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.showPerformanceOverlay
+                    onCheckedChanged: {
+                        StreamingPreferences.showPerformanceOverlay = checked
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Display real-time stream performance information while streaming.") + "\n\n" +
+                                  qsTr("You can toggle it at any time while streaming using Ctrl+Alt+Shift+S or Select+L1+R1+X.") + "\n\n" +
+                                  qsTr("The performance overlay is not supported on Steam Link or Raspberry Pi.")
+                }
+            }
+        }
 
         GroupBox {
             id: uiSettingsGroupBox
@@ -1495,524 +2018,6 @@ Flickable {
                     ToolTip.timeout: 5000
                     ToolTip.visible: hovered
                     ToolTip.text: qsTr("Prevents the screensaver from starting or the display from going to sleep while streaming.")
-                }
-            }
-        }
-    }
-
-    Column {
-        padding: 10
-        rightPadding: 20
-        anchors.left: settingsColumn1.right
-        id: settingsColumn2
-        width: settingsPage.width / 2
-        spacing: 15
-
-        GroupBox {
-            id: inputSettingsGroupBox
-            width: (parent.width - (parent.leftPadding + parent.rightPadding))
-            padding: 12
-            title: "<font color=\"skyblue\">" + qsTr("Input Settings") + "</font>"
-            font.pointSize: 12
-
-            Column {
-                anchors.fill: parent
-                spacing: 5
-
-                CheckBox {
-                    id: absoluteMouseCheck
-                    hoverEnabled: true
-                    width: parent.width
-                    text: qsTr("Optimize mouse for remote desktop instead of games")
-                    font.pointSize:  12
-                    checked: StreamingPreferences.absoluteMouseMode
-                    onCheckedChanged: {
-                        StreamingPreferences.absoluteMouseMode = checked
-                    }
-
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 10000
-                    ToolTip.visible: hovered
-                    ToolTip.text: qsTr("This enables seamless mouse control without capturing the client's mouse cursor. It is ideal for remote desktop usage but will not work in most games.") + " " +
-                                  qsTr("You can toggle this while streaming using Ctrl+Alt+Shift+M.") + "\n\n" +
-                                  qsTr("NOTE: Due to a bug in GeForce Experience, this option may not work properly if your host PC has multiple monitors.")
-                }
-
-                Row {
-                    spacing: 5
-                    width: parent.width
-
-                    CheckBox {
-                        id: captureSysKeysCheck
-                        hoverEnabled: true
-                        text: qsTr("Capture system keyboard shortcuts")
-                        font.pointSize: 12
-                        enabled: SystemProperties.hasDesktopEnvironment
-                        checked: StreamingPreferences.captureSysKeysMode !== StreamingPreferences.CSK_OFF || !SystemProperties.hasDesktopEnvironment
-
-                        ToolTip.delay: 1000
-                        ToolTip.timeout: 10000
-                        ToolTip.visible: hovered
-                        ToolTip.text: qsTr("This enables the capture of system-wide keyboard shortcuts like Alt+Tab that would normally be handled by the client OS while streaming.") + "\n\n" +
-                                      qsTr("NOTE: Certain keyboard shortcuts like Ctrl+Alt+Del on Windows cannot be intercepted by any application, including Moonlight.")
-                    }
-
-                    AutoResizingComboBox {
-                        // ignore setting the index at first, and actually set it when the component is loaded
-                        Component.onCompleted: {
-                            if (!visible) {
-                                // Do nothing if the control won't even be visible
-                                return
-                            }
-
-                            var saved_syskeysmode = StreamingPreferences.captureSysKeysMode
-                            currentIndex = 0
-                            for (var i = 0; i < captureSysKeysModeListModel.count; i++) {
-                                var el_syskeysmode = captureSysKeysModeListModel.get(i).val;
-                                if (saved_syskeysmode === el_syskeysmode) {
-                                    currentIndex = i
-                                    break
-                                }
-                            }
-
-                            activated(currentIndex)
-                        }
-
-                        enabled: captureSysKeysCheck.checked && captureSysKeysCheck.enabled
-                        textRole: "text"
-                        model: ListModel {
-                            id: captureSysKeysModeListModel
-                            ListElement {
-                                text: qsTr("in fullscreen")
-                                val: StreamingPreferences.CSK_FULLSCREEN
-                            }
-                            ListElement {
-                                text: qsTr("always")
-                                val: StreamingPreferences.CSK_ALWAYS
-                            }
-                        }
-
-                        function updatePref() {
-                            if (!enabled) {
-                                StreamingPreferences.captureSysKeysMode = StreamingPreferences.CSK_OFF
-                            }
-                            else {
-                                StreamingPreferences.captureSysKeysMode = captureSysKeysModeListModel.get(currentIndex).val
-                            }
-                        }
-
-                        // ::onActivated must be used, as it only listens for when the index is changed by a human
-                        onActivated: {
-                            updatePref()
-                        }
-
-                        // This handles transition of the checkbox state
-                        onEnabledChanged: {
-                            updatePref()
-                        }
-                    }
-                }
-
-                CheckBox {
-                    id: absoluteTouchCheck
-                    hoverEnabled: true
-                    width: parent.width
-                    text: qsTr("Use touchscreen as a virtual trackpad")
-                    font.pointSize:  12
-                    checked: !StreamingPreferences.absoluteTouchMode
-                    onCheckedChanged: {
-                        StreamingPreferences.absoluteTouchMode = !checked
-                    }
-
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 5000
-                    ToolTip.visible: hovered
-                    ToolTip.text: qsTr("When checked, the touchscreen acts like a trackpad. When unchecked, the touchscreen will directly control the mouse pointer.")
-                }
-
-                CheckBox {
-                    id: swapMouseButtonsCheck
-                    hoverEnabled: true
-                    width: parent.width
-                    text: qsTr("Swap left and right mouse buttons")
-                    font.pointSize:  12
-                    checked: StreamingPreferences.swapMouseButtons
-                    onCheckedChanged: {
-                        StreamingPreferences.swapMouseButtons = checked
-                    }
-                }
-
-                CheckBox {
-                    id: reverseScrollButtonsCheck
-                    hoverEnabled: true
-                    width: parent.width
-                    text: qsTr("Reverse mouse scrolling direction")
-                    font.pointSize: 12
-                    checked: StreamingPreferences.reverseScrollDirection
-                    onCheckedChanged: {
-                        StreamingPreferences.reverseScrollDirection = checked
-                    }
-                }
-            }
-        }
-
-        GroupBox {
-            id: gamepadSettingsGroupBox
-            width: (parent.width - (parent.leftPadding + parent.rightPadding))
-            padding: 12
-            title: "<font color=\"skyblue\">" + qsTr("Gamepad Settings") + "</font>"
-            font.pointSize: 12
-
-            Column {
-                anchors.fill: parent
-                spacing: 5
-
-                CheckBox {
-                    id: swapFaceButtonsCheck
-                    width: parent.width
-                    text: qsTr("Swap A/B and X/Y gamepad buttons")
-                    font.pointSize: 12
-                    checked: StreamingPreferences.swapFaceButtons
-                    onCheckedChanged: {
-                        StreamingPreferences.swapFaceButtons = checked
-                    }
-
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 5000
-                    ToolTip.visible: hovered
-                    ToolTip.text: qsTr("This switches gamepads into a Nintendo-style button layout")
-                }
-
-                CheckBox {
-                    id: singleControllerCheck
-                    width: parent.width
-                    text: qsTr("Force gamepad #1 always connected")
-                    font.pointSize:  12
-                    checked: !StreamingPreferences.multiController
-                    onCheckedChanged: {
-                        StreamingPreferences.multiController = !checked
-                    }
-
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 5000
-                    ToolTip.visible: hovered
-                    ToolTip.text: qsTr("Forces a single gamepad to always stay connected to the host, even if no gamepads are actually connected to this PC.") + " " +
-                                  qsTr("Only enable this option when streaming a game that doesn't support gamepads being connected after startup.")
-                }
-
-                CheckBox {
-                    id: gamepadMouseCheck
-                    hoverEnabled: true
-                    width: parent.width
-                    text: qsTr("Enable mouse control with gamepads by holding the 'Start' button")
-                    font.pointSize: 12
-                    checked: StreamingPreferences.gamepadMouse
-                    onCheckedChanged: {
-                        StreamingPreferences.gamepadMouse = checked
-                    }
-                }
-
-                CheckBox {
-                    id: backgroundGamepadCheck
-                    width: parent.width
-                    text: qsTr("Process gamepad input when Moonlight is in the background")
-                    font.pointSize: 12
-                    visible: SystemProperties.hasDesktopEnvironment
-                    checked: StreamingPreferences.backgroundGamepad
-                    onCheckedChanged: {
-                        StreamingPreferences.backgroundGamepad = checked
-                    }
-
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 5000
-                    ToolTip.visible: hovered
-                    ToolTip.text: qsTr("Allows Moonlight to capture gamepad inputs even if it's not the current window in focus")
-                }
-            }
-        }
-
-        GroupBox {
-            id: advancedSettingsGroupBox
-            width: (parent.width - (parent.leftPadding + parent.rightPadding))
-            padding: 12
-            title: "<font color=\"skyblue\">" + qsTr("Advanced Settings") + "</font>"
-            font.pointSize: 12
-
-            Column {
-                anchors.fill: parent
-                spacing: 5
-
-                Label {
-                    width: parent.width
-                    id: resVDSTitle
-                    text: qsTr("Video decoder")
-                    font.pointSize: 12
-                    wrapMode: Text.Wrap
-                }
-
-                AutoResizingComboBox {
-                    // ignore setting the index at first, and actually set it when the component is loaded
-                    Component.onCompleted: {
-                        var saved_vds = StreamingPreferences.videoDecoderSelection
-                        currentIndex = 0
-                        for (var i = 0; i < decoderListModel.count; i++) {
-                            var el_vds = decoderListModel.get(i).val;
-                            if (saved_vds === el_vds) {
-                                currentIndex = i
-                                break
-                            }
-                        }
-                        activated(currentIndex)
-                    }
-
-                    id: decoderComboBox
-                    textRole: "text"
-                    model: ListModel {
-                        id: decoderListModel
-                        ListElement {
-                            text: qsTr("Automatic (Recommended)")
-                            val: StreamingPreferences.VDS_AUTO
-                        }
-                        ListElement {
-                            text: qsTr("Force software decoding")
-                            val: StreamingPreferences.VDS_FORCE_SOFTWARE
-                        }
-                        ListElement {
-                            text: qsTr("Force hardware decoding")
-                            val: StreamingPreferences.VDS_FORCE_HARDWARE
-                        }
-                    }
-                    // ::onActivated must be used, as it only listens for when the index is changed by a human
-                    onActivated: {
-                        if (enabled) {
-                            StreamingPreferences.videoDecoderSelection = decoderListModel.get(currentIndex).val
-                        }
-                    }
-                }
-
-                Label {
-                    width: parent.width
-                    id: resVCCTitle
-                    text: qsTr("Video codec")
-                    font.pointSize: 12
-                    wrapMode: Text.Wrap
-                }
-
-                AutoResizingComboBox {
-                    // ignore setting the index at first, and actually set it when the component is loaded
-                    Component.onCompleted: {
-                        // PyroWave is only implemented for Windows (D3D11 + Vulkan interop)
-                        if (Qt.platform.os !== "windows") {
-                            for (var j = codecListModel.count - 1; j >= 0; j--) {
-                                if (codecListModel.get(j).val === StreamingPreferences.VCC_FORCE_PYROWAVE) {
-                                    codecListModel.remove(j)
-                                }
-                            }
-                        }
-
-                        var saved_vcc = StreamingPreferences.videoCodecConfig
-
-                        // Default to Automatic (relevant if HDR is enabled,
-                        // where we will match none of the codecs in the list)
-                        currentIndex = 0
-
-                        for(var i = 0; i < codecListModel.count; i++) {
-                            var el_vcc = codecListModel.get(i).val;
-                            if (saved_vcc === el_vcc) {
-                                currentIndex = i
-                                break
-                            }
-                        }
-
-                        activated(currentIndex)
-                    }
-
-                    id: codecComboBox
-                    textRole: "text"
-                    model: ListModel {
-                        id: codecListModel
-                        ListElement {
-                            text: qsTr("Automatic (Recommended)")
-                            val: StreamingPreferences.VCC_AUTO
-                        }
-                        ListElement {
-                            text: qsTr("H.264")
-                            val: StreamingPreferences.VCC_FORCE_H264
-                        }
-                        ListElement {
-                            text: qsTr("HEVC (H.265)")
-                            val: StreamingPreferences.VCC_FORCE_HEVC
-                        }
-                        ListElement {
-                            text: qsTr("AV1")
-                            val: StreamingPreferences.VCC_FORCE_AV1
-                        }
-                        ListElement {
-                            text: qsTr("PyroWave (Experimental, 200+ Mbps LAN)")
-                            val: StreamingPreferences.VCC_FORCE_PYROWAVE
-                        }
-                    }
-                    // ::onActivated must be used, as it only listens for when the index is changed by a human
-                    onActivated : {
-                        if (enabled) {
-                            StreamingPreferences.videoCodecConfig = codecListModel.get(currentIndex).val
-                        }
-                    }
-                }
-
-                Label {
-                    width: parent.width
-                    id: rendererTitle
-                    text: qsTr("Renderer")
-                    font.pointSize: 12
-                    wrapMode: Text.Wrap
-                    visible: SystemProperties.isDarwin
-                }
-
-                AutoResizingComboBox {
-                    // ignore setting the index at first, and actually set it when the component is loaded
-                    Component.onCompleted: {
-                        var saved_rs = StreamingPreferences.rendererSelection
-
-                        // Default to Automatic
-                        currentIndex = 0
-
-                        for(var i = 0; i < rendererListModel.count; i++) {
-                            var el_rs = rendererListModel.get(i).val;
-                            if (saved_rs === el_rs) {
-                                currentIndex = i
-                                break
-                            }
-                        }
-
-                        activated(currentIndex)
-                    }
-
-                    id: rendererComboBox
-                    visible: SystemProperties.isDarwin
-                    textRole: "text"
-                    model: ListModel {
-                        id: rendererListModel
-                        ListElement {
-                            text: qsTr("Automatic (Recommended)")
-                            val: StreamingPreferences.RS_AUTO
-                        }
-                        ListElement {
-                            text: "Vulkan"
-                            val: StreamingPreferences.RS_VULKAN
-                        }
-                        ListElement {
-                            text: "Metal"
-                            val: StreamingPreferences.RS_METAL
-                        }
-                        ListElement {
-                            text: "AVSampleBufferDisplayLayer"
-                            val: StreamingPreferences.RS_AVSBDL
-                        }
-                    }
-                    // ::onActivated must be used, as it only listens for when the index is changed by a human
-                    onActivated : {
-                        StreamingPreferences.rendererSelection = rendererListModel.get(currentIndex).val
-                    }
-                }
-
-                CheckBox {
-                    id: enableYUV444
-                    width: parent.width
-                    text: qsTr("Enable YUV 4:4:4")
-                    font.pointSize: 12
-
-                    checked: StreamingPreferences.enableYUV444
-                    onCheckedChanged: {
-                        // This is called on init, so only reset to default bitrate when checked state changes.
-                        if (StreamingPreferences.enableYUV444 != checked) {
-                            StreamingPreferences.enableYUV444 = checked
-                            if (StreamingPreferences.autoAdjustBitrate) {
-                                StreamingPreferences.bitrateKbps = StreamingPreferences.getDefaultBitrate(StreamingPreferences.width,
-                                                                                                          StreamingPreferences.height,
-                                                                                                          StreamingPreferences.fps,
-                                                                                                          StreamingPreferences.enableYUV444);
-                                slider.value = StreamingPreferences.bitrateKbps
-                            }
-                        }
-                    }
-
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 5000
-                    ToolTip.visible: hovered
-                    ToolTip.text: enabled ?
-                                      qsTr("Good for streaming desktop and text-heavy games, but not recommended for fast-paced games.")
-                                    :
-                                      qsTr("YUV 4:4:4 is not supported on this PC.")
-                }
-
-                CheckBox {
-                    id: unlockBitrate
-                    width: parent.width
-                    text: qsTr("Unlock bitrate limit (Experimental)")
-                    font.pointSize: 12
-
-                    checked: StreamingPreferences.unlockBitrate
-                    onCheckedChanged: {
-                        StreamingPreferences.unlockBitrate = checked
-                        StreamingPreferences.bitrateKbps = Math.min(StreamingPreferences.bitrateKbps, slider.to)
-                        slider.value = StreamingPreferences.bitrateKbps
-                    }
-
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 5000
-                    ToolTip.visible: hovered
-                    ToolTip.text: qsTr("This unlocks extremely high video bitrates for use with Sunshine hosts. It should only be used when streaming over an Ethernet LAN connection.")
-                }
-
-                CheckBox {
-                    id: enableMdns
-                    width: parent.width
-                    text: qsTr("Automatically find PCs on the local network (Recommended)")
-                    font.pointSize: 12
-                    checked: StreamingPreferences.enableMdns
-                    onCheckedChanged: {
-                        // This is called on init, so only do the work if we've
-                        // actually changed the value.
-                        if (StreamingPreferences.enableMdns != checked) {
-                            StreamingPreferences.enableMdns = checked
-
-                            // Restart polling so the mDNS change takes effect
-                            if (window.pollingActive) {
-                                ComputerManager.stopPollingAsync()
-                                ComputerManager.startPolling()
-                            }
-                        }
-                    }
-                }
-
-                CheckBox {
-                    id: detectNetworkBlocking
-                    width: parent.width
-                    text: qsTr("Automatically detect blocked connections (Recommended)")
-                    font.pointSize: 12
-                    checked: StreamingPreferences.detectNetworkBlocking
-                    onCheckedChanged: {
-                        StreamingPreferences.detectNetworkBlocking = checked
-                    }
-                }
-
-                CheckBox {
-                    id: showPerformanceOverlay
-                    width: parent.width
-                    text: qsTr("Show performance stats while streaming")
-                    font.pointSize: 12
-                    checked: StreamingPreferences.showPerformanceOverlay
-                    onCheckedChanged: {
-                        StreamingPreferences.showPerformanceOverlay = checked
-                    }
-
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 5000
-                    ToolTip.visible: hovered
-                    ToolTip.text: qsTr("Display real-time stream performance information while streaming.") + "\n\n" +
-                                  qsTr("You can toggle it at any time while streaming using Ctrl+Alt+Shift+S or Select+L1+R1+X.") + "\n\n" +
-                                  qsTr("The performance overlay is not supported on Steam Link or Raspberry Pi.")
                 }
             }
         }
