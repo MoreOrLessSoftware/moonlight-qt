@@ -1036,16 +1036,19 @@ Flickable {
 
                         value: StreamingPreferences.bitrateKbps
 
-                        stepSize: 500
-                        from : 500
+                        // Steps are 10 Mbps. The range starts at zero so the steps land on whole
+                        // multiples of 10 Mbps, but the bitrate itself never goes below 500 Kbps.
+                        stepSize: 10000
+                        from : 0
                         to: StreamingPreferences.unlockBitrate ? 2500000 : 150000
 
                         snapMode: "SnapOnRelease"
                         width: Math.min(bitrateDesc.implicitWidth, parent.width - (resetBitrateButton.visible ? resetBitrateButton.width + parent.spacing : 0))
 
                         onValueChanged: {
-                            bitrateTitle.text = qsTr("Video bitrate: %1 Mbps").arg(value / 1000.0)
-                            StreamingPreferences.bitrateKbps = value
+                            var bitrateKbps = Math.max(value, 500)
+                            bitrateTitle.text = qsTr("Video bitrate: %1 Mbps").arg(bitrateKbps / 1000.0)
+                            StreamingPreferences.bitrateKbps = bitrateKbps
                         }
 
                         onMoved: {
