@@ -742,3 +742,23 @@ bool StreamingPreferences::renameVideoPreset(const QString& oldName, const QStri
     emit videoPresetsChanged();
     return true;
 }
+
+bool StreamingPreferences::moveVideoPreset(const QString& name, int offset)
+{
+    QList<VideoPreset> presets = loadVideoPresets();
+    int index = indexOfVideoPreset(presets, name);
+    if (index < 0) {
+        return false;
+    }
+
+    // Stop at either end of the list rather than wrapping around
+    int newIndex = qBound(0, index + offset, presets.size() - 1);
+    if (newIndex == index) {
+        return false;
+    }
+
+    presets.move(index, newIndex);
+    storeVideoPresets(presets);
+    emit videoPresetsChanged();
+    return true;
+}

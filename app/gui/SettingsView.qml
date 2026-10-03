@@ -180,6 +180,40 @@ Flickable {
                         }
 
                         Button {
+                            id: presetMoveUpButton
+                            text: "\u25B2"
+                            enabled: presetComboBox.currentIndex > 1
+                            onClicked: {
+                                var name = presetComboBox.selectedPresetName()
+                                if (StreamingPreferences.moveVideoPreset(name, -1)) {
+                                    presetComboBox.reload(name)
+                                }
+                            }
+
+                            ToolTip.text: qsTr("Move this preset up in the list")
+                            ToolTip.delay: 1000
+                            ToolTip.timeout: 3000
+                            ToolTip.visible: hovered
+                        }
+
+                        Button {
+                            id: presetMoveDownButton
+                            text: "\u25BC"
+                            enabled: presetComboBox.currentIndex > 0 && presetComboBox.currentIndex < presetComboBox.count - 1
+                            onClicked: {
+                                var name = presetComboBox.selectedPresetName()
+                                if (StreamingPreferences.moveVideoPreset(name, 1)) {
+                                    presetComboBox.reload(name)
+                                }
+                            }
+
+                            ToolTip.text: qsTr("Move this preset down in the list")
+                            ToolTip.delay: 1000
+                            ToolTip.timeout: 3000
+                            ToolTip.visible: hovered
+                        }
+
+                        Button {
                             id: presetDeleteButton
                             text: qsTr("Delete")
                             enabled: presetComboBox.currentIndex > 0
