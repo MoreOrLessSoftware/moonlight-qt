@@ -7,6 +7,7 @@
 #include <QLocale>
 #include <QReadWriteLock>
 #include <QtMath>
+#include <QList>
 
 #include <QtDebug>
 
@@ -55,6 +56,8 @@
 #define SER_KEEPAWAKE "keepawake"
 #define SER_LANGUAGE "language"
 #define SER_RENDERER "renderer"
+#define SER_VIDEOPRESETS "videopresets"
+#define SER_PRESET_NAME "name"
 
 #define CURRENT_DEFAULT_VER 2
 
@@ -431,4 +434,311 @@ int StreamingPreferences::getDefaultBitrate(int width, int height, int fps, bool
     }
 
     return qRound(resolutionFactor * frameRateFactor) * 1000;
+}
+
+namespace {
+
+struct VideoPreset
+{
+    QString name;
+    int width;
+    int height;
+    int fps;
+    int bitrateKbps;
+    bool unlockBitrate;
+    bool autoAdjustBitrate;
+    bool enableVsync;
+    bool framePacing;
+    int videoCodecConfig;
+    bool enableHdr;
+    bool enableYUV444;
+    int windowMode;
+
+    // autoAdjustBitrate is deliberately not compared. It only decides whether the
+    // bitrate follows the resolution and frame rate later, not what is streamed.
+    bool sameSettingsAs(const VideoPreset& other) const
+    {
+        return width == other.width && height == other.height && fps == other.fps &&
+               bitrateKbps == other.bitrateKbps && unlockBitrate == other.unlockBitrate &&
+               enableVsync == other.enableVsync && framePacing == other.framePacing &&
+               videoCodecConfig == other.videoCodecConfig && enableHdr == other.enableHdr &&
+               enableYUV444 == other.enableYUV444 && windowMode == other.windowMode;
+    }
+};
+
+QList<VideoPreset> loadVideoPresets()
+{
+    QList<VideoPreset> presets;
+    QSettings settings;
+
+    int count = settings.beginReadArray(SER_VIDEOPRESETS);
+    for (int i = 0; i < count; i++) {
+        settings.setArrayIndex(i);
+
+        VideoPreset preset;
+        preset.name = settings.value(SER_PRESET_NAME).toString();
+        if (preset.name.isEmpty()) {
+            continue;
+        }
+
+        preset.width = settings.value(SER_WIDTH, 1280).toInt();
+        preset.height = settings.value(SER_HEIGHT, 720).toInt();
+        preset.fps = settings.value(SER_FPS, 60).toInt();
+        preset.bitrateKbps = settings.value(SER_BITRATE, 10000).toInt();
+        preset.unlockBitrate = settings.value(SER_UNLOCK_BITRATE, false).toBool();
+        preset.autoAdjustBitrate = settings.value(SER_AUTOADJUSTBITRATE, true).toBool();
+        preset.enableVsync = settings.value(SER_VSYNC, true).toBool();
+        preset.framePacing = settings.value(SER_FRAMEPACING, false).toBool();
+        preset.videoCodecConfig = settings.value(SER_VIDEOCFG, 0).toInt();
+        preset.enableHdr = settings.value(SER_HDR, false).toBool();
+        preset.enableYUV444 = settings.value(SER_YUV444, false).toBool();
+        preset.windowMode = settings.value(SER_WINDOWMODE, 0).toInt();
+        presets.append(preset);
+    }
+    settings.endArray();
+
+    return presets;
+}
+
+void storeVideoPresets(const QList<VideoPreset>& presets)
+{
+    QSettings settings;
+
+    // Drop the old array first so a shorter list doesn't leave stale entries behind
+    settings.remove(SER_VIDEOPRESETS);
+
+    settings.beginWriteArray(SER_VIDEOPRESETS, presets.size());
+    for (int i = 0; i < presets.size(); i++) {
+        const VideoPreset& preset = presets[i];
+
+        settings.setArrayIndex(i);
+        settings.setValue(SER_PRESET_NAME, preset.name);
+        settings.setValue(SER_WIDTH, preset.width);
+        settings.setValue(SER_HEIGHT, preset.height);
+        settings.setValue(SER_FPS, preset.fps);
+        settings.setValue(SER_BITRATE, preset.bitrateKbps);
+        settings.setValue(SER_UNLOCK_BITRATE, preset.unlockBitrate);
+        settings.setValue(SER_AUTOADJUSTBITRATE, preset.autoAdjustBitrate);
+        settings.setValue(SER_VSYNC, preset.enableVsync);
+        settings.setValue(SER_FRAMEPACING, preset.framePacing);
+        settings.setValue(SER_VIDEOCFG, preset.videoCodecConfig);
+        settings.setValue(SER_HDR, preset.enableHdr);
+        settings.setValue(SER_YUV444, preset.enableYUV444);
+        settings.setValue(SER_WINDOWMODE, preset.windowMode);
+    }
+    settings.endArray();
+}
+
+int indexOfVideoPreset(const QList<VideoPreset>& presets, const QString& name)
+{
+    for (int i = 0; i < presets.size(); i++) {
+        if (presets[i].name == name) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+}
+
+QStringList StreamingPreferences::videoPresetNames()
+{
+    QStringList names;
+    for (const VideoPreset& preset : loadVideoPresets()) {
+        names.append(preset.name);
+    }
+    return names;
+}
+
+QString StreamingPreferences::suggestedVideoPresetName()
+{
+    QStringList parts;
+
+    if (width == 1280 && height == 720) {
+        parts.append("720p");
+    }
+    else if (width == 1920 && height == 1080) {
+        parts.append("1080p");
+    }
+    else if (width == 2560 && height == 1440) {
+        parts.append("1440p");
+    }
+    else if (width == 3840 && height == 2160) {
+        parts.append("4K");
+    }
+    else {
+        parts.append(QString("%1x%2").arg(width).arg(height));
+    }
+    parts.last() += QString(" @ %1 FPS").arg(fps);
+
+    switch (videoCodecConfig) {
+    case VCC_FORCE_H264:
+        parts.append("H.264");
+        break;
+    case VCC_FORCE_HEVC:
+    case VCC_FORCE_HEVC_HDR_DEPRECATED:
+        parts.append("HEVC");
+        break;
+    case VCC_FORCE_AV1:
+        parts.append("AV1");
+        break;
+    case VCC_FORCE_PYROWAVE:
+        parts.append("PyroWave");
+        break;
+    case VCC_AUTO:
+    default:
+        parts.append("Auto codec");
+        break;
+    }
+
+    // Drops the decimal for whole Mbps values, like "200 Mbps" rather than "200.0 Mbps"
+    parts.append(QString("%1 Mbps").arg(bitrateKbps / 1000.0, 0, 'f', bitrateKbps % 1000 == 0 ? 0 : 1));
+
+    if (framePacing && enableVsync) {
+        parts.append("Frame pacing");
+    }
+    if (enableHdr) {
+        parts.append("HDR");
+    }
+    if (enableYUV444) {
+        parts.append("4:4:4");
+    }
+
+    return parts.join(" / ");
+}
+
+QString StreamingPreferences::matchingVideoPreset()
+{
+    VideoPreset current;
+    current.width = width;
+    current.height = height;
+    current.fps = fps;
+    current.bitrateKbps = bitrateKbps;
+    current.unlockBitrate = unlockBitrate;
+    current.enableVsync = enableVsync;
+    current.framePacing = framePacing;
+    current.videoCodecConfig = videoCodecConfig;
+    current.enableHdr = enableHdr;
+    current.enableYUV444 = enableYUV444;
+    current.windowMode = windowMode;
+
+    for (const VideoPreset& preset : loadVideoPresets()) {
+        if (preset.sameSettingsAs(current)) {
+            return preset.name;
+        }
+    }
+
+    return QString();
+}
+
+bool StreamingPreferences::saveVideoPreset(const QString& name)
+{
+    VideoPreset preset;
+    preset.name = name.trimmed();
+    if (preset.name.isEmpty()) {
+        return false;
+    }
+
+    preset.width = width;
+    preset.height = height;
+    preset.fps = fps;
+    preset.bitrateKbps = bitrateKbps;
+    preset.unlockBitrate = unlockBitrate;
+    preset.autoAdjustBitrate = autoAdjustBitrate;
+    preset.enableVsync = enableVsync;
+    preset.framePacing = framePacing;
+    preset.videoCodecConfig = videoCodecConfig;
+    preset.enableHdr = enableHdr;
+    preset.enableYUV444 = enableYUV444;
+    preset.windowMode = windowMode;
+
+    QList<VideoPreset> presets = loadVideoPresets();
+    int index = indexOfVideoPreset(presets, preset.name);
+    if (index >= 0) {
+        // Saving over an existing name replaces it in place
+        presets[index] = preset;
+    }
+    else {
+        presets.append(preset);
+    }
+
+    storeVideoPresets(presets);
+    emit videoPresetsChanged();
+    return true;
+}
+
+bool StreamingPreferences::applyVideoPreset(const QString& name)
+{
+    QList<VideoPreset> presets = loadVideoPresets();
+    int index = indexOfVideoPreset(presets, name);
+    if (index < 0) {
+        return false;
+    }
+
+    const VideoPreset& preset = presets[index];
+
+    width = preset.width;
+    height = preset.height;
+    fps = preset.fps;
+    bitrateKbps = preset.bitrateKbps;
+    unlockBitrate = preset.unlockBitrate;
+    autoAdjustBitrate = preset.autoAdjustBitrate;
+    enableVsync = preset.enableVsync;
+    framePacing = preset.framePacing;
+    videoCodecConfig = static_cast<VideoCodecConfig>(preset.videoCodecConfig);
+    enableHdr = preset.enableHdr;
+    enableYUV444 = preset.enableYUV444;
+    windowMode = static_cast<WindowMode>(preset.windowMode);
+
+    // Notify only after every field is set, so bindings never see a half-applied preset
+    emit displayModeChanged();
+    emit unlockBitrateChanged();
+    emit autoAdjustBitrateChanged();
+    emit bitrateChanged();
+    emit enableVsyncChanged();
+    emit framePacingChanged();
+    emit videoCodecConfigChanged();
+    emit enableHdrChanged();
+    emit enableYUV444Changed();
+    emit windowModeChanged();
+    return true;
+}
+
+bool StreamingPreferences::deleteVideoPreset(const QString& name)
+{
+    QList<VideoPreset> presets = loadVideoPresets();
+    int index = indexOfVideoPreset(presets, name);
+    if (index < 0) {
+        return false;
+    }
+
+    presets.removeAt(index);
+    storeVideoPresets(presets);
+    emit videoPresetsChanged();
+    return true;
+}
+
+bool StreamingPreferences::renameVideoPreset(const QString& oldName, const QString& newName)
+{
+    QString trimmedName = newName.trimmed();
+    if (trimmedName.isEmpty()) {
+        return false;
+    }
+
+    QList<VideoPreset> presets = loadVideoPresets();
+    int index = indexOfVideoPreset(presets, oldName);
+    if (index < 0) {
+        return false;
+    }
+
+    // Refuse to clobber a different preset that already has this name
+    int existing = indexOfVideoPreset(presets, trimmedName);
+    if (existing >= 0 && existing != index) {
+        return false;
+    }
+
+    presets[index].name = trimmedName;
+    storeVideoPresets(presets);
+    emit videoPresetsChanged();
+    return true;
 }

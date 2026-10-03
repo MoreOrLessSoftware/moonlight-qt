@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QRect>
+#include <QStringList>
 #include <QQmlEngine>
 
 class StreamingPreferences : public QObject
@@ -164,6 +165,16 @@ public:
 
     Q_INVOKABLE bool retranslate();
 
+    // Video presets: named snapshots of the settings in the Video Settings section.
+    // Unlike the other preferences, these are written to disk immediately.
+    Q_INVOKABLE QStringList videoPresetNames();
+    Q_INVOKABLE QString suggestedVideoPresetName();
+    Q_INVOKABLE QString matchingVideoPreset();
+    Q_INVOKABLE bool saveVideoPreset(const QString& name);
+    Q_INVOKABLE bool applyVideoPreset(const QString& name);
+    Q_INVOKABLE bool deleteVideoPreset(const QString& name);
+    Q_INVOKABLE bool renameVideoPreset(const QString& oldName, const QString& newName);
+
     // Directly accessible members for preferences
     int width;
     int height;
@@ -248,6 +259,7 @@ signals:
     void keepAwakeChanged();
     void languageChanged();
     void rendererSelectionChanged();
+    void videoPresetsChanged();
 
 private:
     explicit StreamingPreferences(QQmlEngine *qmlEngine);

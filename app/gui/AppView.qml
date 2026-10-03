@@ -1,10 +1,11 @@
 import QtQuick 2.9
-import QtQuick.Controls 2.2
+import QtQuick.Controls 2.3
 import QtQuick.Controls.Material 2.2
 
 import AppModel 1.0
 import ComputerManager 1.0
 import SdlGamepadKeyNavigation 1.0
+import StreamingPreferences 1.0
 
 CenteredGridView {
     property int computerIndex
@@ -299,6 +300,67 @@ CenteredGridView {
                     text: model.running ? qsTr("Resume Game") : qsTr("Launch Game")
                     onTriggered: launchOrResumeSelectedApp(true)
                 }
+                NavigableMenu {
+                    id: presetSubMenu
+                    title: qsTr("Launch Game with Preset")
+                    initiator: appContextMenuLoader.parent
+
+                    function addPlaceholder(text) {
+                        addItem(presetMenuItemComponent.createObject(presetSubMenu, {"text": text, "enabled": false}))
+                    }
+
+                    function addPreset(name) {
+                        var item = presetMenuItemComponent.createObject(presetSubMenu, {"text": name})
+                        item.triggered.connect(function() { launchWithPreset(name) })
+                        addItem(item)
+                    }
+
+                    function launchWithPreset(name) {
+                        if (StreamingPreferences.applyVideoPreset(name)) {
+                            // The preset becomes the current settings, so save them like the settings page would
+                            StreamingPreferences.save()
+
+                            // Closing the item's own menu only closes this submenu, so dismiss
+                            // the whole context menu before the launch can spawn any dialogs
+                            appContextMenu.dismiss()
+                            launchOrResumeSelectedApp(true)
+                        }
+                    }
+
+                    // Rebuilt every time it opens so it lists the presets that exist right now
+                    function rebuild() {
+                        while (count > 0) {
+                            removeItem(itemAt(0))
+                        }
+
+                        var names = StreamingPreferences.videoPresetNames()
+                        if (model.running) {
+                            // Presets change the settings a stream starts with, which can't
+                            // change for a game that is already running
+                            addPlaceholder(qsTr("Not available while the game is running"))
+                        }
+                        else if (names.length === 0) {
+                            addPlaceholder(qsTr("No presets saved"))
+                        }
+                        else {
+                            for (var i = 0; i < names.length; i++) {
+                                addPreset(names[i])
+                            }
+                        }
+
+                        // Fit the menu to its widest entry. Entries added at runtime
+                        // don't reliably resize the menu on their own, so long preset
+                        // names would otherwise get cut off.
+                        var widest = 0
+                        for (var j = 0; j < count; j++) {
+                            widest = Math.max(widest, itemAt(j).implicitWidth)
+                        }
+                        width = widest + leftPadding + rightPadding
+                    }
+
+                    Component.onCompleted: rebuild()
+                    onAboutToShow: rebuild()
+                }
                 NavigableMenuItem {
                     text: qsTr("Quit Game")
                     onTriggered: doQuitGame()
@@ -343,6 +405,12 @@ CenteredGridView {
             verticalAlignment: Text.AlignVCenter
             wrapMode: Text.Wrap
         }
+    }
+
+    // Template for the entries in the "Launch Game with Preset" submenu
+    Component {
+        id: presetMenuItemComponent
+        NavigableMenuItem {}
     }
 
     NavigableMessageDialog {

@@ -93,6 +93,26 @@ Flickable {
         StreamingPreferences.save()
     }
 
+    // Brings every control in the Video Settings section (and the unlock bitrate
+    // checkbox) in line with StreamingPreferences after a preset has been applied.
+    // The controls only read the preferences when they're created, and several have
+    // had their bindings broken by user input, so they have to be refreshed explicitly.
+    function syncVideoControlsFromPreferences() {
+        resolutionComboBox.syncFromPreferences()
+        fpsComboBox.syncFromPreferences()
+        codecComboBox.syncFromPreferences()
+        windowModeComboBox.reinitialize()
+
+        // Unlock first, so the slider's range already allows the preset's bitrate
+        unlockBitrate.checked = Qt.binding(function() { return StreamingPreferences.unlockBitrate })
+        slider.value = StreamingPreferences.bitrateKbps
+
+        vsyncCheck.checked = Qt.binding(function() { return StreamingPreferences.enableVsync })
+        framePacingCheck.checked = Qt.binding(function() { return StreamingPreferences.enableVsync && StreamingPreferences.framePacing })
+        enableHdr.checked = Qt.binding(function() { return enableHdr.enabled && StreamingPreferences.enableHdr })
+        enableYUV444.checked = Qt.binding(function() { return StreamingPreferences.enableYUV444 })
+    }
+
     Column {
         padding: 10
         id: settingsColumn1
@@ -109,6 +129,193 @@ Flickable {
             Column {
                 anchors.fill: parent
                 spacing: 5
+
+                Label {
+                    width: parent.width
+                    id: presetTitle
+                    text: qsTr("Presets")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                Item {
+                    id: presetSelectorArea
+                    width: parent.width
+
+                    // The buttons go beside the dropdown when it fits next to them at its
+                    // full text width, otherwise they drop below it, right-aligned
+                    property bool buttonsBeside: presetComboBox.desiredWidth + 5 + presetButtonsRow.width <= width
+                    height: buttonsBeside ? Math.max(presetComboBox.height, presetButtonsRow.height) : presetComboBox.height + 5 + presetButtonsRow.height
+
+                    VideoPresetComboBox {
+                        id: presetComboBox
+                        maximumWidth: presetSelectorArea.buttonsBeside ? presetSelectorArea.width - presetButtonsRow.width - 5 : presetSelectorArea.width
+
+                        Component.onCompleted: {
+                            initialize()
+                            languageChanged.connect(function() { reload(selectedPresetName()) })
+                        }
+
+                        // Refresh the other controls to match the preset that was just applied
+                        onPresetApplied: settingsPage.syncVideoControlsFromPreferences()
+                    }
+
+                    Row {
+                        id: presetButtonsRow
+                        anchors.right: parent.right
+                        y: presetSelectorArea.buttonsBeside ? (parent.height - height) / 2 : presetComboBox.height + 5
+                        spacing: 5
+
+                        Button {
+                            id: presetSaveButton
+                            text: qsTr("Save...")
+                            onClicked: presetNameDialog.openFor("save")
+                        }
+
+                        Button {
+                            id: presetRenameButton
+                            text: qsTr("Rename...")
+                            enabled: presetComboBox.currentIndex > 0
+                            onClicked: presetNameDialog.openFor("rename")
+                        }
+
+                        Button {
+                            id: presetDeleteButton
+                            text: qsTr("Delete")
+                            enabled: presetComboBox.currentIndex > 0
+                            onClicked: deletePresetDialog.open()
+                        }
+
+                        NavigableDialog {
+                            id: presetNameDialog
+                            standardButtons: Dialog.Ok | Dialog.Cancel
+
+                            // "save" stores the current settings under the entered name,
+                            // "rename" renames the selected preset
+                            property string mode: "save"
+                            property string originalName: ""
+
+                            title: mode === "save" ? qsTr("Save preset") : qsTr("Rename preset")
+
+                            function openFor(newMode) {
+                                mode = newMode
+                                originalName = newMode === "rename" ? presetComboBox.selectedPresetName() : ""
+                                presetNameField.text = newMode === "rename" ? originalName : StreamingPreferences.suggestedVideoPresetName()
+                                open()
+                            }
+
+                            function enteredName() {
+                                return presetNameField.text.trim()
+                            }
+
+                            // Another preset (not the one being renamed) already has this name
+                            function nameTaken() {
+                                var name = enteredName()
+                                return name !== originalName && StreamingPreferences.videoPresetNames().indexOf(name) >= 0
+                            }
+
+                            function isInputValid() {
+                                if (!enteredName()) {
+                                    return false
+                                }
+
+                                // Saving over an existing preset is allowed, renaming onto one is not
+                                return mode === "save" || !nameTaken()
+                            }
+
+                            function updateOkButton() {
+                                // standardButton() was added in Qt 5.10, so we must check for it first
+                                if (presetNameDialog.standardButton) {
+                                    presetNameDialog.standardButton(Dialog.Ok).enabled = isInputValid()
+                                }
+                            }
+
+                            onOpened: {
+                                // Force keyboard focus on the textbox so keyboard navigation works
+                                presetNameField.forceActiveFocus()
+                                presetNameField.selectAll()
+                                updateOkButton()
+                            }
+
+                            onAccepted: {
+                                if (!isInputValid()) {
+                                    reject()
+                                    return
+                                }
+
+                                var name = enteredName()
+                                if (mode === "save") {
+                                    if (StreamingPreferences.saveVideoPreset(name)) {
+                                        presetComboBox.reload(name)
+                                    }
+                                }
+                                else if (StreamingPreferences.renameVideoPreset(originalName, name)) {
+                                    presetComboBox.reload(name)
+                                }
+                            }
+
+                            ColumnLayout {
+                                Label {
+                                    text: presetNameDialog.mode === "save" ? qsTr("Enter a name for this preset:") : qsTr("Enter a new name for this preset:")
+                                    font.bold: true
+                                }
+
+                                TextField {
+                                    id: presetNameField
+                                    Layout.minimumWidth: 400
+                                    Layout.maximumWidth: 400
+                                    focus: true
+
+                                    onTextChanged: presetNameDialog.updateOkButton()
+
+                                    Keys.onReturnPressed: {
+                                        if (presetNameDialog.isInputValid()) {
+                                            presetNameDialog.accept()
+                                        }
+                                    }
+
+                                    Keys.onEnterPressed: {
+                                        if (presetNameDialog.isInputValid()) {
+                                            presetNameDialog.accept()
+                                        }
+                                    }
+                                }
+
+                                Label {
+                                    visible: presetNameDialog.enteredName() && presetNameDialog.nameTaken()
+                                    text: presetNameDialog.mode === "save" ? qsTr("A preset with this name already exists and will be replaced.") : qsTr("Another preset already has this name.")
+                                    Layout.maximumWidth: 400
+                                    wrapMode: Label.WordWrap
+                                }
+                            }
+                        }
+
+                        NavigableMessageDialog {
+                            id: deletePresetDialog
+                            standardButtons: Dialog.Yes | Dialog.No
+                            text: qsTr("Delete the preset \"%1\"?").arg(presetComboBox.selectedPresetName())
+
+                            onAccepted: {
+                                if (StreamingPreferences.deleteVideoPreset(presetComboBox.selectedPresetName())) {
+                                    presetComboBox.reload("")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Divider with some breathing room above and below
+                Item {
+                    width: parent.width
+                    height: 21
+
+                    Rectangle {
+                        y: 10
+                        width: parent.width
+                        height: 1
+                        color: Qt.rgba(0.5, 0.5, 0.5, 0.5)
+                    }
+                }
 
                 Label {
                     width: parent.width
@@ -270,6 +477,35 @@ Flickable {
                                 video_height: "2160"
                                 is_custom: false
                             }
+                        }
+
+                        // Selects the entry matching the saved resolution, filling in
+                        // the custom entry if it isn't one of the listed resolutions
+                        function syncFromPreferences() {
+                            var found = -1
+                            for (var i = 0; i < resolutionListModel.count; i++) {
+                                if (parseInt(resolutionListModel.get(i).video_width) === StreamingPreferences.width &&
+                                        parseInt(resolutionListModel.get(i).video_height) === StreamingPreferences.height) {
+                                    found = i
+                                    break
+                                }
+                            }
+
+                            if (found < 0) {
+                                for (var j = 0; j < resolutionListModel.count; j++) {
+                                    if (resolutionListModel.get(j).is_custom) {
+                                        resolutionListModel.setProperty(j, "video_width", ""+StreamingPreferences.width)
+                                        resolutionListModel.setProperty(j, "video_height", ""+StreamingPreferences.height)
+                                        resolutionListModel.setProperty(j, "text", qsTr("Custom")+" ("+StreamingPreferences.width+"x"+StreamingPreferences.height+")")
+                                        found = j
+                                        break
+                                    }
+                                }
+                            }
+
+                            currentIndex = found
+                            recalculateWidth()
+                            lastIndexValue = currentIndex
                         }
 
                         function updateBitrateForSelection() {
@@ -442,6 +678,33 @@ Flickable {
 
                     AutoResizingComboBox {
                         property int lastIndexValue
+
+                        // Selects the entry matching the saved frame rate, filling in
+                        // the custom entry if it isn't one of the listed rates
+                        function syncFromPreferences() {
+                            var found = -1
+                            for (var i = 0; i < model.count; i++) {
+                                if (parseInt(model.get(i).video_fps) === StreamingPreferences.fps) {
+                                    found = i
+                                    break
+                                }
+                            }
+
+                            if (found < 0) {
+                                for (var j = 0; j < model.count; j++) {
+                                    if (model.get(j).is_custom) {
+                                        model.setProperty(j, "video_fps", ""+StreamingPreferences.fps)
+                                        model.setProperty(j, "text", qsTr("Custom (%1 FPS)").arg(StreamingPreferences.fps))
+                                        found = j
+                                        break
+                                    }
+                                }
+                            }
+
+                            currentIndex = found
+                            recalculateWidth()
+                            lastIndexValue = currentIndex
+                        }
 
                         function updateBitrateForSelection() {
                             // Only modify the bitrate if the values actually changed
@@ -701,6 +964,18 @@ Flickable {
                         }
 
                         activated(currentIndex)
+                    }
+
+                    function syncFromPreferences() {
+                        // Default to Automatic if the saved codec isn't in the list
+                        var index = 0
+                        for (var i = 0; i < codecListModel.count; i++) {
+                            if (codecListModel.get(i).val === StreamingPreferences.videoCodecConfig) {
+                                index = i
+                                break
+                            }
+                        }
+                        currentIndex = index
                     }
 
                     id: codecComboBox

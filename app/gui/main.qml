@@ -241,7 +241,7 @@ ApplicationWindow {
 
         Label {
             id: titleLabel
-            visible: toolBar.width > 700
+            visible: toolBar.width > 700 && !(stackView.currentItem instanceof AppView)
             anchors.fill: parent
             text: stackView.currentItem.objectName
             font.pointSize: 20
@@ -275,7 +275,9 @@ ApplicationWindow {
                 id: titleRowLabel
                 font.pointSize: titleLabel.font.pointSize
                 elide: Label.ElideRight
-                horizontalAlignment: Qt.AlignHCenter
+
+                // On the apps screen the computer name sits beside the back arrow
+                horizontalAlignment: stackView.currentItem instanceof AppView ? Qt.AlignLeft : Qt.AlignHCenter
                 verticalAlignment: Qt.AlignVCenter
                 Layout.fillWidth: true
 
@@ -378,9 +380,52 @@ ApplicationWindow {
                 }
             }
 
+            // Video presets, shown where the help button is on the apps screen
+            VideoPresetComboBox {
+                id: presetSelector
+                visible: stackView.currentItem instanceof AppView
+                Layout.alignment: Qt.AlignVCenter
+
+                // Keep the full width needed for the longest preset name. The computer
+                // name beside the back arrow elides instead when space gets tight.
+                Layout.minimumWidth: implicitWidth
+
+                // Show what the current settings are rather than a generic label
+                showCurrentName: true
+
+                // Left and right move between toolbar controls, like the toolbar buttons
+                arrowKeysChangeSelection: false
+
+                // The apps screen doesn't use UI navigation mode, so don't leave it on after the popup closes
+                uiNavModeOnClose: false
+
+                Component.onCompleted: initialize()
+
+                // Pick up preset or settings changes made while this was hidden
+                onVisibleChanged: {
+                    if (visible) {
+                        reload("")
+                    }
+                }
+
+                // The preset becomes the current settings, so save them like the settings page would
+                onPresetApplied: StreamingPreferences.save()
+
+                Keys.onDownPressed: {
+                    // While the popup is open, Down belongs to the list of presets
+                    if (popup.visible) {
+                        event.accepted = false
+                    }
+                    else {
+                        stackView.currentItem.forceActiveFocus(Qt.TabFocus)
+                    }
+                }
+            }
+
             NavigableToolButton {
                 id: helpButton
-                visible: SystemProperties.hasBrowser
+                visible: SystemProperties.hasBrowser &&
+                         !(stackView.currentItem instanceof AppView)
 
                 iconSource: "qrc:/res/question_mark.svg"
 

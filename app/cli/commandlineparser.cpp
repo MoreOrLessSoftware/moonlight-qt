@@ -372,12 +372,44 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     parser.addChoiceOption("capture-system-keys", "capture system key combos", m_CaptureSysKeysModeMap.keys());
     parser.addChoiceOption("video-codec", "video codec", m_VideoCodecMap.keys());
     parser.addChoiceOption("video-decoder", "video decoder", m_VideoDecoderMap.keys());
+    parser.addOption(QCommandLineOption("preset",
+                                        "Apply a saved video preset first, so any other options override its values.",
+                                        "name"));
 
     if (!parser.parse(args)) {
         parser.showError(parser.errorText());
     }
 
     parser.handleUnknownOptions();
+
+    // Apply the video preset before any individual option so those can override it
+    bool presetApplied = false;
+    if (parser.isSet("preset")) {
+        QString requestedPreset = parser.value("preset");
+        QStringList presetNames = preferences->videoPresetNames();
+
+        // Exact match first, then ignore case to make it easier to type
+        QString presetName;
+        if (presetNames.contains(requestedPreset)) {
+            presetName = requestedPreset;
+        }
+        else {
+            for (const QString& name : presetNames) {
+                if (QString::compare(name, requestedPreset, Qt::CaseInsensitive) == 0) {
+                    presetName = name;
+                    break;
+                }
+            }
+        }
+
+        if (presetName.isEmpty()) {
+            parser.showError(QString("Unknown video preset: %1\nAvailable presets: %2")
+                             .arg(requestedPreset,
+                                  presetNames.isEmpty() ? QString("(none saved)") : presetNames.join(", ")));
+        }
+
+        presetApplied = preferences->applyVideoPreset(presetName);
+    }
 
     // Resolve display's width and height
     static QRegularExpression resolutionRexExp("^(720|1080|1440|4K|resolution)$");
@@ -418,7 +450,8 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
         if (!inRange(preferences->bitrateKbps, 500, 2500000)) {
             fprintf(stderr, "Warning: Bitrate is out of the supported range (500 - 2500000 Kbps). Performance may suffer!\n");
         }
-    } else if (displaySet || parser.isSet("fps")) {
+    } else if ((displaySet || parser.isSet("fps")) && (!presetApplied || preferences->autoAdjustBitrate)) {
+        // A preset with a hand-picked bitrate keeps it, since that was chosen on purpose
         preferences->bitrateKbps = preferences->getDefaultBitrate(
             preferences->width, preferences->height, preferences->fps, preferences->enableYUV444);
     }

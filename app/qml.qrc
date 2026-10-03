@@ -13,6 +13,7 @@
         <file>gui/CliQuitStreamSegue.qml</file>
         <file>gui/CliStartStreamSegue.qml</file>
         <file>gui/AutoResizingComboBox.qml</file>
+        <file>gui/VideoPresetComboBox.qml</file>
         <file>gui/NavigableMenu.qml</file>
         <file>gui/ErrorMessageDialog.qml</file>
         <file>gui/NavigableMessageDialog.qml</file>
