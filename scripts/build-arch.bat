@@ -162,8 +162,10 @@ set CXXFLAGS=/GL
 set LDFLAGS=/LTCG
 
 echo Configuring the project
+rem Extra qmake arguments can be passed in QMAKE_EXTRA_ARGS, for example:
+rem   set QMAKE_EXTRA_ARGS="CONFIG+=disable-update-check"
 pushd %BUILD_FOLDER%
-%QMAKE_CMD% %SOURCE_ROOT%\moonlight-qt.pro
+%QMAKE_CMD% %SOURCE_ROOT%\moonlight-qt.pro %QMAKE_EXTRA_ARGS%
 if !ERRORLEVEL! NEQ 0 goto Error
 popd
 
