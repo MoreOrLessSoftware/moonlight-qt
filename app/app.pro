@@ -243,6 +243,13 @@ HEADERS += \
     streaming/video/overlaymanager.h \
     backend/systemproperties.h
 
+# Skip the check for a newer upstream release, such as in a custom fork
+disable-update-check {
+    message(Update check disabled)
+
+    DEFINES += DISABLE_UPDATE_CHECK
+}
+
 # Platform-specific renderers and decoders
 ffmpeg {
     message(FFmpeg decoder selected)
