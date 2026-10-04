@@ -21,8 +21,10 @@ struct PyrowaveHandles;
 // decoded ones.
 //
 // PyroWave decodes in Vulkan compute on the renderer's GPU, into three plane textures
-// shared with D3D11. A small D3D11 pass then packs them into an NV12 or P010 frame from a
-// pool the renderer made. A shared fence orders the two APIs.
+// shared with D3D11. A small D3D11 pass then packs them into a frame from a pool the
+// renderer made: NV12 or P010 for 4:2:0. For 4:4:4, AYUV-ordered YUV in an ordinary
+// BGRA or R10G10B10A2 texture, since some GPUs (AMD's) have no AYUV/Y410 textures. A
+// shared fence orders the two APIs.
 //
 // The library (libpyrowave-shared-0.dll) is loaded at runtime, so nothing links against
 // it and the codec is simply unavailable without it.
@@ -54,8 +56,9 @@ public:
     void flush();
 
 private:
-    bool createPlanes(int width, int height, bool tenBit);
+    bool createPlanes();
     bool createPackResources();
+    bool createPack444Resources();
     void setFrameColorProperties(AVFrame* frame);
     void lockContext();
     void unlockContext();
@@ -66,6 +69,7 @@ private:
     int m_Width;
     int m_Height;
     bool m_TenBit;
+    bool m_Yuv444;
     int m_Colorspace;
     std::atomic<bool> m_HdrMode;
 
@@ -93,9 +97,11 @@ private:
     Microsoft::WRL::ComPtr<ID3D11VertexShader> m_PackVertexShader;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> m_PackLumaShader;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> m_PackChromaShader;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_Pack444Shader;
 
     // The planes are packed into this texture, then copied into a frame from the pool.
-    // D3D11 doesn't allow NV12/P010 texture arrays to be render targets.
+    // D3D11 doesn't allow NV12/P010 texture arrays to be render targets. 4:4:4 uses
+    // just the first target.
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_PackTexture;
     std::array<Microsoft::WRL::ComPtr<ID3D11RenderTargetView>, 2> m_PackTargets;
 

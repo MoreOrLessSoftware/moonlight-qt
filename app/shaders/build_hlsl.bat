@@ -7,3 +7,4 @@ fxc /T ps_5_0 /O3 /Fo d3d11_y410_pixel.fxc d3d11_y410_pixel.hlsl
 fxc /T vs_5_0 /O3 /Fo d3d11_pyrowave_vertex.fxc d3d11_pyrowave_vertex.hlsl
 fxc /T ps_5_0 /O3 /Fo d3d11_pyrowave_luma_pixel.fxc d3d11_pyrowave_luma_pixel.hlsl
 fxc /T ps_5_0 /O3 /Fo d3d11_pyrowave_chroma_pixel.fxc d3d11_pyrowave_chroma_pixel.hlsl
+fxc /T ps_5_0 /O3 /Fo d3d11_pyrowave_444_pixel.fxc d3d11_pyrowave_444_pixel.hlsl

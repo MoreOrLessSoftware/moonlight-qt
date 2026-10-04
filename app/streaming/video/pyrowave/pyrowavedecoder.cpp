@@ -124,6 +124,7 @@ PyrowaveDecoder::PyrowaveDecoder()
       m_Width(0),
       m_Height(0),
       m_TenBit(false),
+      m_Yuv444(false),
       m_Colorspace(COLORSPACE_REC_601),
       m_HdrMode(false),
       m_FramesContext(nullptr),
@@ -182,10 +183,11 @@ bool PyrowaveDecoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAMETERS 
 
     m_Width = params->width;
     m_Height = params->height;
-    m_TenBit = (params->videoFormat & VIDEO_FORMAT_PYROWAVE_10BIT) != 0;
+    m_TenBit = (params->videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0;
+    m_Yuv444 = (params->videoFormat & VIDEO_FORMAT_MASK_YUV444) != 0;
     m_Colorspace = colorspace;
 
-    if ((m_Width & 1) || (m_Height & 1)) {
+    if (!m_Yuv444 && ((m_Width & 1) || (m_Height & 1))) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                      "PyroWave: 4:2:0 needs an even width and height, not %dx%d",
                      m_Width, m_Height);
@@ -194,11 +196,20 @@ bool PyrowaveDecoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAMETERS 
 
     // The pool of frames the renderer draws, on its decode device. The pacer can hold
     // on to all of its outstanding frames while we pack another. NV12/P010 texture
-    // arrays must be decoder outputs, like a hardware decoder's pool.
-    m_FramesContext = renderer->createFramesContext(m_TenBit ? AV_PIX_FMT_P010 : AV_PIX_FMT_NV12,
+    // arrays must be decoder outputs, like a hardware decoder's pool. 4:4:4 goes in
+    // BGRA or R10G10B10A2 textures holding AYUV's VUYA order, which every GPU has,
+    // unlike AYUV/Y410 (the renderer draws these like AYUV).
+    AVPixelFormat swFormat;
+    if (m_Yuv444) {
+        swFormat = m_TenBit ? AV_PIX_FMT_X2BGR10 : AV_PIX_FMT_BGRA;
+    }
+    else {
+        swFormat = m_TenBit ? AV_PIX_FMT_P010 : AV_PIX_FMT_NV12;
+    }
+    m_FramesContext = renderer->createFramesContext(swFormat,
                                                     m_Width, m_Height,
                                                     PACER_MAX_OUTSTANDING_FRAMES + 2,
-                                                    D3D11_BIND_DECODER);
+                                                    m_Yuv444 ? D3D11_BIND_SHADER_RESOURCE : D3D11_BIND_DECODER);
     if (m_FramesContext == nullptr) {
         return false;
     }
@@ -297,7 +308,7 @@ bool PyrowaveDecoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAMETERS 
         return false;
     }
 
-    if (!createPlanes(m_Width, m_Height, m_TenBit) || !createPackResources()) {
+    if (!createPlanes() || !createPackResources()) {
         return false;
     }
 
@@ -305,7 +316,7 @@ bool PyrowaveDecoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAMETERS 
     decoderInfo.device = m_Handles->device;
     decoderInfo.width = m_Width;
     decoderInfo.height = m_Height;
-    decoderInfo.chroma = PYROWAVE_CHROMA_SUBSAMPLING_420;
+    decoderInfo.chroma = m_Yuv444 ? PYROWAVE_CHROMA_SUBSAMPLING_444 : PYROWAVE_CHROMA_SUBSAMPLING_420;
     decoderInfo.fragment_path = false;
     result = m_Api->decoderCreate(&decoderInfo, &m_Handles->decoder);
     if (result != PYROWAVE_SUCCESS) {
@@ -316,21 +327,25 @@ bool PyrowaveDecoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAMETERS 
     }
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "PyroWave: decoding %dx%d %s 4:2:0 on %S",
+                "PyroWave: decoding %dx%d %s %s on %S",
                 m_Width, m_Height,
                 m_TenBit ? "10-bit" : "8-bit",
+                m_Yuv444 ? "4:4:4" : "4:2:0",
                 adapterDesc.Description);
     return true;
 }
 
-bool PyrowaveDecoder::createPlanes(int width, int height, bool tenBit)
+bool PyrowaveDecoder::createPlanes()
 {
+    const bool tenBit = m_TenBit;
+
     for (int i = 0; i < 3; i++) {
         HRESULT hr;
 
         // Cb and Cr are half size for 4:2:0
-        int planeWidth = i == 0 ? width : width / 2;
-        int planeHeight = i == 0 ? height : height / 2;
+        bool fullSize = i == 0 || m_Yuv444;
+        int planeWidth = fullSize ? m_Width : m_Width / 2;
+        int planeHeight = fullSize ? m_Height : m_Height / 2;
 
         D3D11_TEXTURE2D_DESC texDesc = {};
         texDesc.Width = planeWidth;
@@ -434,6 +449,10 @@ bool PyrowaveDecoder::createPackResources()
         return false;
     }
 
+    if (m_Yuv444) {
+        return createPack444Resources();
+    }
+
     D3D11_TEXTURE2D_DESC texDesc = {};
     texDesc.Width = m_Width;
     texDesc.Height = m_Height;
@@ -499,12 +518,63 @@ bool PyrowaveDecoder::createPackResources()
     return true;
 }
 
+bool PyrowaveDecoder::createPack444Resources()
+{
+    HRESULT hr;
+
+    // The same format as the frames in the pool (see initialize())
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = m_Width;
+    texDesc.Height = m_Height;
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = m_TenBit ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    hr = m_Device->CreateTexture2D(&texDesc, nullptr, &m_PackTexture);
+    if (FAILED(hr)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "PyroWave: ID3D11Device::CreateTexture2D() failed: %x",
+                     hr);
+        return false;
+    }
+
+    hr = m_Device->CreateRenderTargetView(m_PackTexture.Get(), nullptr, &m_PackTargets[0]);
+    if (FAILED(hr)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "PyroWave: ID3D11Device::CreateRenderTargetView() failed: %x",
+                     hr);
+        return false;
+    }
+
+    QByteArray vertexShaderBytecode = Path::readDataFile("d3d11_pyrowave_vertex.fxc");
+    hr = m_Device->CreateVertexShader(vertexShaderBytecode.constData(), vertexShaderBytecode.length(), nullptr, &m_PackVertexShader);
+    if (FAILED(hr)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "PyroWave: ID3D11Device::CreateVertexShader() failed: %x",
+                     hr);
+        return false;
+    }
+
+    QByteArray shaderBytecode = Path::readDataFile("d3d11_pyrowave_444_pixel.fxc");
+    hr = m_Device->CreatePixelShader(shaderBytecode.constData(), shaderBytecode.length(), nullptr, &m_Pack444Shader);
+    if (FAILED(hr)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "PyroWave: ID3D11Device::CreatePixelShader() failed: %x",
+                     hr);
+        return false;
+    }
+
+    return true;
+}
+
 void PyrowaveDecoder::setFrameColorProperties(AVFrame* frame)
 {
-    // The host converts to YCbCr with its usual shaders, with left-sited chroma, in
-    // the range we ask for, which is always full range for PyroWave
+    // The host converts to YCbCr with its usual shaders, with left-sited chroma for
+    // 4:2:0, in the range we ask for, which is always full range for PyroWave
     frame->color_range = AVCOL_RANGE_JPEG;
-    frame->chroma_location = AVCHROMA_LOC_LEFT;
+    frame->chroma_location = m_Yuv444 ? AVCHROMA_LOC_UNSPECIFIED : AVCHROMA_LOC_LEFT;
 
     if (m_TenBit && m_HdrMode) {
         // The host display is in HDR mode: Rec. 2020 with the PQ transfer
@@ -694,7 +764,7 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFram
     ComPtr<ID3DDeviceContextState> previousState;
     m_DeviceContext->SwapDeviceContextState(m_PackState.Get(), &previousState);
 
-    // Wait on the GPU for PyroWave to finish, then pack Y, and Cb with Cr, into the frame
+    // Wait on the GPU for PyroWave to finish, then pack the planes into the frame
     m_DeviceContext->Wait(m_Fence.Get(), decodedValue);
 
     m_DeviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -702,24 +772,41 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFram
 
     D3D11_VIEWPORT viewport = { 0.0f, 0.0f, (float)m_Width, (float)m_Height, 0.0f, 1.0f };
     m_DeviceContext->RSSetViewports(1, &viewport);
-    m_DeviceContext->OMSetRenderTargets(1, m_PackTargets[0].GetAddressOf(), nullptr);
-    m_DeviceContext->PSSetShader(m_PackLumaShader.Get(), nullptr, 0);
-    m_DeviceContext->PSSetShaderResources(0, 1, m_PlaneViews[0].GetAddressOf());
-    m_DeviceContext->Draw(3, 0);
 
-    viewport.Width = (float)(m_Width / 2);
-    viewport.Height = (float)(m_Height / 2);
-    m_DeviceContext->RSSetViewports(1, &viewport);
-    m_DeviceContext->OMSetRenderTargets(1, m_PackTargets[1].GetAddressOf(), nullptr);
-    m_DeviceContext->PSSetShader(m_PackChromaShader.Get(), nullptr, 0);
-    ID3D11ShaderResourceView* chromaViews[] = { m_PlaneViews[1].Get(), m_PlaneViews[2].Get() };
-    m_DeviceContext->PSSetShaderResources(0, 2, chromaViews);
-    m_DeviceContext->Draw(3, 0);
+    if (m_Yuv444) {
+        // Y, Cb and Cr into one texel each, in AYUV's order
+        m_DeviceContext->OMSetRenderTargets(1, m_PackTargets[0].GetAddressOf(), nullptr);
+        m_DeviceContext->PSSetShader(m_Pack444Shader.Get(), nullptr, 0);
+        ID3D11ShaderResourceView* planeViews[] = { m_PlaneViews[0].Get(), m_PlaneViews[1].Get(), m_PlaneViews[2].Get() };
+        m_DeviceContext->PSSetShaderResources(0, 3, planeViews);
+        m_DeviceContext->Draw(3, 0);
 
-    // Don't keep the planes bound
-    ID3D11ShaderResourceView* nullViews[2] = {};
-    m_DeviceContext->PSSetShaderResources(0, 2, nullViews);
-    m_DeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+        // Don't keep the planes bound
+        ID3D11ShaderResourceView* nullViews[3] = {};
+        m_DeviceContext->PSSetShaderResources(0, 3, nullViews);
+        m_DeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    else {
+        // Y, and Cb with Cr, into the two planes of an NV12/P010 frame
+        m_DeviceContext->OMSetRenderTargets(1, m_PackTargets[0].GetAddressOf(), nullptr);
+        m_DeviceContext->PSSetShader(m_PackLumaShader.Get(), nullptr, 0);
+        m_DeviceContext->PSSetShaderResources(0, 1, m_PlaneViews[0].GetAddressOf());
+        m_DeviceContext->Draw(3, 0);
+
+        viewport.Width = (float)(m_Width / 2);
+        viewport.Height = (float)(m_Height / 2);
+        m_DeviceContext->RSSetViewports(1, &viewport);
+        m_DeviceContext->OMSetRenderTargets(1, m_PackTargets[1].GetAddressOf(), nullptr);
+        m_DeviceContext->PSSetShader(m_PackChromaShader.Get(), nullptr, 0);
+        ID3D11ShaderResourceView* chromaViews[] = { m_PlaneViews[1].Get(), m_PlaneViews[2].Get() };
+        m_DeviceContext->PSSetShaderResources(0, 2, chromaViews);
+        m_DeviceContext->Draw(3, 0);
+
+        // Don't keep the planes bound
+        ID3D11ShaderResourceView* nullViews[2] = {};
+        m_DeviceContext->PSSetShaderResources(0, 2, nullViews);
+        m_DeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+    }
 
     // Into the frame from the pool
     m_DeviceContext->CopySubresourceRegion((ID3D11Texture2D*)frame->data[0], (UINT)(intptr_t)frame->data[1],

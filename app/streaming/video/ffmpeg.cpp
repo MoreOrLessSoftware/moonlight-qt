@@ -921,6 +921,19 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
         }
         break;
 
+    case VIDEO_FORMAT_PYROWAVE_444:
+        codecString = "PyroWave 4:4:4";
+        break;
+
+    case VIDEO_FORMAT_PYROWAVE_10BIT_444:
+        if (LiGetCurrentHostDisplayHdrMode()) {
+            codecString = "PyroWave 10-bit HDR 4:4:4";
+        }
+        else {
+            codecString = "PyroWave 10-bit SDR 4:4:4";
+        }
+        break;
+
     default:
         SDL_assert(false);
         codecString = "UNKNOWN";

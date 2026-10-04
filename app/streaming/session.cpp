@@ -740,7 +740,9 @@ bool Session::initialize(QQuickWindow* qtWindow)
 
     // Start with all codecs and profiles in priority order. PyroWave is only
     // used when chosen explicitly, and is removed below otherwise.
+    m_SupportedVideoFormats.append(VIDEO_FORMAT_PYROWAVE_10BIT_444);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_PYROWAVE_10BIT);
+    m_SupportedVideoFormats.append(VIDEO_FORMAT_PYROWAVE_444);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_PYROWAVE);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_AV1_HIGH10_444);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_AV1_MAIN10);
@@ -879,9 +881,8 @@ bool Session::initialize(QQuickWindow* qtWindow)
         m_SupportedVideoFormats.removeByMask(~(VIDEO_FORMAT_MASK_AV1 | VIDEO_FORMAT_MASK_H265));
         break;
     case StreamingPreferences::VCC_FORCE_PYROWAVE:
-        // Fall back to HEVC, then H.264, if the host or this PC can't do PyroWave.
-        // PyroWave has no 4:4:4 mode here yet.
-        m_SupportedVideoFormats.removeByMask(~(VIDEO_FORMAT_MASK_PYROWAVE | VIDEO_FORMAT_H265 | VIDEO_FORMAT_H265_MAIN10 | VIDEO_FORMAT_H264));
+        // Fall back to HEVC, then H.264, if the host or this PC can't do PyroWave
+        m_SupportedVideoFormats.removeByMask(~(VIDEO_FORMAT_MASK_PYROWAVE | VIDEO_FORMAT_MASK_H265 | VIDEO_FORMAT_MASK_H264));
         break;
     }
 
@@ -1196,7 +1197,9 @@ bool Session::validateLaunch(SDL_Window* testWindow)
                                               m_StreamConfig.width,
                                               m_StreamConfig.height,
                                               m_StreamConfig.fps) != DecoderAvailability::Hardware) {
-                    if (m_Preferences->videoDecoderSelection == StreamingPreferences::VDS_FORCE_HARDWARE) {
+                    // PyroWave has no software decoder to fall back to
+                    if (m_Preferences->videoDecoderSelection == StreamingPreferences::VDS_FORCE_HARDWARE ||
+                            (m_SupportedVideoFormats.front() & VIDEO_FORMAT_MASK_PYROWAVE)) {
                         m_SupportedVideoFormats.removeFirst();
                     }
                     else {

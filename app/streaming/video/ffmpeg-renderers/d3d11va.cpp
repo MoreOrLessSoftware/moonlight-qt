@@ -1125,6 +1125,10 @@ void D3D11VARenderer::bindColorConversion(bool frameChanged, AVFrame* frame)
         switch (m_TextureFormat)
         {
         case DXGI_FORMAT_AYUV:
+        // PyroWave packs 4:4:4 into these in AYUV's VUYA order, as not every GPU
+        // supports AYUV/Y410 textures
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
             m_RenderDeviceContext->PSSetShader(m_VideoPixelShaders[PixelShaders::GENERIC_AYUV].Get(), nullptr, 0);
             break;
         case DXGI_FORMAT_Y410:
@@ -2177,7 +2181,11 @@ bool D3D11VARenderer::setupFrameRenderingResources(AVHWFramesContext* framesCont
 std::vector<DXGI_FORMAT> D3D11VARenderer::getVideoTextureSRVFormats()
 {
     if (m_DecoderParams.videoFormat & VIDEO_FORMAT_MASK_YUV444) {
-        // YUV 4:4:4 formats don't use a second SRV
+        // YUV 4:4:4 formats don't use a second SRV. PyroWave's BGRA frames (see
+        // bindColorConversion()) can only be viewed as BGRA.
+        if (m_TextureFormat == DXGI_FORMAT_B8G8R8A8_UNORM) {
+            return { DXGI_FORMAT_B8G8R8A8_UNORM };
+        }
         return { (m_DecoderParams.videoFormat & VIDEO_FORMAT_MASK_10BIT) ?
                     DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM };
     }
