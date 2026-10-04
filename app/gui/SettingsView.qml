@@ -1204,7 +1204,7 @@ Flickable {
                             val: StreamingPreferences.VCC_FORCE_AV1
                         }
                         ListElement {
-                            text: qsTr("PyroWave (Experimental, 200+ Mbps LAN)")
+                            text: qsTr("PyroWave (Experimental)")
                             val: StreamingPreferences.VCC_FORCE_PYROWAVE
                         }
                     }
