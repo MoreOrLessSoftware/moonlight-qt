@@ -174,7 +174,7 @@ public:
     Q_INVOKABLE bool applyVideoPreset(const QString& name);
     Q_INVOKABLE bool deleteVideoPreset(const QString& name);
     Q_INVOKABLE bool renameVideoPreset(const QString& oldName, const QString& newName);
-    Q_INVOKABLE bool moveVideoPreset(const QString& name, int offset);
+    Q_INVOKABLE bool moveVideoPresetTo(const QString& name, int newIndex);
 
     // Directly accessible members for preferences
     int width;

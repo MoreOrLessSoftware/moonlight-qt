@@ -173,44 +173,10 @@ Flickable {
                         }
 
                         Button {
-                            id: presetRenameButton
-                            text: qsTr("Rename...")
+                            id: presetEditButton
+                            text: qsTr("Edit...")
                             enabled: presetComboBox.currentIndex > 0
-                            onClicked: presetNameDialog.openFor("rename")
-                        }
-
-                        Button {
-                            id: presetMoveUpButton
-                            text: "\u25B2"
-                            enabled: presetComboBox.currentIndex > 1
-                            onClicked: {
-                                var name = presetComboBox.selectedPresetName()
-                                if (StreamingPreferences.moveVideoPreset(name, -1)) {
-                                    presetComboBox.reload(name)
-                                }
-                            }
-
-                            ToolTip.text: qsTr("Move this preset up in the list")
-                            ToolTip.delay: 1000
-                            ToolTip.timeout: 3000
-                            ToolTip.visible: hovered
-                        }
-
-                        Button {
-                            id: presetMoveDownButton
-                            text: "\u25BC"
-                            enabled: presetComboBox.currentIndex > 0 && presetComboBox.currentIndex < presetComboBox.count - 1
-                            onClicked: {
-                                var name = presetComboBox.selectedPresetName()
-                                if (StreamingPreferences.moveVideoPreset(name, 1)) {
-                                    presetComboBox.reload(name)
-                                }
-                            }
-
-                            ToolTip.text: qsTr("Move this preset down in the list")
-                            ToolTip.delay: 1000
-                            ToolTip.timeout: 3000
-                            ToolTip.visible: hovered
+                            onClicked: presetNameDialog.openFor("edit")
                         }
 
                         Button {
@@ -225,16 +191,16 @@ Flickable {
                             standardButtons: Dialog.Ok | Dialog.Cancel
 
                             // "save" stores the current settings under the entered name,
-                            // "rename" renames the selected preset
+                            // "edit" renames or moves the selected preset
                             property string mode: "save"
                             property string originalName: ""
 
-                            title: mode === "save" ? qsTr("Save preset") : qsTr("Rename preset")
+                            title: mode === "save" ? qsTr("Save preset") : qsTr("Edit preset")
 
                             function openFor(newMode) {
                                 mode = newMode
-                                originalName = newMode === "rename" ? presetComboBox.selectedPresetName() : ""
-                                presetNameField.text = newMode === "rename" ? originalName : StreamingPreferences.suggestedVideoPresetName()
+                                originalName = newMode === "edit" ? presetComboBox.selectedPresetName() : ""
+                                presetNameField.text = newMode === "edit" ? originalName : StreamingPreferences.suggestedVideoPresetName()
                                 open()
                             }
 
@@ -290,7 +256,7 @@ Flickable {
 
                             ColumnLayout {
                                 Label {
-                                    text: presetNameDialog.mode === "save" ? qsTr("Enter a name for this preset:") : qsTr("Enter a new name for this preset:")
+                                    text: presetNameDialog.mode === "save" ? qsTr("Enter a name for this preset:") : qsTr("Preset name:")
                                     font.bold: true
                                 }
 
@@ -320,6 +286,148 @@ Flickable {
                                     text: presetNameDialog.mode === "save" ? qsTr("A preset with this name already exists and will be replaced.") : qsTr("Another preset already has this name.")
                                     Layout.maximumWidth: 400
                                     wrapMode: Label.WordWrap
+                                }
+
+                                // Moving takes effect right away, unlike a rename, which waits for OK
+                                Button {
+                                    id: movePresetButton
+                                    text: qsTr("Move...")
+                                    visible: presetNameDialog.mode === "edit"
+                                    onClicked: movePresetDialog.openFor(presetNameDialog.originalName)
+                                }
+                            }
+                        }
+
+                        NavigableDialog {
+                            id: movePresetDialog
+                            title: qsTr("Move preset")
+                            standardButtons: Dialog.Close
+
+                            property string presetName: ""
+
+                            // Where the preset is in the list
+                            property int position: 0
+
+                            function openFor(name) {
+                                presetName = name
+                                refresh()
+                                open()
+                            }
+
+                            // Rebuilds the visible list from the saved order
+                            function refresh() {
+                                var names = StreamingPreferences.videoPresetNames()
+                                var widest = 0
+
+                                movePresetModel.clear()
+                                for (var i = 0; i < names.length; i++) {
+                                    movePresetModel.append({ "name": names[i] })
+                                    movePresetMetrics.text = names[i]
+                                    widest = Math.max(widest, movePresetMetrics.width)
+                                }
+
+                                // Leave room for the delegate's padding
+                                movePresetList.listWidth = widest + 64
+                                position = names.indexOf(presetName)
+                                movePresetList.positionViewAtIndex(Math.max(position, 0), ListView.Contain)
+                            }
+
+                            // newIndex is the position among the other presets, so one less than
+                            // the current position is up one place and one more is down one place
+                            function moveTo(newIndex) {
+                                if (StreamingPreferences.moveVideoPresetTo(presetName, newIndex)) {
+                                    presetComboBox.reload(presetName)
+                                    refresh()
+
+                                    // A button that just got disabled can't keep focus, so
+                                    // hand it to the opposite one to keep moving the same way
+                                    if (position <= 0 && moveDownButton.enabled) {
+                                        moveDownButton.forceActiveFocus(Qt.TabFocus)
+                                    }
+                                    else if (position >= movePresetModel.count - 1 && moveUpButton.enabled) {
+                                        moveUpButton.forceActiveFocus(Qt.TabFocus)
+                                    }
+                                }
+                            }
+
+                            onOpened: {
+                                // Give keyboard focus to a button so keyboard navigation works
+                                if (moveUpButton.enabled) {
+                                    moveUpButton.forceActiveFocus(Qt.TabFocus)
+                                }
+                                else if (moveDownButton.enabled) {
+                                    moveDownButton.forceActiveFocus(Qt.TabFocus)
+                                }
+                            }
+
+                            // Hand focus back to the edit dialog this was opened from
+                            onClosed: Qt.callLater(function() { presetNameField.forceActiveFocus() })
+
+                            ListModel {
+                                id: movePresetModel
+                            }
+
+                            // Measured in bold with the dialog's own font, since that is how the
+                            // highlighted entry is drawn and this page uses a larger point size
+                            TextMetrics {
+                                id: movePresetMetrics
+                                font.family: movePresetDialog.font.family
+                                font.pointSize: movePresetDialog.font.pointSize
+                                font.bold: true
+                            }
+
+                            RowLayout {
+                                spacing: 10
+
+                                ListView {
+                                    id: movePresetList
+                                    property int listWidth: 200
+
+                                    Layout.preferredWidth: Math.min(listWidth, 500)
+                                    Layout.preferredHeight: Math.min(Math.max(contentHeight, 48), 320)
+                                    clip: true
+                                    model: movePresetModel
+                                    interactive: contentHeight > height
+
+                                    delegate: ItemDelegate {
+                                        width: ListView.view.width
+                                        text: model.name
+
+                                        // Show where the preset being moved sits in the order
+                                        highlighted: model.name === movePresetDialog.presetName
+                                        font.bold: highlighted
+                                        focusPolicy: Qt.NoFocus
+                                        hoverEnabled: false
+                                    }
+                                }
+
+                                ColumnLayout {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    spacing: 5
+
+                                    Button {
+                                        id: moveUpButton
+                                        text: "\u25B2"
+                                        enabled: movePresetDialog.position > 0
+                                        onClicked: movePresetDialog.moveTo(movePresetDialog.position - 1)
+
+                                        ToolTip.text: qsTr("Move this preset up")
+                                        ToolTip.delay: 1000
+                                        ToolTip.timeout: 3000
+                                        ToolTip.visible: hovered
+                                    }
+
+                                    Button {
+                                        id: moveDownButton
+                                        text: "\u25BC"
+                                        enabled: movePresetDialog.position >= 0 && movePresetDialog.position < movePresetModel.count - 1
+                                        onClicked: movePresetDialog.moveTo(movePresetDialog.position + 1)
+
+                                        ToolTip.text: qsTr("Move this preset down")
+                                        ToolTip.delay: 1000
+                                        ToolTip.timeout: 3000
+                                        ToolTip.visible: hovered
+                                    }
                                 }
                             }
                         }
