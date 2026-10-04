@@ -965,6 +965,69 @@ Flickable {
 
                 Label {
                     width: parent.width
+                    id: bitrateTitle
+                    text: qsTr("Video bitrate:")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                Label {
+                    width: parent.width
+                    id: bitrateDesc
+                    text: qsTr("Lower the bitrate on slower connections. Raise the bitrate to increase image quality.")
+                    font.pointSize: 9
+                    wrapMode: Text.Wrap
+                }
+
+                Row {
+                    width: parent.width
+                    spacing: 5
+
+                    Slider {
+                        id: slider
+
+                        value: StreamingPreferences.bitrateKbps
+
+                        // Steps are 10 Mbps. The range starts at zero so the steps land on whole
+                        // multiples of 10 Mbps, but the bitrate itself never goes below 500 Kbps.
+                        stepSize: 10000
+                        from : 0
+                        to: StreamingPreferences.unlockBitrate ? 2500000 : 150000
+
+                        snapMode: "SnapOnRelease"
+                        width: Math.min(bitrateDesc.implicitWidth, parent.width - (resetBitrateButton.visible ? resetBitrateButton.width + parent.spacing : 0))
+
+                        onValueChanged: {
+                            var bitrateKbps = Math.max(value, 500)
+                            bitrateTitle.text = qsTr("Video bitrate: %1 Mbps").arg(bitrateKbps / 1000.0)
+                            StreamingPreferences.bitrateKbps = bitrateKbps
+                        }
+
+                        onMoved: {
+                            StreamingPreferences.autoAdjustBitrate = false
+                        }
+
+                        Component.onCompleted: {
+                            // Refresh the text after translations change
+                            languageChanged.connect(valueChanged)
+                        }
+                    }
+
+                    Button {
+                        id: resetBitrateButton
+                        text: qsTr("Use Default (%1 Mbps)").arg(StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444) / 1000.0)
+                        visible: StreamingPreferences.bitrateKbps !== StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444)
+                        onClicked: {
+                            var defaultBitrate = StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444)
+                            StreamingPreferences.bitrateKbps = defaultBitrate
+                            StreamingPreferences.autoAdjustBitrate = true
+                            slider.value = defaultBitrate
+                        }
+                    }
+                }
+
+                Label {
+                    width: parent.width
                     id: resVCCTitle
                     text: qsTr("Video codec")
                     font.pointSize: 12
@@ -1041,69 +1104,6 @@ Flickable {
                     onActivated : {
                         if (enabled) {
                             StreamingPreferences.videoCodecConfig = codecListModel.get(currentIndex).val
-                        }
-                    }
-                }
-
-                Label {
-                    width: parent.width
-                    id: bitrateTitle
-                    text: qsTr("Video bitrate:")
-                    font.pointSize: 12
-                    wrapMode: Text.Wrap
-                }
-
-                Label {
-                    width: parent.width
-                    id: bitrateDesc
-                    text: qsTr("Lower the bitrate on slower connections. Raise the bitrate to increase image quality.")
-                    font.pointSize: 9
-                    wrapMode: Text.Wrap
-                }
-
-                Row {
-                    width: parent.width
-                    spacing: 5
-
-                    Slider {
-                        id: slider
-
-                        value: StreamingPreferences.bitrateKbps
-
-                        // Steps are 10 Mbps. The range starts at zero so the steps land on whole
-                        // multiples of 10 Mbps, but the bitrate itself never goes below 500 Kbps.
-                        stepSize: 10000
-                        from : 0
-                        to: StreamingPreferences.unlockBitrate ? 2500000 : 150000
-
-                        snapMode: "SnapOnRelease"
-                        width: Math.min(bitrateDesc.implicitWidth, parent.width - (resetBitrateButton.visible ? resetBitrateButton.width + parent.spacing : 0))
-
-                        onValueChanged: {
-                            var bitrateKbps = Math.max(value, 500)
-                            bitrateTitle.text = qsTr("Video bitrate: %1 Mbps").arg(bitrateKbps / 1000.0)
-                            StreamingPreferences.bitrateKbps = bitrateKbps
-                        }
-
-                        onMoved: {
-                            StreamingPreferences.autoAdjustBitrate = false
-                        }
-
-                        Component.onCompleted: {
-                            // Refresh the text after translations change
-                            languageChanged.connect(valueChanged)
-                        }
-                    }
-
-                    Button {
-                        id: resetBitrateButton
-                        text: qsTr("Use Default (%1 Mbps)").arg(StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444) / 1000.0)
-                        visible: StreamingPreferences.bitrateKbps !== StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444)
-                        onClicked: {
-                            var defaultBitrate = StreamingPreferences.getDefaultBitrate(StreamingPreferences.width, StreamingPreferences.height, StreamingPreferences.fps, StreamingPreferences.enableYUV444)
-                            StreamingPreferences.bitrateKbps = defaultBitrate
-                            StreamingPreferences.autoAdjustBitrate = true
-                            slider.value = defaultBitrate
                         }
                     }
                 }
