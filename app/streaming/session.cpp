@@ -184,6 +184,12 @@ void Session::clConnectionStatusUpdate(int connectionStatus)
         return;
     }
 
+    if (s_ActiveSession->m_ActiveVideoFormat & VIDEO_FORMAT_MASK_PYROWAVE) {
+        // PyroWave's high bitrates and partial frames trip the
+        // poor connection heuristic constantly, so don't show it
+        return;
+    }
+
     switch (connectionStatus)
     {
     case CONN_STATUS_POOR:
