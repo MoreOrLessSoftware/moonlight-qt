@@ -272,6 +272,7 @@ private:
     QStringList m_LaunchWarnings;
     bool m_ShouldExit;
     bool m_LeaveHostAppRunning;
+    bool m_PyrowaveRejected;
 
     bool m_AsyncConnectionSuccess;
     int m_PortTestResults;

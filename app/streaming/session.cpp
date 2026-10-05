@@ -76,6 +76,11 @@ void Session::clStageStarting(int stage)
 
 void Session::clStageFailed(int stage, int errorCode)
 {
+    // drSetup() already explained why the stream can't start
+    if (s_ActiveSession->m_PyrowaveRejected) {
+        return;
+    }
+
     // Perform the port test now, while we're on the async connection thread and not blocking the UI.
     unsigned int portFlags = LiGetPortFlagsFromStage(stage);
     s_ActiveSession->m_PortTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
@@ -349,6 +354,20 @@ bool Session::chooseDecoder(StreamingPreferences::VideoDecoderSelection vds,
 
 int Session::drSetup(int videoFormat, int width, int height, int frameRate, void *, int)
 {
+    // Moonlight-common-c picks H.264 if the host doesn't offer PyroWave when the stream
+    // starts, even though it was the only codec asked for. PyroWave never falls back.
+    if ((s_ActiveSession->m_StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_PYROWAVE) &&
+            !(videoFormat & VIDEO_FORMAT_MASK_PYROWAVE)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "Host didn't offer PyroWave (format 0x%x instead)",
+                     videoFormat);
+
+        // Shown instead of the generic stage failure. See clStageFailed().
+        s_ActiveSession->m_PyrowaveRejected = true;
+        emit s_ActiveSession->displayLaunchError(tr("Your host PC couldn't start a PyroWave stream. Check the host's Sunshine log for PyroWave encoder errors."));
+        return -1;
+    }
+
     s_ActiveSession->m_ActiveVideoFormat = videoFormat;
     s_ActiveSession->m_ActiveVideoWidth = width;
     s_ActiveSession->m_ActiveVideoHeight = height;
@@ -587,6 +606,7 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_FlushingWindowEventsRef(0),
       m_ShouldExit(false),
       m_LeaveHostAppRunning(false),
+      m_PyrowaveRejected(false),
       m_AsyncConnectionSuccess(false),
       m_PortTestResults(0),
       m_OpusDecoder(nullptr),
@@ -881,8 +901,9 @@ bool Session::initialize(QQuickWindow* qtWindow)
         m_SupportedVideoFormats.removeByMask(~(VIDEO_FORMAT_MASK_AV1 | VIDEO_FORMAT_MASK_H265));
         break;
     case StreamingPreferences::VCC_FORCE_PYROWAVE:
-        // Fall back to HEVC, then H.264, if the host or this PC can't do PyroWave
-        m_SupportedVideoFormats.removeByMask(~(VIDEO_FORMAT_MASK_PYROWAVE | VIDEO_FORMAT_MASK_H265 | VIDEO_FORMAT_MASK_H264));
+        // No fallback to another codec. validateLaunch() fails the launch if the
+        // host or this PC can't do PyroWave.
+        m_SupportedVideoFormats.removeByMask(~VIDEO_FORMAT_MASK_PYROWAVE);
         break;
     }
 
@@ -1007,8 +1028,8 @@ bool Session::validateLaunch(SDL_Window* testWindow)
 
     if (m_SupportedVideoFormats & VIDEO_FORMAT_MASK_PYROWAVE) {
         if (m_SupportedVideoFormats.maskByServerCodecModes(m_Computer->serverCodecModeSupport & SCM_MASK_PYROWAVE) == 0) {
-            emitLaunchWarning(tr("Your host PC doesn't support PyroWave. It needs the matching Sunshine build with libpyrowave-shared-0.dll next to sunshine.exe."));
-            m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_PYROWAVE);
+            emit displayLaunchError(tr("Your host PC doesn't support PyroWave. Make sure you're running a Sunshine or compatible host that supports PyroWave."));
+            return false;
         }
         else if (getDecoderAvailability(testWindow,
                                         m_Preferences->videoDecoderSelection,
@@ -1017,11 +1038,8 @@ bool Session::validateLaunch(SDL_Window* testWindow)
                                         m_StreamConfig.width,
                                         m_StreamConfig.height,
                                         m_StreamConfig.fps) == DecoderAvailability::None) {
-            emitLaunchWarning(tr("This PC can't decode PyroWave. It needs a D3D11 GPU with Vulkan 1.3 and libpyrowave-shared-0.dll next to Moonlight.exe."));
-            m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_PYROWAVE);
-        }
-        else {
-            m_SupportedVideoFormats.removeByMask(~(VIDEO_FORMAT_MASK_PYROWAVE | VIDEO_FORMAT_H264));
+            emit displayLaunchError(tr("This PC can't decode PyroWave. It needs a D3D11 GPU with Vulkan 1.3 and libpyrowave-shared-0.dll next to Moonlight.exe."));
+            return false;
         }
     }
 
@@ -1248,7 +1266,12 @@ bool Session::validateLaunch(SDL_Window* testWindow)
     }
 
     // If we removed all codecs with the checks above, use H.264 as the codec of last resort.
-    if (m_SupportedVideoFormats.empty()) {
+    // Not for PyroWave, which never falls back to another codec.
+    if (m_SupportedVideoFormats.empty() && m_Preferences->videoCodecConfig == StreamingPreferences::VCC_FORCE_PYROWAVE) {
+        emit displayLaunchError(tr("Your host PC and this PC don't support the same PyroWave formats."));
+        return false;
+    }
+    else if (m_SupportedVideoFormats.empty()) {
         m_SupportedVideoFormats.append(VIDEO_FORMAT_H264);
     }
 
