@@ -1074,9 +1074,96 @@ Flickable {
                 Label {
                     width: parent.width
                     id: bitrateTitle
-                    text: qsTr("Video bitrate:")
+                    // The value is a link that opens bitrateDialog, to enter a bitrate
+                    // the slider can't reach
+                    text: qsTr("Video bitrate: %1").arg("<a href=\"#\">" + qsTr("%1 Mbps").arg(StreamingPreferences.bitrateKbps / 1000.0) + "</a>")
+                    textFormat: Text.StyledText
                     font.pointSize: 12
                     wrapMode: Text.Wrap
+
+                    onLinkActivated: bitrateDialog.open()
+
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.NoButton
+                        cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    }
+                }
+
+                NavigableDialog {
+                    id: bitrateDialog
+                    standardButtons: Dialog.Ok | Dialog.Cancel
+                    title: qsTr("Video bitrate")
+
+                    // In Kbps, or 0 if what was entered isn't a valid bitrate
+                    function enteredKbps() {
+                        var mbps = Number(bitrateField.text.trim())
+                        if (bitrateField.text.trim() === "" || !isFinite(mbps)) {
+                            return 0
+                        }
+
+                        // Kbps are stored in an int
+                        var kbps = Math.round(mbps * 1000)
+                        return kbps > 0 && kbps <= 2147483647 ? kbps : 0
+                    }
+
+                    function updateOkButton() {
+                        // standardButton() was added in Qt 5.10, so we must check for it first
+                        if (bitrateDialog.standardButton) {
+                            bitrateDialog.standardButton(Dialog.Ok).enabled = enteredKbps() > 0
+                        }
+                    }
+
+                    onOpened: {
+                        bitrateField.text = StreamingPreferences.bitrateKbps / 1000.0
+
+                        // Force keyboard focus on the textbox so keyboard navigation works
+                        bitrateField.forceActiveFocus()
+                        bitrateField.selectAll()
+                        updateOkButton()
+                    }
+
+                    onAccepted: {
+                        var kbps = enteredKbps()
+                        if (kbps <= 0) {
+                            return
+                        }
+
+                        StreamingPreferences.bitrateKbps = kbps
+                        StreamingPreferences.autoAdjustBitrate = false
+
+                        // The slider shows its end if the bitrate is past it
+                        slider.value = kbps
+                    }
+
+                    ColumnLayout {
+                        Label {
+                            text: qsTr("Enter a bitrate in Mbps:")
+                            font.bold: true
+                        }
+
+                        TextField {
+                            id: bitrateField
+                            Layout.minimumWidth: 200
+                            Layout.maximumWidth: 200
+                            focus: true
+                            inputMethodHints: Qt.ImhFormattedNumbersOnly
+
+                            onTextChanged: bitrateDialog.updateOkButton()
+
+                            Keys.onReturnPressed: {
+                                if (bitrateDialog.enteredKbps() > 0) {
+                                    bitrateDialog.accept()
+                                }
+                            }
+
+                            Keys.onEnterPressed: {
+                                if (bitrateDialog.enteredKbps() > 0) {
+                                    bitrateDialog.accept()
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Label {
@@ -1096,28 +1183,21 @@ Flickable {
 
                         value: StreamingPreferences.bitrateKbps
 
-                        // Steps are 10 Mbps. The range starts at zero so the steps land on whole
-                        // multiples of 10 Mbps, but the bitrate itself never goes below 500 Kbps.
-                        stepSize: 10000
+                        // Steps are 5 Mbps. The range starts at zero so the steps land on whole
+                        // multiples of 5 Mbps, but the bitrate itself never goes below 500 Kbps.
+                        stepSize: 5000
                         from : 0
-                        to: StreamingPreferences.unlockBitrate ? 2500000 : 150000
+                        to: StreamingPreferences.unlockBitrate ? 1000000 : 150000
 
                         snapMode: "SnapOnRelease"
                         width: Math.min(bitrateDesc.implicitWidth, parent.width - (resetBitrateButton.visible ? resetBitrateButton.width + parent.spacing : 0))
 
-                        onValueChanged: {
-                            var bitrateKbps = Math.max(value, 500)
-                            bitrateTitle.text = qsTr("Video bitrate: %1 Mbps").arg(bitrateKbps / 1000.0)
-                            StreamingPreferences.bitrateKbps = bitrateKbps
-                        }
-
+                        // Only the user moving the slider sets the bitrate. A bitrate entered in
+                        // bitrateDialog can be past the slider's end, which the slider clamps its
+                        // value to, and that mustn't overwrite it.
                         onMoved: {
+                            StreamingPreferences.bitrateKbps = Math.max(value, 500)
                             StreamingPreferences.autoAdjustBitrate = false
-                        }
-
-                        Component.onCompleted: {
-                            // Refresh the text after translations change
-                            languageChanged.connect(valueChanged)
                         }
                     }
 
@@ -2080,7 +2160,12 @@ Flickable {
                     checked: StreamingPreferences.unlockBitrate
                     onCheckedChanged: {
                         StreamingPreferences.unlockBitrate = checked
-                        StreamingPreferences.bitrateKbps = Math.min(StreamingPreferences.bitrateKbps, slider.to)
+
+                        // Locking caps the bitrate at the slider's end. Unlocking leaves a
+                        // bitrate entered past the unlocked end alone.
+                        if (!checked) {
+                            StreamingPreferences.bitrateKbps = Math.min(StreamingPreferences.bitrateKbps, slider.to)
+                        }
                         slider.value = StreamingPreferences.bitrateKbps
                     }
 
