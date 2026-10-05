@@ -56,6 +56,8 @@ public:
     void flush();
 
 private:
+    bool createSync();
+    bool testSharedFence();
     bool createPlanes();
     bool createPackResources();
     bool createPack444Resources();
@@ -90,6 +92,11 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Fence> m_Fence;
     uint64_t m_FenceValue;
     uint64_t m_PackedValue;
+
+    // Without a fence shared with PyroWave, each side waits for the other's signal on
+    // the CPU instead. m_Fence is then D3D11's alone. See createSync().
+    bool m_CpuSync;
+    HANDLE m_FenceEvent;
 
     // Packing the planes into a frame, with its own pipeline state so the renderer's
     // state on a shared device context isn't disturbed

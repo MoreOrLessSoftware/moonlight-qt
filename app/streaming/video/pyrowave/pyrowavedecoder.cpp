@@ -4,6 +4,9 @@
 #include "streaming/video/ffmpeg-renderers/d3d11va.h"
 #include "streaming/video/ffmpeg-renderers/pacer/pacer.h"
 
+#include <QtGlobal>
+
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -23,8 +26,12 @@ struct PyrowaveApi
     decltype(&::pyrowave_get_api_version) getApiVersion;
     decltype(&::pyrowave_create_device_by_compat2) createDeviceByCompat2;
     decltype(&::pyrowave_device_destroy) deviceDestroy;
+    decltype(&::pyrowave_device_get_vk_device_handles) deviceGetVkDeviceHandles; // May be null
     decltype(&::pyrowave_sync_object_create) syncObjectCreate;
     decltype(&::pyrowave_sync_object_get_semaphore) syncObjectGetSemaphore;
+    decltype(&::pyrowave_sync_object_export_handle) syncObjectExportHandle;
+    decltype(&::pyrowave_sync_object_cpu_wait) syncObjectCpuWait;
+    decltype(&::pyrowave_sync_object_cpu_signal) syncObjectCpuSignal;
     decltype(&::pyrowave_sync_object_destroy) syncObjectDestroy;
     decltype(&::pyrowave_image_create) imageCreate;
     decltype(&::pyrowave_image_get_image_view) imageGetImageView;
@@ -79,6 +86,9 @@ static const PyrowaveApi* loadPyrowaveApi()
         resolve(api.deviceDestroy, "pyrowave_device_destroy");
         resolve(api.syncObjectCreate, "pyrowave_sync_object_create");
         resolve(api.syncObjectGetSemaphore, "pyrowave_sync_object_get_semaphore");
+        resolve(api.syncObjectExportHandle, "pyrowave_sync_object_export_handle");
+        resolve(api.syncObjectCpuWait, "pyrowave_sync_object_cpu_wait");
+        resolve(api.syncObjectCpuSignal, "pyrowave_sync_object_cpu_signal");
         resolve(api.syncObjectDestroy, "pyrowave_sync_object_destroy");
         resolve(api.imageCreate, "pyrowave_image_create");
         resolve(api.imageGetImageView, "pyrowave_image_get_image_view");
@@ -97,6 +107,10 @@ static const PyrowaveApi* loadPyrowaveApi()
         // data as frames that lost packets
         api.decoderDecodeIsReadyWithSideband = reinterpret_cast<decltype(api.decoderDecodeIsReadyWithSideband)>(
                     GetProcAddress(dll, "pyrowave_decoder_decode_is_ready_with_sideband"));
+
+        // Optional: only used to log what the driver supports when interop fails
+        api.deviceGetVkDeviceHandles = reinterpret_cast<decltype(api.deviceGetVkDeviceHandles)>(
+                    GetProcAddress(dll, "pyrowave_device_get_vk_device_handles"));
 
         // The API and ABI can change between minor versions until 1.0
         uint32_t major, minor, patch;
@@ -118,6 +132,160 @@ static const PyrowaveApi* loadPyrowaveApi()
     return loaded ? &api : nullptr;
 }
 
+// How PyroWave uses the planes it imports from D3D11
+static const VkImageUsageFlags k_PlaneImageUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+// Logs what the Vulkan driver reports for the interop with D3D11 that PyroWave needs:
+// importing a D3D11 fence as a timeline semaphore, and importing D3D11 textures.
+// PyroWave's own errors don't say which part the driver lacks.
+static void logVulkanInteropSupport(const PyrowaveApi* api, pyrowave_device device, VkFormat planeFormat)
+{
+    if (api->deviceGetVkDeviceHandles == nullptr) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "PyroWave: this library version can't report the Vulkan device's interop support");
+        return;
+    }
+
+    VkInstance instance = VK_NULL_HANDLE;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    api->deviceGetVkDeviceHandles(device, &instance, &physicalDevice, nullptr);
+
+    // PyroWave has already loaded the Vulkan loader
+    HMODULE vulkan = GetModuleHandleW(L"vulkan-1.dll");
+    auto getInstanceProcAddr = vulkan != nullptr ?
+            reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(vulkan, "vkGetInstanceProcAddr")) : nullptr;
+    if (instance == VK_NULL_HANDLE || physicalDevice == VK_NULL_HANDLE || getInstanceProcAddr == nullptr) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "PyroWave: couldn't get the Vulkan device to report its interop support");
+        return;
+    }
+
+    auto getProperties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
+                getInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2"));
+    auto getFeatures2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+                getInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2"));
+    auto enumerateExtensions = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
+                getInstanceProcAddr(instance, "vkEnumerateDeviceExtensionProperties"));
+    auto getSemaphoreProperties = reinterpret_cast<PFN_vkGetPhysicalDeviceExternalSemaphoreProperties>(
+                getInstanceProcAddr(instance, "vkGetPhysicalDeviceExternalSemaphoreProperties"));
+    auto getImageFormatProperties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceImageFormatProperties2>(
+                getInstanceProcAddr(instance, "vkGetPhysicalDeviceImageFormatProperties2"));
+    if (getProperties2 == nullptr || getFeatures2 == nullptr || enumerateExtensions == nullptr ||
+            getSemaphoreProperties == nullptr || getImageFormatProperties2 == nullptr) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "PyroWave: the Vulkan loader is missing entry points to report interop support");
+        return;
+    }
+
+    VkPhysicalDeviceDriverProperties driverProps = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+    VkPhysicalDeviceProperties2 props = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+    props.pNext = &driverProps;
+    getProperties2(physicalDevice, &props);
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "PyroWave: Vulkan device %s (Vulkan %u.%u.%u), driver %s %s",
+                props.properties.deviceName,
+                VK_API_VERSION_MAJOR(props.properties.apiVersion),
+                VK_API_VERSION_MINOR(props.properties.apiVersion),
+                VK_API_VERSION_PATCH(props.properties.apiVersion),
+                driverProps.driverName,
+                driverProps.driverInfo);
+
+    VkPhysicalDeviceVulkan12Features vk12Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+    VkPhysicalDeviceFeatures2 features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+    features.pNext = &vk12Features;
+    getFeatures2(physicalDevice, &features);
+
+    uint32_t extensionCount = 0;
+    enumerateExtensions(physicalDevice, nullptr, &extensionCount, nullptr);
+    std::vector<VkExtensionProperties> extensions(extensionCount);
+    enumerateExtensions(physicalDevice, nullptr, &extensionCount, extensions.data());
+    auto hasExtension = [&](const char* name) {
+        for (const VkExtensionProperties& extension : extensions) {
+            if (strcmp(extension.extensionName, name) == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "PyroWave: timeline semaphores: %s, VK_KHR_external_semaphore_win32: %s, VK_KHR_external_memory_win32: %s",
+                vk12Features.timelineSemaphore ? "yes" : "no",
+                hasExtension("VK_KHR_external_semaphore_win32") ? "yes" : "no",
+                hasExtension("VK_KHR_external_memory_win32") ? "yes" : "no");
+
+    // PyroWave imports the D3D11 fence as a D3D12 fence (the same handle type). It checks
+    // that handle type without asking for a timeline, as AMD reports no timeline support
+    // for it, so the binary row is the one that decides.
+    const struct {
+        VkExternalSemaphoreHandleTypeFlagBits type;
+        const char* name;
+    } semaphoreHandleTypes[] = {
+        { VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT, "D3D11/D3D12 fence" },
+        { VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT, "opaque Win32" },
+        { VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT, "opaque Win32 KMT" },
+    };
+
+    for (const auto& handleType : semaphoreHandleTypes) {
+        for (VkSemaphoreType semaphoreType : { VK_SEMAPHORE_TYPE_BINARY, VK_SEMAPHORE_TYPE_TIMELINE }) {
+            VkSemaphoreTypeCreateInfo typeInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO };
+            typeInfo.semaphoreType = semaphoreType;
+
+            VkPhysicalDeviceExternalSemaphoreInfo semaphoreInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO };
+            semaphoreInfo.pNext = &typeInfo;
+            semaphoreInfo.handleType = handleType.type;
+
+            VkExternalSemaphoreProperties semaphoreProps = { VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES };
+            getSemaphoreProperties(physicalDevice, &semaphoreInfo, &semaphoreProps);
+
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "PyroWave: %s %s semaphores: import %s, export %s",
+                        handleType.name,
+                        semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE ? "timeline" : "binary",
+                        (semaphoreProps.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT) ? "yes" : "no",
+                        (semaphoreProps.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT) ? "yes" : "no");
+        }
+    }
+
+    // The planes are imported as D3D11 textures with an NT handle. See createPlanes().
+    const struct {
+        VkExternalMemoryHandleTypeFlagBits type;
+        const char* name;
+    } memoryHandleTypes[] = {
+        { VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT, "D3D11 texture" },
+        { VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT, "D3D11 texture KMT" },
+    };
+
+    for (const auto& handleType : memoryHandleTypes) {
+        VkPhysicalDeviceExternalImageFormatInfo externalInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO };
+        externalInfo.handleType = handleType.type;
+
+        VkPhysicalDeviceImageFormatInfo2 formatInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2 };
+        formatInfo.pNext = &externalInfo;
+        formatInfo.format = planeFormat;
+        formatInfo.type = VK_IMAGE_TYPE_2D;
+        formatInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        formatInfo.usage = k_PlaneImageUsage;
+
+        VkExternalImageFormatProperties externalProps = { VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES };
+        VkImageFormatProperties2 formatProps = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2 };
+        formatProps.pNext = &externalProps;
+        VkResult vkResult = getImageFormatProperties2(physicalDevice, &formatInfo, &formatProps);
+
+        VkExternalMemoryFeatureFlags memoryFeatures = externalProps.externalMemoryProperties.externalMemoryFeatures;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "PyroWave: %s %s images: %s (%d), import %s, dedicated only %s",
+                    handleType.name,
+                    planeFormat == VK_FORMAT_R16_UNORM ? "R16" : "R8",
+                    vkResult == VK_SUCCESS ? "supported" : "unsupported",
+                    vkResult,
+                    (memoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) ? "yes" : "no",
+                    (memoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT) ? "yes" : "no");
+    }
+}
+
 PyrowaveDecoder::PyrowaveDecoder()
     : m_Api(nullptr),
       m_Handles(new PyrowaveHandles()),
@@ -133,6 +301,8 @@ PyrowaveDecoder::PyrowaveDecoder()
       m_LockContext(nullptr),
       m_FenceValue(0),
       m_PackedValue(0),
+      m_CpuSync(false),
+      m_FenceEvent(nullptr),
       m_LoggedDecodeFailure(false)
 {
 }
@@ -158,6 +328,10 @@ PyrowaveDecoder::~PyrowaveDecoder()
     }
 
     delete m_Handles;
+
+    if (m_FenceEvent != nullptr) {
+        CloseHandle(m_FenceEvent);
+    }
 
     av_buffer_unref(&m_FramesContext);
 }
@@ -276,35 +450,7 @@ bool PyrowaveDecoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAMETERS 
         return false;
     }
 
-    // Shared with PyroWave to order access to the planes
-    hr = m_Device->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&m_Fence));
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Device5::CreateFence() failed: %x",
-                     hr);
-        return false;
-    }
-
-    HANDLE fenceHandle;
-    hr = m_Fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &fenceHandle);
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Fence::CreateSharedHandle() failed: %x",
-                     hr);
-        return false;
-    }
-
-    pyrowave_sync_object_create_info syncInfo = {};
-    syncInfo.device = m_Handles->device;
-    syncInfo.external_handle = (pyrowave_os_handle)fenceHandle;
-    syncInfo.handle_type = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D11_FENCE_BIT;
-    syncInfo.semaphore_type = VK_SEMAPHORE_TYPE_TIMELINE;
-    result = m_Api->syncObjectCreate(&syncInfo, &m_Handles->sync);
-    if (result != PYROWAVE_SUCCESS) {
-        CloseHandle(fenceHandle);
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: couldn't import the shared fence (%d)",
-                     result);
+    if (!createSync()) {
         return false;
     }
 
@@ -332,6 +478,165 @@ bool PyrowaveDecoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAMETERS 
                 m_TenBit ? "10-bit" : "8-bit",
                 m_Yuv444 ? "4:4:4" : "4:2:0",
                 adapterDesc.Description);
+    return true;
+}
+
+// Orders PyroWave's and D3D11's use of the planes. The best way is a D3D11 fence PyroWave
+// imports. Some drivers, like Intel's last one for Gen9, can't import one but can export
+// a Vulkan timeline semaphore, which D3D11 may be able to open as a fence. Failing both,
+// each side waits for the other on the CPU. ML_PYROWAVE_CPU_SYNC=1 forces that.
+bool PyrowaveDecoder::createSync()
+{
+    HRESULT hr;
+    pyrowave_result result;
+
+    bool forceCpuSync = qEnvironmentVariableIntValue("ML_PYROWAVE_CPU_SYNC") != 0;
+
+    pyrowave_sync_object_create_info syncInfo = {};
+    syncInfo.device = m_Handles->device;
+    syncInfo.semaphore_type = VK_SEMAPHORE_TYPE_TIMELINE;
+
+    if (!forceCpuSync) {
+        hr = m_Device->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&m_Fence));
+        if (FAILED(hr)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "PyroWave: ID3D11Device5::CreateFence() failed: %x",
+                         hr);
+            return false;
+        }
+
+        HANDLE fenceHandle;
+        hr = m_Fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &fenceHandle);
+        if (FAILED(hr)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "PyroWave: ID3D11Fence::CreateSharedHandle() failed: %x",
+                         hr);
+            return false;
+        }
+
+        syncInfo.external_handle = (pyrowave_os_handle)fenceHandle;
+        syncInfo.handle_type = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D11_FENCE_BIT;
+        result = m_Api->syncObjectCreate(&syncInfo, &m_Handles->sync);
+        if (result == PYROWAVE_SUCCESS) {
+            return true;
+        }
+
+        CloseHandle(fenceHandle);
+        m_Fence.Reset();
+
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "PyroWave: couldn't import a D3D11 fence (%d)",
+                    result);
+        logVulkanInteropSupport(m_Api, m_Handles->device, m_TenBit ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM);
+    }
+
+    // A timeline semaphore to export. PyroWave requires the TEMPORARY flag to create
+    // one without a handle to import, though it's otherwise unused.
+    syncInfo.external_handle = 0;
+    syncInfo.handle_type = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    syncInfo.import_flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT;
+    result = m_Api->syncObjectCreate(&syncInfo, &m_Handles->sync);
+    if (result != PYROWAVE_SUCCESS) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "PyroWave: couldn't create a timeline semaphore (%d)",
+                     result);
+        return false;
+    }
+
+    if (!forceCpuSync) {
+        pyrowave_os_handle semaphoreHandle;
+        result = m_Api->syncObjectExportHandle(m_Handles->sync, &semaphoreHandle);
+        if (result == PYROWAVE_SUCCESS) {
+            hr = m_Device->OpenSharedFence((HANDLE)semaphoreHandle, IID_PPV_ARGS(&m_Fence));
+            CloseHandle((HANDLE)semaphoreHandle);
+            if (FAILED(hr)) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "PyroWave: ID3D11Device5::OpenSharedFence() failed: %x",
+                            hr);
+            }
+            else if (testSharedFence()) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "PyroWave: synchronizing with D3D11 through a fence exported from Vulkan");
+                return true;
+            }
+            else {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "PyroWave: D3D11 opened the fence exported from Vulkan, but they don't see each other's signals");
+            }
+        }
+        else {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "PyroWave: couldn't export the timeline semaphore (%d)",
+                        result);
+        }
+    }
+
+    // D3D11 signals this fence when it has packed the planes, and the decode thread
+    // waits for it before PyroWave decodes into them again. See decode().
+    hr = m_Device->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_Fence));
+    if (FAILED(hr)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "PyroWave: ID3D11Device5::CreateFence() failed: %x",
+                     hr);
+        return false;
+    }
+
+    m_FenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (m_FenceEvent == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "PyroWave: CreateEvent() failed: %d",
+                     (int)GetLastError());
+        return false;
+    }
+
+    m_CpuSync = true;
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "PyroWave: synchronizing with D3D11 on the CPU, which adds a little latency");
+    return true;
+}
+
+// Whether a signal on either side of the fence D3D11 opened from PyroWave's timeline
+// semaphore reaches the other. Some drivers (Intel's for Gen9) open it without error, but
+// then neither sees the other's signals and decoding stalls forever. Uses values 1 and 2.
+bool PyrowaveDecoder::testSharedFence()
+{
+    // The semaphore's value is at least 2 afterwards, whether or not this works, so the
+    // values decode() signals have to start above it
+    m_FenceValue = 2;
+
+    // Vulkan to D3D11
+    if (m_Api->syncObjectCpuSignal(m_Handles->sync, 1) != PYROWAVE_SUCCESS) {
+        return false;
+    }
+
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (event == nullptr) {
+        return false;
+    }
+
+    bool seen = SUCCEEDED(m_Fence->SetEventOnCompletion(1, event)) &&
+                WaitForSingleObject(event, 100) == WAIT_OBJECT_0;
+    CloseHandle(event);
+    if (!seen) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "PyroWave: D3D11 didn't see a signal from Vulkan");
+        return false;
+    }
+
+    // D3D11 to Vulkan
+    lockContext();
+    m_DeviceContext->Signal(m_Fence.Get(), 2);
+    m_DeviceContext->Flush();
+    unlockContext();
+
+    if (m_Api->syncObjectCpuWait(m_Handles->sync, 2, 100000000ULL) != PYROWAVE_SUCCESS) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "PyroWave: Vulkan didn't see a signal from D3D11");
+        return false;
+    }
+
+    // Already signaled, so the first decode waits for nothing
+    m_PackedValue = 2;
     return true;
 }
 
@@ -397,8 +702,7 @@ bool PyrowaveDecoder::createPlanes()
         imageCreateInfo.arrayLayers = 1;
         imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageCreateInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        imageCreateInfo.usage = k_PlaneImageUsage;
         imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -729,6 +1033,18 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFram
         return nullptr;
     }
 
+    // With CPU sync, wait here for D3D11 to finish packing the last frame out of the
+    // planes. It normally has long since.
+    if (m_CpuSync && m_Fence->GetCompletedValue() < m_PackedValue) {
+        HRESULT hr = m_Fence->SetEventOnCompletion(m_PackedValue, m_FenceEvent);
+        if (FAILED(hr) || WaitForSingleObject(m_FenceEvent, 1000) != WAIT_OBJECT_0) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "PyroWave: timed out waiting for D3D11 to pack the last frame");
+            av_frame_free(&frame);
+            return nullptr;
+        }
+    }
+
     VkSemaphore semaphore = m_Api->syncObjectGetSemaphore(m_Handles->sync);
 
     // The planes' old contents can be discarded, but not before D3D11 has packed them
@@ -743,7 +1059,9 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFram
     pyrowave_gpu_sync_operation acquire = {};
     acquire.images = acquireRefs.data();
     acquire.num_images = acquireRefs.size();
-    acquire.sync = { semaphore, m_PackedValue };
+    // Nothing to wait for before the first frame (PyroWave would take a value of 0 as a
+    // binary semaphore), or with CPU sync, which already waited
+    acquire.sync = { (m_PackedValue != 0 && !m_CpuSync) ? semaphore : VK_NULL_HANDLE, m_PackedValue };
 
     pyrowave_gpu_sync_operation release = {};
     release.images = releaseRefs.data();
@@ -759,13 +1077,28 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFram
         return nullptr;
     }
 
+    // With CPU sync, wait here for PyroWave to finish decoding before D3D11 packs the planes
+    if (m_CpuSync) {
+        result = m_Api->syncObjectCpuWait(m_Handles->sync, decodedValue, 1000000000ULL);
+        if (result != PYROWAVE_SUCCESS) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "PyroWave: waiting for the decode failed (%d)",
+                         result);
+            av_frame_free(&frame);
+            return nullptr;
+        }
+    }
+
     lockContext();
 
     ComPtr<ID3DDeviceContextState> previousState;
     m_DeviceContext->SwapDeviceContextState(m_PackState.Get(), &previousState);
 
-    // Wait on the GPU for PyroWave to finish, then pack the planes into the frame
-    m_DeviceContext->Wait(m_Fence.Get(), decodedValue);
+    // Wait on the GPU for PyroWave to finish (unless the CPU already did), then pack
+    // the planes into the frame
+    if (!m_CpuSync) {
+        m_DeviceContext->Wait(m_Fence.Get(), decodedValue);
+    }
 
     m_DeviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_DeviceContext->VSSetShader(m_PackVertexShader.Get(), nullptr, 0);
