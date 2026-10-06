@@ -307,7 +307,7 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFram
     // Each frame arrives on its own, so anything left from an earlier one is stale
     m_Api->decoderClear(m_Handles->decoder);
 
-    if (partial != PartialFrame::None) {
+    if (partial != PartialFrame::Complete) {
         length = completeBlocksLength(data, length, &lastBlockIndex);
         if (length == 0) {
             return nullptr;
@@ -341,7 +341,7 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFram
         // up to the last one here that isn't here was left out on purpose. Only the blocks
         // after it are missing, which the mask says.
         bool ready;
-        if (partial != PartialFrame::None && m_Api->decoderDecodeIsReadyWithSideband != nullptr) {
+        if (partial != PartialFrame::Complete && m_Api->decoderDecodeIsReadyWithSideband != nullptr) {
             size_t wordCount = (size_t)(lastBlockIndex + 1) / 32 + 1;
             std::vector<uint32_t> expectedBlocks(wordCount, 0);
             expectedBlocks[wordCount - 1] = ~0u << ((lastBlockIndex + 1) % 32);

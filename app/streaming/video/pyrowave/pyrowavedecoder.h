@@ -27,9 +27,10 @@ public:
     virtual ~PyrowaveDecoder();
 
     // How much of a frame arrived (see CAPABILITY_PARTIAL_FRAMES): all of it, all but
-    // packets that were lost, or the start of it, cut short at its deadline
+    // packets that were lost, or the start of it, cut short at its deadline. Not "None",
+    // which X11's headers define as a macro on Linux.
     enum class PartialFrame {
-        None,
+        Complete,
         Lost,
         Late,
     };

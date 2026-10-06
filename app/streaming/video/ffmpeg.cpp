@@ -2232,13 +2232,13 @@ int FFmpegVideoDecoder::submitPyrowaveDecodeUnit(PDECODE_UNIT du)
 
     m_ActiveWndVideoStats.totalReassemblyTimeUs += (du->enqueueTimeUs - du->receiveTimeUs);
 
-    PyrowaveDecoder::PartialFrame partial = PyrowaveDecoder::PartialFrame::None;
+    PyrowaveDecoder::PartialFrame partial = PyrowaveDecoder::PartialFrame::Complete;
     if (du->partialFrame) {
         partial = du->partialLate ? PyrowaveDecoder::PartialFrame::Late : PyrowaveDecoder::PartialFrame::Lost;
     }
 
     AVFrame* frame = m_Pyrowave->decode((const uint8_t*)m_DecodeBuffer.constData(), offset, partial);
-    if (frame == nullptr && partial != PyrowaveDecoder::PartialFrame::None) {
+    if (frame == nullptr && partial != PyrowaveDecoder::PartialFrame::Complete) {
         // Too little of it arrived to show. That says nothing about the decoder's health.
         return DR_OK;
     }
