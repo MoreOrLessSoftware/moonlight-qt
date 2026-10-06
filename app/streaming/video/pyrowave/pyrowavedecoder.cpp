@@ -37,7 +37,8 @@ static void* lookUpPyrowaveSymbol(void* library, const char* name)
 static void* openPyrowaveLibrary()
 {
     // ML_PYROWAVE_LIBRARY names the library to load, such as one built locally.
-    // Otherwise the usual library paths are searched, then Moonlight's own directory.
+    // Otherwise the usual library paths are searched (the AppImage's usr/lib is in the
+    // binary's RUNPATH), then Moonlight's own directory and the lib directory beside it.
     QByteArray override = qgetenv("ML_PYROWAVE_LIBRARY");
     if (!override.isEmpty()) {
         void* library = dlopen(override.constData(), RTLD_NOW | RTLD_LOCAL);
@@ -56,6 +57,7 @@ static void* openPyrowaveLibrary()
         "libpyrowave-shared.so",
         appDir + "/libpyrowave-shared.so.0",
         appDir + "/libpyrowave-shared.so",
+        appDir + "/../lib/libpyrowave-shared.so.0",
     };
 
     // Kept loaded for the life of the process
