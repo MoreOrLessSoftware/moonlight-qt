@@ -128,6 +128,7 @@ private:
     int m_TimelineArrivals;
     double m_DelayUs;
     bool m_Tearing;
+    bool m_CanTear;
     int64_t m_LastTearSwitchUs;
     double m_RenderCostUs;
     uint32_t m_DrawCostsUs[PACER_CADENCE_DRAW_SAMPLES];

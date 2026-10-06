@@ -363,6 +363,23 @@ libplacebo {
     macx {
         SOURCES += streaming/video/ffmpeg-renderers/plvk_objc.mm
     }
+
+    # PyroWave decodes into frames for the Vulkan renderer. The library is loaded at
+    # runtime (libpyrowave-shared.so.0), so it isn't needed to build.
+    linux {
+        message(PyroWave support enabled)
+
+        DEFINES += HAVE_PYROWAVE
+        SOURCES += \
+            streaming/video/pyrowave/pyrowavedecoder.cpp \
+            streaming/video/pyrowave/pyrowavevkdecoder.cpp
+        HEADERS += \
+            streaming/video/pyrowave/pyrowavedecoder.h \
+            streaming/video/pyrowave/pyrowavevkdecoder.h \
+            streaming/video/pyrowave/pyrowaveapi.h \
+            streaming/video/pyrowave/pyrowave.h
+        LIBS += -ldl
+    }
 }
 config_EGL {
     message(EGL renderer selected)
@@ -407,14 +424,20 @@ win32:!winrt {
         streaming/video/ffmpeg-renderers/dxva2.cpp \
         streaming/video/ffmpeg-renderers/d3d11va.cpp \
         streaming/video/ffmpeg-renderers/pacer/dxvsyncsource.cpp \
-        streaming/video/pyrowave/pyrowavedecoder.cpp
+        streaming/video/pyrowave/pyrowavedecoder.cpp \
+        streaming/video/pyrowave/pyrowaved3d11decoder.cpp
 
     HEADERS += \
         streaming/video/ffmpeg-renderers/dxva2.h \
         streaming/video/ffmpeg-renderers/d3d11va.h \
         streaming/video/ffmpeg-renderers/pacer/dxvsyncsource.h \
         streaming/video/pyrowave/pyrowavedecoder.h \
+        streaming/video/pyrowave/pyrowaved3d11decoder.h \
+        streaming/video/pyrowave/pyrowaveapi.h \
         streaming/video/pyrowave/pyrowave.h
+
+    # PyroWave decodes into frames for the D3D11 renderer
+    DEFINES += HAVE_PYROWAVE
 }
 macx {
     message(VideoToolbox renderer selected)

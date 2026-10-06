@@ -10,6 +10,8 @@
 #include <libplacebo/renderer.h>
 #include <libplacebo/vulkan.h>
 
+#include <vector>
+
 #ifdef Q_OS_DARWIN
 class MetalVulkanTextureFactory {
 public:
@@ -35,6 +37,24 @@ private:
 
 #endif
 
+// Frames decoded outside FFmpeg into images on the renderer's Vulkan device, such as
+// PyroWave's. The renderer hands every frame to the source to map. Called on the thread
+// that renders.
+class IPlVkFrameSource {
+public:
+    virtual ~IPlVkFrameSource() {}
+
+    // Fills in a pl_frame to draw the frame from. Returns false if it can't be drawn.
+    virtual bool mapFrame(const AVFrame* frame, pl_frame* mappedFrame) = 0;
+
+    // Called once the frame mapFrame() mapped has been drawn
+    virtual void unmapFrame(const AVFrame* frame) = 0;
+
+    // See IFFmpegRenderer
+    virtual uint64_t captureDecodeBoundary(AVFrame* frame) = 0;
+    virtual bool waitForDecode(AVFrame* frame) = 0;
+};
+
 class PlVkRenderer : public IFFmpegRenderer {
 public:
     PlVkRenderer(AVHWDeviceType hwDeviceType = AV_HWDEVICE_TYPE_NONE, IFFmpegRenderer *backendRenderer = nullptr);
@@ -45,6 +65,11 @@ public:
     virtual bool testRenderFrame(AVFrame* frame) override;
     virtual void waitToRender() override;
     virtual void cleanupRenderContext() override;
+    virtual bool supportsCadencePacing() override;
+    virtual bool prepareFrame(AVFrame* frame) override;
+    virtual void presentPreparedFrame() override;
+    virtual uint64_t captureDecodeBoundary(AVFrame* frame) override;
+    virtual bool waitForDecode(AVFrame* frame) override;
     virtual void notifyOverlayUpdated(Overlay::OverlayType) override;
     virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO) override;
     virtual int getRendererAttributes() override;
@@ -53,6 +78,18 @@ public:
     virtual int getDecoderCapabilities() override;
     virtual bool isPixelFormatSupported(int videoFormat, enum AVPixelFormat pixelFormat) override;
     virtual AVPixelFormat getPreferredPixelFormat(int videoFormat) override;
+
+    // Sets the renderer up for a frame source before initialize(): its device can
+    // share images and semaphores with another device, and uses one queue family,
+    // which pl_vulkan_wrap() needs for images that aren't shared between families
+    void prepareForExternalFrames();
+
+    // Frames come from this source from now on, or from FFmpeg again with nullptr.
+    // Only while nothing is rendering.
+    void setFrameSource(IPlVkFrameSource* source);
+
+    // Null until initialize() succeeds
+    pl_vulkan getVulkan();
 
 private:
     static void lockQueue(AVHWDeviceContext *dev_ctx, uint32_t queue_family, uint32_t index);
@@ -66,6 +103,7 @@ private:
     bool createOverlay(pl_overlay* overlay, SDL_Surface* surface);
     bool mapAvFrameToPlacebo(const AVFrame *frame, pl_frame* mappedFrame);
     void unmapAvFrameFromPlacebo(const AVFrame *frame, pl_frame* mappedFrame);
+    bool drawFrame(AVFrame* frame, pl_frame* mappedFrame, pl_frame* targetFrame, std::vector<pl_tex>& texturesToDestroy);
     bool populateQueues(int videoFormat);
     bool chooseVulkanDevice(PDECODER_PARAMETERS params, bool hdrOutputRequired);
     bool tryInitializeDevice(VkPhysicalDevice device, VkPhysicalDeviceProperties* deviceProps,
@@ -115,6 +153,20 @@ private:
     pl_swapchain_frame m_SwapchainFrame = {};
     bool m_HasPendingSwapchainFrame = false;
 
+    // Whether the pacer follows the host's cadence, drawing with prepareFrame() and
+    // presenting with presentPreparedFrame() on its own thread
+    bool m_CadencePacing = false;
+
+    // Whether prepareFrame() drew a frame for presentPreparedFrame() to submit
+    bool m_HasPreparedFrame = false;
+
+    // Whether waitForDecode() still waits. Cleared if a wait ever fails.
+    bool m_DecodeWaitEnabled = false;
+
+    // See prepareForExternalFrames() and setFrameSource()
+    bool m_ExternalFrames = false;
+    IPlVkFrameSource* m_FrameSource = nullptr;
+
     // Overlay state
     SDL_SpinLock m_OverlayLock = 0;
     struct {
@@ -150,4 +202,6 @@ private:
     PFN_vkGetPhysicalDeviceProperties fn_vkGetPhysicalDeviceProperties = nullptr;
     PFN_vkGetPhysicalDeviceSurfaceSupportKHR fn_vkGetPhysicalDeviceSurfaceSupportKHR = nullptr;
     PFN_vkEnumerateDeviceExtensionProperties fn_vkEnumerateDeviceExtensionProperties = nullptr;
+    PFN_vkGetSemaphoreCounterValue fn_vkGetSemaphoreCounterValue = nullptr;
+    PFN_vkWaitSemaphores fn_vkWaitSemaphores = nullptr;
 };

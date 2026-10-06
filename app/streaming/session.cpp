@@ -1038,7 +1038,11 @@ bool Session::validateLaunch(SDL_Window* testWindow)
                                         m_StreamConfig.width,
                                         m_StreamConfig.height,
                                         m_StreamConfig.fps) == DecoderAvailability::None) {
+#ifdef Q_OS_WIN32
             emit displayLaunchError(tr("This PC can't decode PyroWave. It needs a D3D11 GPU with Vulkan 1.3 and libpyrowave-shared-0.dll next to Moonlight.exe."));
+#else
+            emit displayLaunchError(tr("This PC can't decode PyroWave. It needs a GPU with Vulkan 1.3 and libpyrowave-shared.so.0 installed (or ML_PYROWAVE_LIBRARY set to its path)."));
+#endif
             return false;
         }
     }

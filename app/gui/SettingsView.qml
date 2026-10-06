@@ -1226,7 +1226,8 @@ Flickable {
                     // ignore setting the index at first, and actually set it when the component is loaded
                     Component.onCompleted: {
                         // PyroWave is only implemented for Windows (D3D11 + Vulkan interop)
-                        if (Qt.platform.os !== "windows") {
+                        // and Linux (the Vulkan renderer)
+                        if (Qt.platform.os !== "windows" && Qt.platform.os !== "linux") {
                             for (var j = codecListModel.count - 1; j >= 0; j--) {
                                 if (codecListModel.get(j).val === StreamingPreferences.VCC_FORCE_PYROWAVE) {
                                     codecListModel.remove(j)

@@ -11,6 +11,14 @@
 #include "waylandvsyncsource.h"
 #endif
 
+#ifdef Q_OS_LINUX
+#include <sys/prctl.h>
+#endif
+
+#ifndef Q_OS_WIN32
+#include <time.h>
+#endif
+
 #include <SDL_syswm.h>
 
 #include <algorithm>
@@ -220,6 +228,7 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_TimelineArrivals(0),
     m_DelayUs(0),
     m_Tearing(true),
+    m_CanTear(false),
     m_LastTearSwitchUs(0),
     m_RenderCostUs(0),
     m_DrawCostsUs{},
@@ -496,15 +505,15 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
     m_DisplayFps = StreamUtils::getDisplayRefreshRate(window);
     m_RendererAttributes = m_VsyncRenderer->getRendererAttributes();
 
-    // Follow the host's cadence where the renderer can choose per present whether to
-    // tear, which it only reports when frame pacing was asked for, in a window or full
-    // screen. Pacing a renderer forces on without that, and a renderer that can't tear,
-    // keep the V-blank pacer below. ML_PACING_CADENCE=0 uses the V-blank pacer
-    // everywhere; D3D11VARenderer::initialize() checks it as well.
+    // Follow the host's cadence where the renderer can time its own presents (D3D11VA,
+    // and the Vulkan renderer outside macOS), which it only reports when frame pacing
+    // was asked for, in a window or full screen. Pacing a renderer forces on without
+    // that, and other renderers, keep the V-blank pacer below. ML_PACING_CADENCE=0 uses
+    // the V-blank pacer everywhere; the renderers' initialize() checks it as well.
     bool cadenceAllowed = !(qEnvironmentVariableIsSet("ML_PACING_CADENCE") && qEnvironmentVariableIntValue("ML_PACING_CADENCE") == 0);
 
     if (enablePacing && cadenceAllowed &&
-            m_VsyncRenderer->isRenderThreadSupported() && m_VsyncRenderer->supportsPresentTearing()) {
+            m_VsyncRenderer->isRenderThreadSupported() && m_VsyncRenderer->supportsCadencePacing()) {
         // What the user chose, which the environment variables below override
         m_SmoothGain = qBound(1, params->pacingSmoothingPercent, 100) / 100.0;
         m_ArrivalPercentile = qBound(50, params->pacingArrivalPercentile, 100);
@@ -549,12 +558,20 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
 
         m_LearnFramesLeft = qMax(CADENCE_MIN_LEARN_FRAMES, m_MaxVideoFps);
 
+        // A renderer that can't tear presents every frame without it
+        m_CanTear = m_VsyncRenderer->supportsPresentTearing();
+        m_Tearing = m_CanTear;
+
 #ifdef Q_OS_WIN32
         m_WaitTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
         m_WaitTimerHighRes = m_WaitTimer != nullptr;
         if (m_WaitTimer == nullptr) {
             m_WaitTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
         }
+#else
+        // nanosleep() is precise to within the thread's timer slack, which the cadence
+        // thread lowers on Linux
+        m_WaitTimerHighRes = true;
 #endif
 
         QString settings = QString("smoothing gain %1% on errors up to %5 us, arrival percentile %2, "
@@ -764,6 +781,12 @@ int Pacer::cadenceThread(void* context)
     SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);
 #endif
 
+#ifdef Q_OS_LINUX
+    // Sleeps on Linux can end up to the timer slack late, 50 us by default for a
+    // normal thread. Applies to this thread only.
+    prctl(PR_SET_TIMERSLACK, 1UL, 0, 0, 0);
+#endif
+
     while (!me->m_Stopping) {
         me->m_FrameQueueLock.lock();
 
@@ -813,7 +836,7 @@ int Pacer::cadenceThread(void* context)
         // has, so it is scheduled from when it can actually be drawn. Only a wait that
         // blocked moves the arrival: a frame that finished decoding while it queued
         // arrived when the decoder handed it over.
-        if (me->m_VsyncRenderer->waitForDecode((uint64_t)ML_FRAME_DECODE_BOUNDARY(frame))) {
+        if (me->m_VsyncRenderer->waitForDecode(frame)) {
             frame->pkt_dts = (int64_t)LiGetMicroseconds();
         }
 
@@ -834,7 +857,9 @@ int Pacer::cadenceThread(void* context)
             continue;
         }
 
-        me->m_VsyncRenderer->setPresentTearing(row.tear != 0);
+        if (me->m_CanTear) {
+            me->m_VsyncRenderer->setPresentTearing(row.tear != 0);
+        }
         me->presentAt(frame, targetUs, &row);
 
         if (me->m_Trace != nullptr) {
@@ -1082,7 +1107,7 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
                         "Frame pacing: source at %.1f FPS on a %d Hz display, presenting without tearing",
                         sourceFps, m_DisplayFps);
         }
-        else if (!m_Tearing && sourceFps < (m_NoTearFraction - CADENCE_TEAR_HYSTERESIS) * m_DisplayFps) {
+        else if (!m_Tearing && m_CanTear && sourceFps < (m_NoTearFraction - CADENCE_TEAR_HYSTERESIS) * m_DisplayFps) {
             m_Tearing = true;
             m_LastTearSwitchUs = arrivalUs;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -1253,8 +1278,12 @@ void Pacer::waitUntilUs(int64_t targetUs)
         if (remainingUs <= spinUs) {
             // Spin the rest of the way. Yielding through SDL_Delay(0) slept instead
             // and started frames anywhere from 23 to 556 us late.
-#ifdef Q_OS_WIN32
+#if defined(Q_OS_WIN32)
             YieldProcessor();
+#elif defined(__x86_64__) || defined(__i386__)
+            __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+            __asm__ __volatile__("yield");
 #endif
             continue;
         }
@@ -1272,6 +1301,12 @@ void Pacer::waitUntilUs(int64_t targetUs)
                 continue;
             }
         }
+#else
+        struct timespec sleepTime;
+        sleepTime.tv_sec = (time_t)(sleepUs / 1000000);
+        sleepTime.tv_nsec = (long)(sleepUs % 1000000) * 1000;
+        nanosleep(&sleepTime, nullptr);
+        continue;
 #endif
 
         SDL_Delay((Uint32)qMax<int64_t>(1, sleepUs / 1000));

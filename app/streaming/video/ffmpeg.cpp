@@ -16,7 +16,14 @@ extern "C" {
 #ifdef Q_OS_WIN32
 #include "ffmpeg-renderers/dxva2.h"
 #include "ffmpeg-renderers/d3d11va.h"
-#include "pyrowave/pyrowavedecoder.h"
+#endif
+
+#ifdef HAVE_PYROWAVE
+#ifdef Q_OS_WIN32
+#include "pyrowave/pyrowaved3d11decoder.h"
+#else
+#include "pyrowave/pyrowavevkdecoder.h"
+#endif
 #endif
 
 #ifdef Q_OS_DARWIN
@@ -83,7 +90,7 @@ bool FFmpegVideoDecoder::isHdrSupported()
 
 void FFmpegVideoDecoder::setHdrMode(bool enabled)
 {
-#ifdef Q_OS_WIN32
+#ifdef HAVE_PYROWAVE
     // PyroWave frames carry no colorimetry, so their decoder has to be told
     if (m_Pyrowave != nullptr) {
         m_Pyrowave->setHdrMode(enabled);
@@ -317,7 +324,7 @@ void FFmpegVideoDecoder::reset()
     // need to delete in the renderer destructor.
     avcodec_free_context(&m_VideoDecoderCtx);
 
-#ifdef Q_OS_WIN32
+#ifdef HAVE_PYROWAVE
     // Same for the PyroWave decoder, which holds the renderer's frame pool
     delete m_Pyrowave;
     m_Pyrowave = nullptr;
@@ -1684,6 +1691,7 @@ bool FFmpegVideoDecoder::tryInitializeNonHwAccelDecoder(PDECODER_PARAMETERS para
 
 bool FFmpegVideoDecoder::initializePyrowave(PDECODER_PARAMETERS params)
 {
+#ifdef HAVE_PYROWAVE
 #ifdef Q_OS_WIN32
     // Pass 1 keeps the renderer from deferring to DXVA2, which can't draw these frames
     auto renderer = new D3D11VARenderer(1);
@@ -1693,11 +1701,29 @@ bool FFmpegVideoDecoder::initializePyrowave(PDECODER_PARAMETERS params)
         return false;
     }
 
-    m_Pyrowave = new PyrowaveDecoder();
-    if (!m_Pyrowave->initialize(renderer, params, m_BackendRenderer->getDecoderColorspace())) {
+    auto pyrowave = new PyrowaveD3D11Decoder();
+    m_Pyrowave = pyrowave;
+    if (!pyrowave->initialize(renderer, params, m_BackendRenderer->getDecoderColorspace())) {
         reset();
         return false;
     }
+#else
+    // The Vulkan renderer draws the planes PyroWave decodes into
+    auto renderer = new PlVkRenderer();
+    renderer->prepareForExternalFrames();
+    m_BackendRenderer = renderer;
+    if (!initializeRendererInternal(m_BackendRenderer, params)) {
+        reset();
+        return false;
+    }
+
+    auto pyrowave = new PyrowaveVkDecoder();
+    m_Pyrowave = pyrowave;
+    if (!pyrowave->initialize(renderer, params, m_BackendRenderer->getDecoderColorspace())) {
+        reset();
+        return false;
+    }
+#endif
 
     if (!createFrontendRenderer(params, false)) {
         reset();
@@ -1745,7 +1771,7 @@ bool FFmpegVideoDecoder::initializePyrowave(PDECODER_PARAMETERS params)
 #else
     Q_UNUSED(params);
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                 "PyroWave is only supported on Windows");
+                 "PyroWave isn't supported by this build. It needs the D3D11 renderer on Windows or the Vulkan renderer (libplacebo) elsewhere.");
     return false;
 #endif
 }
@@ -2119,12 +2145,12 @@ void FFmpegVideoDecoder::deliverDecodedFrame(AVFrame* frame, const DECODE_UNIT* 
 
     // Mark the GPU work behind this frame, so it can be waited for exactly.
     // Zero when the renderer has nothing to wait for.
-    ML_FRAME_DECODE_BOUNDARY(frame) = (int64_t)m_FrontendRenderer->captureDecodeBoundary();
+    ML_FRAME_DECODE_BOUNDARY(frame) = (int64_t)m_FrontendRenderer->captureDecodeBoundary(frame);
 
-#ifdef Q_OS_WIN32
-    // The boundary is signaled on the context PyroWave packs frames on, and a signal
-    // only reaches the GPU when that context is flushed. Without this the renderer
-    // could wait for it until the next frame's packing.
+#ifdef HAVE_PYROWAVE
+    // With D3D11, the boundary is signaled on the context PyroWave packs frames on, and
+    // a signal only reaches the GPU when that context is flushed. Without this the
+    // renderer could wait for it until the next frame's packing.
     if (m_Pyrowave != nullptr && ML_FRAME_DECODE_BOUNDARY(frame) != 0) {
         m_Pyrowave->flush();
     }
@@ -2189,7 +2215,7 @@ void FFmpegVideoDecoder::pyrowaveDecoderThreadProc()
 
 int FFmpegVideoDecoder::submitPyrowaveDecodeUnit(PDECODE_UNIT du)
 {
-#ifdef Q_OS_WIN32
+#ifdef HAVE_PYROWAVE
     recordReceivedFrame(du);
 
     // Gather the frame into one buffer. A partial frame's blocks can only be found up to

@@ -109,7 +109,7 @@ private:
     // frame it was decoded from, if known.
     void deliverDecodedFrame(AVFrame* frame, const DECODE_UNIT* du);
 
-    // PyroWave decodes outside FFmpeg, straight into frames the D3D11 renderer draws
+    // PyroWave decodes outside FFmpeg, straight into frames the D3D11 or Vulkan renderer draws
     bool initializePyrowave(PDECODER_PARAMETERS params);
     int submitPyrowaveDecodeUnit(PDECODE_UNIT du);
     void pyrowaveDecoderThreadProc();
