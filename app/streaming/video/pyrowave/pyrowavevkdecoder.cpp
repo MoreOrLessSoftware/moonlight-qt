@@ -81,7 +81,7 @@ struct PyrowaveVkState
     // Whether waitForDecode() still waits. Cleared if a wait ever fails.
     bool decodeWaitEnabled = true;
 
-    std::array<PyrowaveVkSlot, PYROWAVE_VK_SLOTS> slots;
+    std::array<PyrowaveVkSlot, PYROWAVE_VK_SLOTS> slotPool; // Not "slots", which Qt defines as a macro
 };
 
 PyrowaveVkDecoder::PyrowaveVkDecoder()
@@ -105,7 +105,7 @@ PyrowaveVkDecoder::~PyrowaveVkDecoder()
         // And the renderer's
         pl_gpu_finish(m_State->vulkan->gpu);
 
-        for (PyrowaveVkSlot& slot : m_State->slots) {
+        for (PyrowaveVkSlot& slot : m_State->slotPool) {
             destroySlot(&slot);
         }
 
@@ -152,8 +152,8 @@ bool PyrowaveVkDecoder::initialize(PlVkRenderer* renderer, PDECODER_PARAMETERS p
     }
 
     for (int i = 0; i < PYROWAVE_VK_SLOTS; i++) {
-        m_State->slots[i].index = i;
-        if (!createSlot(&m_State->slots[i])) {
+        m_State->slotPool[i].index = i;
+        if (!createSlot(&m_State->slotPool[i])) {
             return false;
         }
         m_FreeSlots.push_back(i);
@@ -503,7 +503,7 @@ AVFrame* PyrowaveVkDecoder::decodePushedFrame()
             slot = nullptr;
         }
         else {
-            slot = &m_State->slots[m_FreeSlots.back()];
+            slot = &m_State->slotPool[m_FreeSlots.back()];
             m_FreeSlots.pop_back();
         }
     }
