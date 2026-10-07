@@ -726,6 +726,14 @@ bool Session::initialize(QQuickWindow* qtWindow)
                 "Video bitrate: %d kbps",
                 m_StreamConfig.bitrate);
 
+    // Only Sunshine hosts take a request, and -1 leaves it to the host's setting
+    m_StreamConfig.fecPercentage = m_Preferences->fecPercentage;
+    if (m_StreamConfig.fecPercentage >= 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Requesting %d%% video FEC",
+                    m_StreamConfig.fecPercentage);
+    }
+
     RAND_bytes(reinterpret_cast<unsigned char*>(m_StreamConfig.remoteInputAesKey),
                sizeof(m_StreamConfig.remoteInputAesKey));
 

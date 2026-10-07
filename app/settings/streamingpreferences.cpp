@@ -38,6 +38,7 @@
 #define SER_PACINGTEARPCT "pacingtearpct"
 #define SER_PACINGSMOOTHING "pacingsmoothing"
 #define SER_PACINGPERCENTILE "pacingpercentile"
+#define SER_FECPERCENT "fecpercent"
 #define SER_CONNWARNINGS "connwarnings"
 #define SER_CONFWARNINGS "confwarnings"
 #define SER_UIDISPLAYMODE "uidisplaymode"
@@ -151,6 +152,7 @@ void StreamingPreferences::reload()
     pacingTearPercent = settings.value(SER_PACINGTEARPCT, 0).toInt();
     pacingSmoothingPercent = settings.value(SER_PACINGSMOOTHING, 50).toInt();
     pacingArrivalPercentile = settings.value(SER_PACINGPERCENTILE, 97).toInt();
+    fecPercentage = settings.value(SER_FECPERCENT, -1).toInt();
     connectionWarnings = settings.value(SER_CONNWARNINGS, true).toBool();
     configurationWarnings = settings.value(SER_CONFWARNINGS, true).toBool();
     richPresence = settings.value(SER_RICHPRESENCE, true).toBool();
@@ -354,6 +356,7 @@ void StreamingPreferences::save()
     settings.setValue(SER_PACINGTEARPCT, pacingTearPercent);
     settings.setValue(SER_PACINGSMOOTHING, pacingSmoothingPercent);
     settings.setValue(SER_PACINGPERCENTILE, pacingArrivalPercentile);
+    settings.setValue(SER_FECPERCENT, fecPercentage);
     settings.setValue(SER_CONNWARNINGS, connectionWarnings);
     settings.setValue(SER_CONFWARNINGS, configurationWarnings);
     settings.setValue(SER_RICHPRESENCE, richPresence);

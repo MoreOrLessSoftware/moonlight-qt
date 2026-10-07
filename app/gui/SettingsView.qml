@@ -2151,6 +2151,47 @@ Flickable {
                     }
                 }
 
+                Label {
+                    width: parent.width
+                    id: fecTitle
+                    text: qsTr("Error correction: %1").arg(StreamingPreferences.fecPercentage < 0 ? qsTr("Host setting") :
+                                                           StreamingPreferences.fecPercentage === 0 ? qsTr("Off") :
+                                                           qsTr("%1%").arg(StreamingPreferences.fecPercentage))
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                Label {
+                    width: parent.width
+                    id: fecDesc
+                    text: qsTr("Extra packets sent with each video frame to rebuild lost ones. Raise it on lossy connections. Lower it on clean wired ones to save bandwidth and host CPU time. Requires compatible host.")
+                    font.pointSize: 9
+                    wrapMode: Text.Wrap
+                }
+
+                Slider {
+                    id: fecSlider
+
+                    // The first step, below Off, leaves it to the host's setting
+                    value: StreamingPreferences.fecPercentage
+
+                    stepSize: 1
+                    from: -1
+                    to: 50
+
+                    snapMode: "SnapOnRelease"
+                    width: Math.min(350, parent.width)
+
+                    onMoved: {
+                        StreamingPreferences.fecPercentage = Math.round(value)
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("All the way left uses the host's setting. Off sends no extra packets, so any lost packet damages its frame. More recovers from more packet loss but uses more bandwidth and host CPU time.")
+                }
+
                 CheckBox {
                     id: unlockBitrate
                     width: parent.width

@@ -139,6 +139,7 @@ public:
     Q_PROPERTY(int pacingTearPercent MEMBER pacingTearPercent NOTIFY pacingTearPercentChanged)
     Q_PROPERTY(int pacingSmoothingPercent MEMBER pacingSmoothingPercent NOTIFY pacingSmoothingPercentChanged)
     Q_PROPERTY(int pacingArrivalPercentile MEMBER pacingArrivalPercentile NOTIFY pacingArrivalPercentileChanged)
+    Q_PROPERTY(int fecPercentage MEMBER fecPercentage NOTIFY fecPercentageChanged)
     Q_PROPERTY(bool connectionWarnings MEMBER connectionWarnings NOTIFY connectionWarningsChanged)
     Q_PROPERTY(bool configurationWarnings MEMBER configurationWarnings NOTIFY configurationWarningsChanged)
     Q_PROPERTY(bool richPresence MEMBER richPresence NOTIFY richPresenceChanged)
@@ -195,6 +196,8 @@ public:
     int pacingTearPercent;
     int pacingSmoothingPercent;
     int pacingArrivalPercentile;
+    // Error correction to ask Sunshine for, as a percentage of each video frame, or -1 for the host's setting
+    int fecPercentage;
     bool connectionWarnings;
     bool configurationWarnings;
     bool richPresence;
@@ -245,6 +248,7 @@ signals:
     void pacingTearPercentChanged();
     void pacingSmoothingPercentChanged();
     void pacingArrivalPercentileChanged();
+    void fecPercentageChanged();
     void connectionWarningsChanged();
     void configurationWarningsChanged();
     void richPresenceChanged();
