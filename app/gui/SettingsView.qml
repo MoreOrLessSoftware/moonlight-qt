@@ -2154,9 +2154,8 @@ Flickable {
                 Label {
                     width: parent.width
                     id: fecTitle
-                    text: qsTr("Error correction: %1").arg(StreamingPreferences.fecPercentage < 0 ? qsTr("Host setting") :
-                                                           StreamingPreferences.fecPercentage === 0 ? qsTr("Off") :
-                                                           qsTr("%1%").arg(StreamingPreferences.fecPercentage))
+                    text: StreamingPreferences.fecPercentage > 0 ? qsTr("Error correction: %1%").arg(StreamingPreferences.fecPercentage) :
+                                                                   qsTr("Error correction")
                     font.pointSize: 12
                     wrapMode: Text.Wrap
                 }
@@ -2169,27 +2168,70 @@ Flickable {
                     wrapMode: Text.Wrap
                 }
 
-                Slider {
-                    id: fecSlider
+                Row {
+                    spacing: 5
+                    width: parent.width
 
-                    // The first step, below Off, leaves it to the host's setting
-                    value: StreamingPreferences.fecPercentage
+                    // Restored when switching back to Custom from Host setting or Off
+                    property int lastCustomFec: 10
 
-                    stepSize: 1
-                    from: -1
-                    to: 50
+                    ComboBox {
+                        id: fecComboBox
+                        width: Math.min(200, parent.width)
+                        textRole: "text"
+                        model: ListModel {
+                            ListElement { text: qsTr("Host setting") }
+                            ListElement { text: qsTr("Off") }
+                            ListElement { text: qsTr("Custom") }
+                        }
 
-                    snapMode: "SnapOnRelease"
-                    width: Math.min(350, parent.width)
+                        currentIndex: StreamingPreferences.fecPercentage < 0 ? 0 :
+                                      StreamingPreferences.fecPercentage === 0 ? 1 : 2
 
-                    onMoved: {
-                        StreamingPreferences.fecPercentage = Math.round(value)
+                        // ::onActivated must be used, as it only listens for when the index is changed by a human
+                        onActivated: {
+                            if (currentIndex === 0) {
+                                StreamingPreferences.fecPercentage = -1
+                            }
+                            else if (currentIndex === 1) {
+                                StreamingPreferences.fecPercentage = 0
+                            }
+                            else {
+                                StreamingPreferences.fecPercentage = parent.lastCustomFec
+                            }
+                        }
+
+                        ToolTip.delay: 1000
+                        ToolTip.timeout: 5000
+                        ToolTip.visible: hovered
+                        ToolTip.text: qsTr("Host setting leaves it to the host. Off sends no extra packets, so any lost packet damages its frame. Custom sends the chosen percentage.")
                     }
 
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 5000
-                    ToolTip.visible: hovered
-                    ToolTip.text: qsTr("All the way left uses the host's setting. Off sends no extra packets, so any lost packet damages its frame. More recovers from more packet loss but uses more bandwidth and host CPU time.")
+                    Slider {
+                        id: fecSlider
+                        visible: fecComboBox.currentIndex === 2
+                        anchors.verticalCenter: fecComboBox.verticalCenter
+
+                        value: Math.max(1, StreamingPreferences.fecPercentage)
+
+                        stepSize: 1
+                        from: 1
+                        to: 50
+
+                        snapMode: "SnapOnRelease"
+                        width: Math.min(250, Math.max(0, parent.width - fecComboBox.width - parent.spacing))
+
+                        onMoved: {
+                            var pct = Math.round(value)
+                            parent.lastCustomFec = pct
+                            StreamingPreferences.fecPercentage = pct
+                        }
+
+                        ToolTip.delay: 1000
+                        ToolTip.timeout: 5000
+                        ToolTip.visible: hovered
+                        ToolTip.text: qsTr("More recovers from more packet loss but uses more bandwidth and host CPU time.")
+                    }
                 }
 
                 CheckBox {
