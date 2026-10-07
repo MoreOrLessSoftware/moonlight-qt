@@ -594,10 +594,16 @@ VERSION = "$$cat(version.txt)"
 DEFINES += VERSION_STR=\\\"$$cat(version.txt)\\\"
 
 # Display version shown in the UI: the git tag if HEAD is exactly on one.
-# Otherwise it's left undefined and the build date is used (see systemproperties.cpp).
-# This is separate from VERSION_STR, which the update checker and Windows
-# resources require to stay a plain numeric version.
+# Otherwise it's left undefined and the branch and build date are used, as
+# <branch>-YYYY.MM.DD.hhmm (see systemproperties.cpp), or just the date when
+# HEAD is detached. This is separate from VERSION_STR, which the update checker
+# and Windows resources require to stay a plain numeric version.
 GIT_TAG = $$system("git -C \"$$PWD\" describe --tags --exact-match 2>&1", lines, GIT_TAG_STATUS)
 equals(GIT_TAG_STATUS, 0):!isEmpty(GIT_TAG) {
     DEFINES += DISPLAY_VERSION_STR=\\\"$$first(GIT_TAG)\\\"
+} else {
+    GIT_BRANCH = $$system("git -C \"$$PWD\" rev-parse --abbrev-ref HEAD 2>&1", lines, GIT_BRANCH_STATUS)
+    equals(GIT_BRANCH_STATUS, 0):!isEmpty(GIT_BRANCH):!equals(GIT_BRANCH, HEAD) {
+        DEFINES += DISPLAY_VERSION_BRANCH=\\\"$$first(GIT_BRANCH)\\\"
+    }
 }

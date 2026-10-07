@@ -51,8 +51,12 @@ SystemProperties::SystemProperties()
 #ifdef DISPLAY_VERSION_STR
     versionString = QString(DISPLAY_VERSION_STR);
 #else
-    // No git tag at build time, so show the build date and time as YYYY.MM.DD.hhmm
+    // No git tag at build time, so show the build date and time as YYYY.MM.DD.hhmm,
+    // after the branch it was built from when there is one
     versionString = QLocale::c().toDateTime(QString(__DATE__ " " __TIME__).simplified(), "MMM d yyyy HH:mm:ss").toString("yyyy.MM.dd.HHmm");
+#ifdef DISPLAY_VERSION_BRANCH
+    versionString = QString(DISPLAY_VERSION_BRANCH) + "-" + versionString;
+#endif
 #endif
     hasDesktopEnvironment = WMUtils::isRunningDesktopEnvironment();
     isRunningWayland = WMUtils::isRunningWayland();
