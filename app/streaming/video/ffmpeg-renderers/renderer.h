@@ -231,6 +231,13 @@ public:
         return false;
     }
 
+    // Whether the pacer may follow the host's cadence with this renderer: it presents
+    // without waiting for V-sync, and draws on the pacer's own thread. Tearing is not
+    // needed for that; a renderer that can't tear is never asked to.
+    virtual bool supportsCadencePacing() {
+        return supportsPresentTearing();
+    }
+
     // Chooses whether the next renderFrame() may tear. Only called from the thread
     // that renders, and only when supportsPresentTearing() is true.
     virtual void setPresentTearing(bool) {
@@ -250,15 +257,16 @@ public:
     }
 
     // Marks the GPU work that produced a frame. Called on the decoder thread as the
-    // frame comes out of the decoder. Returns a value for waitForDecode(), or 0 when
-    // there is nothing to wait for.
-    virtual uint64_t captureDecodeBoundary() {
+    // frame comes out of the decoder, before the next frame is decoded. Returns a value
+    // for waitForDecode(), or 0 when there is nothing to wait for.
+    virtual uint64_t captureDecodeBoundary(AVFrame*) {
         return 0;
     }
 
-    // Blocks until the GPU work captureDecodeBoundary() marked is done, and returns
-    // whether that meant waiting. Called from the thread that renders.
-    virtual bool waitForDecode(uint64_t) {
+    // Blocks until the GPU has finished decoding a frame, such as the work
+    // captureDecodeBoundary() marked, and returns whether that meant waiting. Called
+    // from the thread that renders.
+    virtual bool waitForDecode(AVFrame*) {
         return false;
     }
 

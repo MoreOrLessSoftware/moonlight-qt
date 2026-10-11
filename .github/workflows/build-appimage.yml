@@ -145,6 +145,27 @@ jobs:
           make -j$(nproc)
           sudo make install
 
+      # Moonlight loads libpyrowave-shared.so.0 at runtime, so build-appimage.sh packages
+      # it from PYROWAVE_LIBRARY. Keep this on the commit the Windows DLL is built from,
+      # since the API can change between minor versions until 1.0.
+      - name: Checkout PyroWave
+        uses: actions/checkout@v5
+        with:
+          repository: Themaister/pyrowave
+          ref: 89f7e47d4abbf650c91fae766728af866c5e32a0
+          path: deps/pyrowave
+
+      - name: Build PyroWave
+        working-directory: deps/pyrowave
+        run: |
+          # Fetches Granite at the commit PyroWave pins, with only the submodules it needs
+          ./checkout_granite.sh
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target pyrowave-shared -j$(nproc)
+          PYROWAVE_LIBRARY=$(find $PWD/build -name 'libpyrowave-shared.so.0' -print -quit)
+          [ -n "$PYROWAVE_LIBRARY" ] || { echo "libpyrowave-shared.so.0 wasn't built" 1>&2; exit 1; }
+          echo "PYROWAVE_LIBRARY=$PYROWAVE_LIBRARY" >> "${GITHUB_ENV}"
+
       - name: Install linuxdeploy
         working-directory: dep_root/bin
         run: |

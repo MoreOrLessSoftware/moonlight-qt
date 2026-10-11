@@ -30,8 +30,8 @@ public:
     virtual void setPresentTearing(bool tear) override;
     virtual bool prepareFrame(AVFrame* frame) override;
     virtual void presentPreparedFrame() override;
-    virtual uint64_t captureDecodeBoundary() override;
-    virtual bool waitForDecode(uint64_t decodeBoundary) override;
+    virtual uint64_t captureDecodeBoundary(AVFrame* frame) override;
+    virtual bool waitForDecode(AVFrame* frame) override;
     virtual bool getPresentFeedback(PPRESENT_FEEDBACK feedback) override;
 
     // For decoders outside FFmpeg (PyroWave): a pool of frames on the decode device

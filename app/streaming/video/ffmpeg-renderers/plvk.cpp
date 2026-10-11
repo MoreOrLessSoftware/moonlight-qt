@@ -90,6 +90,12 @@ static const char *k_OptionalDeviceExtensions[] = {
 };
 #endif
 
+// For sharing images and semaphores with another device (see prepareForExternalFrames())
+static const char *k_ExternalFrameDeviceExtensions[] = {
+    VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+    VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+};
+
 static void pl_log_cb(void*, enum pl_log_level level, const char *msg)
 {
     switch (level) {
@@ -374,6 +380,12 @@ bool PlVkRenderer::tryInitializeDevice(VkPhysicalDevice device, VkPhysicalDevice
 #endif
         vkParams.extra_queues = VK_QUEUE_FLAG_BITS_MAX_ENUM;
     }
+    else if (m_ExternalFrames) {
+        vkParams.opt_extensions = k_ExternalFrameDeviceExtensions;
+        vkParams.num_opt_extensions = SDL_arraysize(k_ExternalFrameDeviceExtensions);
+        vkParams.async_transfer = false;
+        vkParams.async_compute = false;
+    }
 
     {
         // Don't let Qt take DRM master from us during pl_vulkan_create()
@@ -383,7 +395,9 @@ bool PlVkRenderer::tryInitializeDevice(VkPhysicalDevice device, VkPhysicalDevice
     }
 
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 26, 100)
-    av_free((void*)vkParams.opt_extensions);
+    if (m_HwDeviceType == AV_HWDEVICE_TYPE_VULKAN) {
+        av_free((void*)vkParams.opt_extensions);
+    }
 #endif
 
     if (m_Vulkan == nullptr) {
@@ -494,7 +508,67 @@ bool PlVkRenderer::initialize(PDECODER_PARAMETERS params)
         return false;
     }
 
-    if (params->enableVsync) {
+    // For waitForDecode(). Core in Vulkan 1.2, which FFmpeg's Vulkan decoding requires.
+    fn_vkGetSemaphoreCounterValue = (PFN_vkGetSemaphoreCounterValue)m_PlVkInstance->get_proc_addr(m_PlVkInstance->instance, "vkGetSemaphoreCounterValue");
+    fn_vkWaitSemaphores = (PFN_vkWaitSemaphores)m_PlVkInstance->get_proc_addr(m_PlVkInstance->instance, "vkWaitSemaphores");
+    m_DecodeWaitEnabled = fn_vkGetSemaphoreCounterValue != nullptr && fn_vkWaitSemaphores != nullptr;
+
+#ifndef Q_OS_DARWIN
+    // With frame pacing, the pacer can follow the host's cadence: it times each present
+    // itself on its own thread (see prepareFrame()). ML_PACING_CADENCE=0 turns this off.
+    // Not on macOS, where MoltenVK needs the drawable waits that renderFrame() does.
+    //
+    // Mailbox shows the latest present at the display's next refresh without tearing,
+    // like the flip-model Present(0) of the D3D11 renderer. Not every driver has it (AMD's
+    // Windows driver doesn't), so FIFO stands in: on a variable refresh display running
+    // below its highest refresh rate, the display refreshes as each frame arrives either
+    // way. FIFO only differs once frames come faster than the display refreshes, where it
+    // queues them instead of replacing the waiting one. ML_PACING_VK_PRESENT_MODE can pick
+    // another mode: mailbox, fifo, fifo_relaxed or immediate (which tears).
+    m_CadencePacing = params->enableFramePacing && m_Backend == nullptr &&
+            !(qEnvironmentVariableIsSet("ML_PACING_CADENCE") && qEnvironmentVariableIntValue("ML_PACING_CADENCE") == 0);
+    if (m_CadencePacing) {
+        static const struct {
+            const char* name;
+            VkPresentModeKHR mode;
+        } k_PresentModes[] = {
+            { "mailbox", VK_PRESENT_MODE_MAILBOX_KHR },
+            { "fifo", VK_PRESENT_MODE_FIFO_KHR },
+            { "fifo_relaxed", VK_PRESENT_MODE_FIFO_RELAXED_KHR },
+            { "immediate", VK_PRESENT_MODE_IMMEDIATE_KHR },
+        };
+
+        QByteArray requested = qgetenv("ML_PACING_VK_PRESENT_MODE").toLower();
+        const char* chosenName = nullptr;
+        for (const auto& presentMode : k_PresentModes) {
+            bool wanted = requested.isEmpty() ?
+                              (presentMode.mode == VK_PRESENT_MODE_MAILBOX_KHR || presentMode.mode == VK_PRESENT_MODE_FIFO_KHR) :
+                              requested == presentMode.name;
+            if (wanted && isPresentModeSupportedByPhysicalDevice(m_Vulkan->phys_device, presentMode.mode)) {
+                m_VkPresentMode = presentMode.mode;
+                chosenName = presentMode.name;
+                break;
+            }
+        }
+
+        if (chosenName == nullptr) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Vulkan present mode '%s' is not supported by the driver; frame pacing can't follow the host's cadence",
+                        requested.constData());
+            m_CadencePacing = false;
+        }
+        else {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Using %s present mode for frame pacing",
+                        chosenName);
+        }
+    }
+#endif
+
+    if (m_CadencePacing) {
+        // Chosen above
+    }
+    else if (params->enableVsync) {
         // FIFO mode improves frame pacing compared with Mailbox, especially for
         // platforms like X11 that lack a VSyncSource implementation for Pacer.
         m_VkPresentMode = VK_PRESENT_MODE_FIFO_KHR;
@@ -680,6 +754,12 @@ bool PlVkRenderer::prepareDecoderContext(AVCodecContext *context, AVDictionary *
 
 bool PlVkRenderer::mapAvFrameToPlacebo(const AVFrame *frame, pl_frame* mappedFrame)
 {
+    if (m_FrameSource != nullptr) {
+        if (!m_FrameSource->mapFrame(frame, mappedFrame)) {
+            return false;
+        }
+    }
+    else
 #ifdef Q_OS_DARWIN
     if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
         if (!m_MetalTextureFactory->mapVideoToolboxToPlacebo(frame, mappedFrame)) {
@@ -720,6 +800,11 @@ bool PlVkRenderer::mapAvFrameToPlacebo(const AVFrame *frame, pl_frame* mappedFra
 
 void PlVkRenderer::unmapAvFrameFromPlacebo(const AVFrame *frame, pl_frame* mappedFrame)
 {
+    if (m_FrameSource != nullptr) {
+        m_FrameSource->unmapFrame(frame);
+        return;
+    }
+
 #ifdef Q_OS_DARWIN
     if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
         m_MetalTextureFactory->unmapVideoToolboxFromPlacebo(mappedFrame);
@@ -956,48 +1041,43 @@ void PlVkRenderer::cleanupRenderContext()
     }
 }
 
-void PlVkRenderer::renderFrame(AVFrame *frame)
+// Maps a frame and draws it into the pending swapchain frame, which the caller then
+// submits. Returns false if the frame couldn't be mapped, in which case nothing was
+// drawn; otherwise the caller unmaps it. Textures no longer needed are added to
+// texturesToDestroy, to be destroyed once the frame is submitted.
+bool PlVkRenderer::drawFrame(AVFrame* frame, pl_frame* mappedFrame, pl_frame* targetFrame, std::vector<pl_tex>& texturesToDestroy)
 {
-    pl_frame mappedFrame, targetFrame;
-
-    // If waitToRender() failed to get the next swapchain frame, skip
-    // rendering this frame. It probably means the window is occluded.
-    if (!m_HasPendingSwapchainFrame) {
-        return;
-    }
-
-    if (!mapAvFrameToPlacebo(frame, &mappedFrame)) {
+    if (!mapAvFrameToPlacebo(frame, mappedFrame)) {
         // This function logs internally
-        return;
+        return false;
     }
 
     // Adjust the swapchain if the colorspace of incoming frames has changed
-    if (!pl_color_space_equal(&mappedFrame.color, &m_LastColorspace)) {
-        m_LastColorspace = mappedFrame.color;
-        SDL_assert(pl_color_space_equal(&mappedFrame.color, &m_LastColorspace));
+    if (!pl_color_space_equal(&mappedFrame->color, &m_LastColorspace)) {
+        m_LastColorspace = mappedFrame->color;
+        SDL_assert(pl_color_space_equal(&mappedFrame->color, &m_LastColorspace));
 
 #ifdef Q_OS_DARWIN
         // There is a gamma mismatch on macOS between what libplacebo thinks BT.709
         // should use and what the Metal layer actually displays. Use sRGB for the
         // swapchain when the incoming frames are BT.709 as a workaround.
-        if (pl_color_space_equal(&mappedFrame.color, &pl_color_space_bt709)) {
+        if (pl_color_space_equal(&mappedFrame->color, &pl_color_space_bt709)) {
             pl_swapchain_colorspace_hint(m_Swapchain, &pl_color_space_srgb);
         }
         else
 #endif
         {
-            pl_swapchain_colorspace_hint(m_Swapchain, &mappedFrame.color);
+            pl_swapchain_colorspace_hint(m_Swapchain, &mappedFrame->color);
         }
     }
 
     // Reserve enough space to avoid allocating under the overlay lock
     pl_overlay_part overlayParts[Overlay::OverlayMax] = {};
-    std::vector<pl_tex> texturesToDestroy;
     std::vector<pl_overlay> overlays;
     texturesToDestroy.reserve(Overlay::OverlayMax);
     overlays.reserve(Overlay::OverlayMax);
 
-    pl_frame_from_swapchain(&targetFrame, &m_SwapchainFrame);
+    pl_frame_from_swapchain(targetFrame, &m_SwapchainFrame);
 
     // We perform minimal processing under the overlay lock to avoid blocking threads updating the overlay
     SDL_AtomicLock(&m_OverlayLock);
@@ -1031,7 +1111,7 @@ void PlVkRenderer::renderFrame(AVFrame *frame)
             if (i == Overlay::OverlayStatusUpdate) {
                 // Bottom Left
                 overlayParts[i].dst.x0 = 0;
-                overlayParts[i].dst.y0 = SDL_max(0, targetFrame.crop.y1 - overlayParts[i].src.y1);
+                overlayParts[i].dst.y0 = SDL_max(0, targetFrame->crop.y1 - overlayParts[i].src.y1);
             }
             else if (i == Overlay::OverlayDebug) {
                 // Top left
@@ -1050,37 +1130,59 @@ void PlVkRenderer::renderFrame(AVFrame *frame)
     SDL_AtomicUnlock(&m_OverlayLock);
 
     SDL_Rect src;
-    src.x = mappedFrame.crop.x0;
-    src.y = mappedFrame.crop.y0;
-    src.w = mappedFrame.crop.x1 - mappedFrame.crop.x0;
-    src.h = mappedFrame.crop.y1 - mappedFrame.crop.y0;
+    src.x = mappedFrame->crop.x0;
+    src.y = mappedFrame->crop.y0;
+    src.w = mappedFrame->crop.x1 - mappedFrame->crop.x0;
+    src.h = mappedFrame->crop.y1 - mappedFrame->crop.y0;
 
     SDL_Rect dst;
-    dst.x = targetFrame.crop.x0;
-    dst.y = targetFrame.crop.y0;
-    dst.w = targetFrame.crop.x1 - targetFrame.crop.x0;
-    dst.h = targetFrame.crop.y1 - targetFrame.crop.y0;
+    dst.x = targetFrame->crop.x0;
+    dst.y = targetFrame->crop.y0;
+    dst.w = targetFrame->crop.x1 - targetFrame->crop.x0;
+    dst.h = targetFrame->crop.y1 - targetFrame->crop.y0;
 
     // Scale the video to the surface size while preserving the aspect ratio
     StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
 
-    targetFrame.crop.x0 = dst.x;
-    targetFrame.crop.y0 = dst.y;
-    targetFrame.crop.x1 = dst.x + dst.w;
-    targetFrame.crop.y1 = dst.y + dst.h;
+    targetFrame->crop.x0 = dst.x;
+    targetFrame->crop.y0 = dst.y;
+    targetFrame->crop.x1 = dst.x + dst.w;
+    targetFrame->crop.y1 = dst.y + dst.h;
+
+    // Render the video image and overlays into the swapchain buffer
+    targetFrame->num_overlays = (int)overlays.size();
+    targetFrame->overlays = overlays.data();
+    if (!pl_render_image(m_Renderer, mappedFrame, targetFrame, &pl_render_fast_params)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "pl_render_image() failed");
+        // NB: The caller must still call pl_swapchain_submit_frame()
+    }
+
+    // The overlays were local to this function
+    targetFrame->num_overlays = 0;
+    targetFrame->overlays = nullptr;
+
+    return true;
+}
+
+void PlVkRenderer::renderFrame(AVFrame *frame)
+{
+    pl_frame mappedFrame, targetFrame;
+    std::vector<pl_tex> texturesToDestroy;
+
+    // If waitToRender() failed to get the next swapchain frame, skip
+    // rendering this frame. It probably means the window is occluded.
+    if (!m_HasPendingSwapchainFrame) {
+        return;
+    }
 
 #ifndef PLVK_USE_EARLY_RENDER_TO_WAIT
     // For PLVK_USE_EARLY_RENDER_TO_WAIT, we already timed our early render in waitToRender()
     beginRenderTiming();
 #endif
 
-    // Render the video image and overlays into the swapchain buffer
-    targetFrame.num_overlays = (int)overlays.size();
-    targetFrame.overlays = overlays.data();
-    if (!pl_render_image(m_Renderer, &mappedFrame, &targetFrame, &pl_render_fast_params)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "pl_render_image() failed");
-        // NB: We must fallthrough to call pl_swapchain_submit_frame()
+    if (!drawFrame(frame, &mappedFrame, &targetFrame, texturesToDestroy)) {
+        return;
     }
 
     // Submit the frame for display and swap buffers
@@ -1130,6 +1232,187 @@ UnmapExit:
     }
 
     unmapAvFrameFromPlacebo(frame, &mappedFrame);
+}
+
+void PlVkRenderer::prepareForExternalFrames()
+{
+    m_ExternalFrames = true;
+}
+
+void PlVkRenderer::setFrameSource(IPlVkFrameSource* source)
+{
+    m_FrameSource = source;
+}
+
+pl_vulkan PlVkRenderer::getVulkan()
+{
+    return m_Vulkan;
+}
+
+bool PlVkRenderer::supportsCadencePacing()
+{
+    return m_CadencePacing;
+}
+
+// Draws a frame and waits for the GPU to finish it, for the pacer to present it at
+// its target with presentPreparedFrame().
+//
+// libplacebo presents as it submits a swapchain frame, so the drawing is flushed to the
+// GPU here and only the submission is left for the present. Waiting for the GPU here
+// means that submission has nothing left to wait for, so a frame reaches the display
+// when it is presented rather than whenever the GPU gets through drawing it. The pacer
+// counts the wait as part of drawing and starts early enough to cover it.
+bool PlVkRenderer::prepareFrame(AVFrame* frame)
+{
+    if (!m_CadencePacing) {
+        return false;
+    }
+
+    m_HasPreparedFrame = false;
+
+    if (pl_gpu_is_failed(m_Vulkan->gpu)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "GPU is in failed state. Recreating renderer.");
+        SDL_Event event;
+        event.type = SDL_RENDER_DEVICE_RESET;
+        SDL_PushEvent(&event);
+        return true;
+    }
+
+    // Get the next swapchain buffer, unless one is still pending. Nothing is drawn while
+    // the window is occluded.
+    //
+    // NB: After this succeeds, we *MUST* call pl_swapchain_submit_frame(), which
+    // presentPreparedFrame() or cleanupRenderContext() does.
+    if (!m_HasPendingSwapchainFrame) {
+#ifndef Q_OS_WIN32
+        // Waits for queued presents to finish, as waitToRender() does, so the present
+        // itself doesn't. That counts as drawing, which the pacer starts early enough
+        // to cover. On Windows this is after the present, as in renderFrame().
+        pl_swapchain_swap_buffers(m_Swapchain);
+#endif
+
+        int vkDrawableW, vkDrawableH;
+        SDL_Vulkan_GetDrawableSize(m_Window, &vkDrawableW, &vkDrawableH);
+        if (!pl_swapchain_resize(m_Swapchain, &vkDrawableW, &vkDrawableH) ||
+                !pl_swapchain_start_frame(m_Swapchain, &m_SwapchainFrame)) {
+            return true;
+        }
+        m_HasPendingSwapchainFrame = true;
+    }
+
+    pl_frame mappedFrame, targetFrame;
+    std::vector<pl_tex> texturesToDestroy;
+    if (!drawFrame(frame, &mappedFrame, &targetFrame, texturesToDestroy)) {
+        return true;
+    }
+
+    pl_gpu_flush(m_Vulkan->gpu);
+    pl_gpu_finish(m_Vulkan->gpu);
+
+    for (pl_tex& texture : texturesToDestroy) {
+        pl_tex_destroy(m_Vulkan->gpu, &texture);
+    }
+    unmapAvFrameFromPlacebo(frame, &mappedFrame);
+
+    m_HasPreparedFrame = true;
+    return true;
+}
+
+// Presents what prepareFrame() drew
+void PlVkRenderer::presentPreparedFrame()
+{
+    if (!m_HasPreparedFrame) {
+        return;
+    }
+
+    m_HasPreparedFrame = false;
+    m_HasPendingSwapchainFrame = false;
+    if (!pl_swapchain_submit_frame(m_Swapchain)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "pl_swapchain_submit_frame() failed");
+
+        // Recreate the renderer
+        SDL_Event event;
+        event.type = SDL_RENDER_DEVICE_RESET;
+        SDL_PushEvent(&event);
+        return;
+    }
+
+#ifdef Q_OS_WIN32
+    pl_swapchain_swap_buffers(m_Swapchain);
+#endif
+}
+
+// Notes the value FFmpeg's Vulkan decoder will signal on a frame's timeline semaphore
+// when it has decoded the frame, as the frame comes out of the decoder.
+//
+// It has to be read now: decoding the next frame uses this one as a reference and
+// advances the same semaphore, so a value read later can be the next frame's decode,
+// and waiting for it waited a whole frame interval longer than the decode took.
+uint64_t PlVkRenderer::captureDecodeBoundary(AVFrame* frame)
+{
+    if (m_FrameSource != nullptr) {
+        return m_FrameSource->captureDecodeBoundary(frame);
+    }
+
+    if (!m_DecodeWaitEnabled || frame->format != AV_PIX_FMT_VULKAN || frame->hw_frames_ctx == nullptr) {
+        return 0;
+    }
+
+    AVHWFramesContext* framesContext = (AVHWFramesContext*)frame->hw_frames_ctx->data;
+    AVVulkanFramesContext* vkFramesContext = (AVVulkanFramesContext*)framesContext->hwctx;
+    AVVkFrame* vkFrame = (AVVkFrame*)frame->data[0];
+
+    if (vkFramesContext->lock_frame != nullptr) {
+        vkFramesContext->lock_frame(framesContext, vkFrame);
+    }
+    uint64_t value = vkFrame->sem[0] != VK_NULL_HANDLE ? vkFrame->sem_value[0] : 0;
+    if (vkFramesContext->unlock_frame != nullptr) {
+        vkFramesContext->unlock_frame(framesContext, vkFrame);
+    }
+
+    return value;
+}
+
+// Waits for FFmpeg's Vulkan decoder to finish a frame: for the frame's timeline
+// semaphore to reach the value captureDecodeBoundary() noted. Decoded frames are a
+// single multi-planar image, so the first semaphore is the one the decoder signals.
+bool PlVkRenderer::waitForDecode(AVFrame* frame)
+{
+    if (m_FrameSource != nullptr) {
+        return m_FrameSource->waitForDecode(frame);
+    }
+
+    uint64_t value = (uint64_t)ML_FRAME_DECODE_BOUNDARY(frame);
+    if (!m_DecodeWaitEnabled || value == 0 || frame->format != AV_PIX_FMT_VULKAN) {
+        return false;
+    }
+
+    // The semaphore itself never changes, so it can be read without the lock
+    VkSemaphore semaphore = ((AVVkFrame*)frame->data[0])->sem[0];
+
+    uint64_t current = 0;
+    if (fn_vkGetSemaphoreCounterValue(m_Vulkan->device, semaphore, &current) == VK_SUCCESS && current >= value) {
+        return false;
+    }
+
+    VkSemaphoreWaitInfo waitInfo = {};
+    waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    waitInfo.semaphoreCount = 1;
+    waitInfo.pSemaphores = &semaphore;
+    waitInfo.pValues = &value;
+
+    VkResult result = fn_vkWaitSemaphores(m_Vulkan->device, &waitInfo, 500ull * 1000 * 1000);
+    if (result != VK_SUCCESS) {
+        // Never risk stalling every frame on a semaphore that has stopped working
+        m_DecodeWaitEnabled = false;
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Waiting for the GPU to finish decoding a frame failed (%d); frames are presented without waiting from now on",
+                    (int)result);
+    }
+
+    return true;
 }
 
 bool PlVkRenderer::testRenderFrame(AVFrame *frame)

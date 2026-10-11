@@ -1702,7 +1702,7 @@ void D3D11VARenderer::setPresentTearing(bool tear)
 // the GPU to finish drawing then absorbed: every frame was presented about 5 ms after
 // its target. Waiting for the decode before the frame is scheduled puts that time
 // ahead of the schedule instead.
-uint64_t D3D11VARenderer::captureDecodeBoundary()
+uint64_t D3D11VARenderer::captureDecodeBoundary(AVFrame*)
 {
     if (!m_GpuReadyEnabled || m_DecodeDevice == m_RenderDevice ||
             m_DecodeD2RFence == nullptr || m_DecodeReadyEvent == nullptr) {
@@ -1717,8 +1717,10 @@ uint64_t D3D11VARenderer::captureDecodeBoundary()
     return SUCCEEDED(hr) ? value : 0;
 }
 
-bool D3D11VARenderer::waitForDecode(uint64_t decodeBoundary)
+bool D3D11VARenderer::waitForDecode(AVFrame* frame)
 {
+    uint64_t decodeBoundary = (uint64_t)ML_FRAME_DECODE_BOUNDARY(frame);
+
     if (decodeBoundary == 0 || !m_GpuReadyEnabled ||
             m_DecodeD2RFence->GetCompletedValue() >= decodeBoundary) {
         return false;
