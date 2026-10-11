@@ -390,9 +390,6 @@ ApplicationWindow {
                 // name beside the back arrow elides instead when space gets tight.
                 Layout.minimumWidth: implicitWidth
 
-                // Show what the current settings are rather than a generic label
-                showCurrentName: true
-
                 // Left and right move between toolbar controls, like the toolbar buttons
                 arrowKeysChangeSelection: false
 

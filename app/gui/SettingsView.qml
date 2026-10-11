@@ -2175,9 +2175,8 @@ Flickable {
                     // Restored when switching back to Custom from Host setting or Off
                     property int lastCustomFec: 10
 
-                    ComboBox {
+                    AutoResizingComboBox {
                         id: fecComboBox
-                        width: Math.min(200, parent.width)
                         textRole: "text"
                         model: ListModel {
                             ListElement { text: qsTr("Host setting") }
@@ -2188,8 +2187,11 @@ Flickable {
                         currentIndex: StreamingPreferences.fecPercentage < 0 ? 0 :
                                       StreamingPreferences.fecPercentage === 0 ? 1 : 2
 
+                        Component.onCompleted: recalculateWidth()
+
                         // ::onActivated must be used, as it only listens for when the index is changed by a human
                         onActivated: {
+                            recalculateWidth()
                             if (currentIndex === 0) {
                                 StreamingPreferences.fecPercentage = -1
                             }

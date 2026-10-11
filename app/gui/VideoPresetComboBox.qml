@@ -3,8 +3,8 @@ import QtQuick.Controls 2.2
 
 import StreamingPreferences 1.0
 
-// Dropdown of the saved video presets. The first entry, "Current settings", stands for
-// settings that don't match any preset. Choosing a preset applies it to StreamingPreferences
+// Dropdown of the saved video presets. The first entry, a description of the current
+// settings with " [*]" after it, stands for settings that don't match any preset (unsaved). Choosing a preset applies it to StreamingPreferences
 // and emits presetApplied() so the owner can refresh whatever shows those settings.
 //
 // Call initialize() once the control is created.
@@ -15,20 +15,28 @@ AutoResizingComboBox {
         id: presetListModel
     }
 
-    // Set while a preset is being applied, so the half-applied
-    // values don't bounce the selection back to "Current settings"
-    property bool applying: false
+    // The unsaved entry is only listed while it's the selection, not when the
+    // current settings already match a preset
+    delegate: ItemDelegate {
+        width: presetComboBox.width
+        visible: index > 0 || presetComboBox.currentIndex === 0
+        height: visible ? implicitHeight : 0
+        text: model.text
+        highlighted: presetComboBox.highlightedIndex === index
+        font.weight: presetComboBox.currentIndex === index ? Font.Medium : Font.Normal
+    }
 
-    // Label the "Current settings" entry with what the settings are, like
-    // "Current: 1440p @ 120 FPS / HEVC / 200 Mbps / HDR", instead of a generic name
-    property bool showCurrentName: false
+    // Set while a preset is being applied, so the half-applied
+    // values don't bounce the selection back to the unsaved entry
+    property bool applying: false
 
     // Emitted after a preset has been applied, while the selection is still being held
     signal presetApplied()
 
+    // Describes the current settings, like "1440p @ 120 FPS / HEVC / 200 Mbps / HDR",
+    // with " [*]" after it to show they aren't saved as a preset
     function currentEntryText() {
-        return showCurrentName ? qsTr("Current: %1").arg(StreamingPreferences.suggestedVideoPresetName())
-                               : qsTr("Current settings")
+        return StreamingPreferences.suggestedVideoPresetName() + " [*]"
     }
 
     function selectedPresetName() {
@@ -56,7 +64,7 @@ AutoResizingComboBox {
         }
 
         // The label follows the settings, and the control resizes to fit it
-        if (showCurrentName && presetListModel.count > 0) {
+        if (presetListModel.count > 0) {
             presetListModel.setProperty(0, "text", currentEntryText())
             recalculateWidth()
         }
@@ -74,7 +82,7 @@ AutoResizingComboBox {
     function initialize() {
         reload("")
 
-        // Fall back to "Current settings" as soon as a setting no
+        // Fall back to the unsaved entry as soon as a setting no
         // longer matches the selected preset
         StreamingPreferences.displayModeChanged.connect(updateSelection)
         StreamingPreferences.bitrateChanged.connect(updateSelection)
@@ -97,7 +105,7 @@ AutoResizingComboBox {
             applying = false
         }
 
-        // Settle on the preset (or "Current settings") that matches what is now set
+        // Settle on the preset (or the unsaved entry) that matches what is now set
         updateSelection(name)
         recalculateWidth()
     }
