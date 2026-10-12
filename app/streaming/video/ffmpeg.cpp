@@ -819,6 +819,9 @@ void FFmpegVideoDecoder::addVideoStats(VIDEO_STATS& src, VIDEO_STATS& dst)
     dst.totalHostProcessingLatency += src.totalHostProcessingLatency;
     dst.framesWithHostProcessingLatency += src.framesWithHostProcessingLatency;
 
+    dst.totalCaptureToPresentUs += src.totalCaptureToPresentUs;
+    dst.framesWithCaptureToPresent += src.framesWithCaptureToPresent;
+
     if (!LiGetEstimatedRttInfo(&dst.lastRtt, &dst.lastRttVariance)) {
         dst.lastRtt = 0;
         dst.lastRttVariance = 0;
@@ -1032,6 +1035,25 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
                        (double)(stats.totalDecodeTimeUs / 1000.0) / stats.decodedFrames,
                        (double)(stats.totalPacerTimeUs / 1000.0) / stats.renderedFrames,
                        (double)(stats.totalRenderTimeUs / 1000.0) / stats.renderedFrames);
+        if (ret < 0 || ret >= length - offset) {
+            SDL_assert(false);
+            return;
+        }
+
+        offset += ret;
+    }
+
+    if (stats.framesWithCaptureToPresent != 0) {
+        // The host and the client times are each exact, but the host's clock and ours
+        // never meet, so the transit between them can only be estimated as half the
+        // round trip. That assumes the path is symmetric, at enet's 1 ms resolution.
+        // Present to photons is not in it at all.
+        double networkMs = stats.lastRtt != 0 ? stats.lastRtt / 2.0 : 0.0;
+
+        ret = snprintf(&output[offset],
+                       length - offset,
+                       "Capture to present (avg): %.1f ms\n",
+                       (double)stats.totalCaptureToPresentUs / 1000.0 / stats.framesWithCaptureToPresent + networkMs);
         if (ret < 0 || ret >= length - offset) {
             SDL_assert(false);
             return;
@@ -2176,6 +2198,9 @@ void FFmpegVideoDecoder::deliverDecodedFrame(AVFrame* frame, const DECODE_UNIT* 
         uint64_t sinceLastUs = (uint64_t)qBound<int64_t>(0, frame->pkt_dts - (int64_t)du->enqueueTimeUs, UINT32_MAX);
         ML_FRAME_RECEIVE_TIMING(frame) = (int64_t)(sinceFirstUs << 32 | sinceLastUs);
 
+        // And how long the host took with it, for the capture-to-present statistic
+        ML_FRAME_SET_HOST_LATENCY(frame, du->frameHostProcessingLatency);
+
         if (du->partialFrame) {
             ML_FRAME_SET_PARTIAL(frame,
                                  du->partialLate ? ML_FRAME_PARTIAL_LATE : ML_FRAME_PARTIAL_LOST,
@@ -2187,6 +2212,7 @@ void FFmpegVideoDecoder::deliverDecodedFrame(AVFrame* frame, const DECODE_UNIT* 
     }
     else {
         ML_FRAME_RECEIVE_TIMING(frame) = 0;
+        ML_FRAME_SET_HOST_LATENCY(frame, 0);
         ML_FRAME_SET_PARTIAL(frame, ML_FRAME_PARTIAL_NONE, 100);
     }
 

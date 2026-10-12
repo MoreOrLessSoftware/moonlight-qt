@@ -77,7 +77,7 @@ private:
 
     void presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row);
 
-    void finishFrame(AVFrame* frame, uint64_t renderTimeUs);
+    void finishFrame(AVFrame* frame, uint64_t renderTimeUs, uint64_t presentUs);
 
     void updatePartialDeadline(int64_t hostUs, bool paced);
 

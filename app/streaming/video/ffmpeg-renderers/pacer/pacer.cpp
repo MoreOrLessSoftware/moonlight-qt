@@ -681,14 +681,28 @@ void Pacer::renderFrame(AVFrame* frame)
     // Render it
     m_VsyncRenderer->renderFrame(frame);
 
-    finishFrame(frame, LiGetMicroseconds() - beforeRender);
+    uint64_t presentUs = LiGetMicroseconds();
+    finishFrame(frame, presentUs - beforeRender, presentUs);
 }
 
-// Counts a rendered frame, then releases the one before it and trims the render queue
-void Pacer::finishFrame(AVFrame* frame, uint64_t renderTimeUs)
+// Counts a rendered frame, then releases the one before it and trims the render queue.
+// presentUs is when the Present() call that showed it returned.
+void Pacer::finishFrame(AVFrame* frame, uint64_t renderTimeUs, uint64_t presentUs)
 {
     m_VideoStats->totalRenderTimeUs += renderTimeUs;
     m_VideoStats->renderedFrames++;
+
+    // Capture to present, less the network transit, which nothing measures per frame.
+    // The host part is on the host's clock and the rest on ours, so each is exact on its
+    // own and they add without needing the clocks to agree.
+    uint16_t hostLatency = ML_FRAME_HOST_LATENCY(frame);
+    if (hostLatency != 0 && ML_FRAME_RECEIVE_TIMING(frame) != 0) {
+        uint64_t hostUs = (uint64_t)hostLatency * 100;
+        uint64_t clientUs = (uint64_t)qMax<int64_t>(0, (int64_t)presentUs - ML_FRAME_FIRST_PACKET_US(frame));
+
+        m_VideoStats->totalCaptureToPresentUs += hostUs + clientUs;
+        m_VideoStats->framesWithCaptureToPresent++;
+    }
 
     // Wait until after next frame to free this one to ensure the GPU
     // doesn't stall or read garbage if the backing buffer gets returned
@@ -837,7 +851,18 @@ int Pacer::cadenceThread(void* context)
         // blocked moves the arrival: a frame that finished decoding while it queued
         // arrived when the decoder handed it over.
         if (me->m_VsyncRenderer->waitForDecode(frame)) {
-            frame->pkt_dts = (int64_t)LiGetMicroseconds();
+            int64_t decodedUs = (int64_t)LiGetMicroseconds();
+
+            // The packet times are kept relative to the arrival, so move them with it
+            if (ML_FRAME_RECEIVE_TIMING(frame) != 0) {
+                uint64_t timing = (uint64_t)ML_FRAME_RECEIVE_TIMING(frame);
+                uint64_t movedUs = (uint64_t)qMax<int64_t>(0, decodedUs - frame->pkt_dts);
+                uint64_t sinceFirstUs = qMin<uint64_t>((timing >> 32) + movedUs, UINT32_MAX);
+                uint64_t sinceLastUs = qMin<uint64_t>((timing & 0xFFFFFFFF) + movedUs, UINT32_MAX);
+                ML_FRAME_RECEIVE_TIMING(frame) = (int64_t)(sinceFirstUs << 32 | sinceLastUs);
+            }
+
+            frame->pkt_dts = decodedUs;
         }
 
         int64_t targetUs = me->scheduleFrame(frame, &row);
@@ -1260,7 +1285,7 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
     m_PresentCostUs += (presentCallUs - m_PresentCostUs) / 16;
 
     m_VideoStats->totalPacerTimeUs += pacerTimeUs;
-    finishFrame(frame, (uint64_t)(drawUs + presentCallUs));
+    finishFrame(frame, (uint64_t)(drawUs + presentCallUs), (uint64_t)row->presentUs);
 }
 
 // Sleeps until a moment on the LiGetMicroseconds() clock, spinning for the last

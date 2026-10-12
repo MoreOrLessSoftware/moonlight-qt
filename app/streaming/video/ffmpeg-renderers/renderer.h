@@ -150,13 +150,21 @@ private:
 
 // Whether the frame was decoded from only part of its data (see CAPABILITY_PARTIAL_FRAMES),
 // and roughly what percentage of its packets had arrived, carried on the frame for the
-// pacing trace
+// pacing trace. Shares the field with ML_FRAME_HOST_LATENCY, in its low 16 bits.
 #define ML_FRAME_PARTIAL_NONE 0
 #define ML_FRAME_PARTIAL_LOST 1 // Packets were lost
 #define ML_FRAME_PARTIAL_LATE 2 // Cut short at its deadline
-#define ML_FRAME_SET_PARTIAL(frame, kind, percent) ((frame)->opaque = (void*)(intptr_t)(((kind) << 8) | (percent)))
-#define ML_FRAME_PARTIAL_KIND(frame) ((int)((intptr_t)(frame)->opaque >> 8))
-#define ML_FRAME_PARTIAL_PERCENT(frame) ((int)((intptr_t)(frame)->opaque & 0xFF))
+#define ML_FRAME_SET_PARTIAL(frame, kind, percent) \
+    ((frame)->opaque = (void*)(((uintptr_t)(frame)->opaque & ~(uintptr_t)0xFFFF) | (uintptr_t)(((kind) << 8) | (percent))))
+#define ML_FRAME_PARTIAL_KIND(frame) ((int)(((uintptr_t)(frame)->opaque >> 8) & 0xFF))
+#define ML_FRAME_PARTIAL_PERCENT(frame) ((int)((uintptr_t)(frame)->opaque & 0xFF))
+
+// The host's capture-to-send time for the frame in 0.1 ms units, as the host sent it,
+// carried on the frame for the capture-to-present statistic. Zero when the host gave
+// none. Bits 16-31 of the field ML_FRAME_SET_PARTIAL() uses, so it fits a 32-bit pointer.
+#define ML_FRAME_SET_HOST_LATENCY(frame, latency) \
+    ((frame)->opaque = (void*)(((uintptr_t)(frame)->opaque & ~((uintptr_t)0xFFFF << 16)) | ((uintptr_t)(uint16_t)(latency) << 16)))
+#define ML_FRAME_HOST_LATENCY(frame) ((uint16_t)(((uintptr_t)(frame)->opaque >> 16) & 0xFFFF))
 
 // What the display has done with presented frames. See getPresentFeedback().
 typedef struct _PRESENT_FEEDBACK {
