@@ -1712,6 +1712,15 @@ uint64_t D3D11VARenderer::captureDecodeBoundary(AVFrame*)
     lockContext(this);
     UINT64 value = m_D2RFenceValue++;
     HRESULT hr = m_DecodeDeviceContext->Signal(m_DecodeD2RFence.Get(), value);
+
+    // The signal sits in the context's command buffer until something submits it, and
+    // nothing else on this context may do so before the next frame's decode. Submit it
+    // now so the fence can complete as soon as this frame's decode does.
+    // ML_PACING_DECODE_FLUSH=0 leaves it to the driver, for comparison.
+    if (SUCCEEDED(hr) && !(qEnvironmentVariableIsSet("ML_PACING_DECODE_FLUSH") &&
+                           qEnvironmentVariableIntValue("ML_PACING_DECODE_FLUSH") == 0)) {
+        m_DecodeDeviceContext->Flush();
+    }
     unlockContext(this);
 
     return SUCCEEDED(hr) ? value : 0;
@@ -1737,6 +1746,15 @@ bool D3D11VARenderer::waitForDecode(AVFrame* frame)
     }
 
     return true;
+}
+
+// Drawing waits for the decode on the GPU either way: with separate devices through the
+// fence renderVideo() waits on, and on one device because the decode and the drawing
+// share a context. prepareFrame() then waits for the GPU to finish the frame, which it
+// only does while that fence works.
+bool D3D11VARenderer::canPrepareBeforeDecode()
+{
+    return m_GpuReadyEnabled;
 }
 
 static const char* presentationModeName(int mode)

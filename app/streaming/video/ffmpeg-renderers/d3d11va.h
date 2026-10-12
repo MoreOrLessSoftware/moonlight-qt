@@ -32,6 +32,7 @@ public:
     virtual void presentPreparedFrame() override;
     virtual uint64_t captureDecodeBoundary(AVFrame* frame) override;
     virtual bool waitForDecode(AVFrame* frame) override;
+    virtual bool canPrepareBeforeDecode() override;
     virtual bool getPresentFeedback(PPRESENT_FEEDBACK feedback) override;
 
     // For decoders outside FFmpeg (PyroWave): a pool of frames on the decode device

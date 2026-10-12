@@ -278,6 +278,13 @@ public:
         return false;
     }
 
+    // Whether prepareFrame() can be called on a frame the GPU may still be decoding:
+    // its drawing waits for the decode on the GPU, and prepareFrame() returns only once
+    // the GPU has finished both. Asked before each frame, so a renderer can stop.
+    virtual bool canPrepareBeforeDecode() {
+        return false;
+    }
+
     // Reads back what the display has done with presented frames: which frame
     // presentPreparedFrame() just presented, the latest frame the display has shown and
     // when, and how it reached the screen. Called from the thread that renders, right

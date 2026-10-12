@@ -87,6 +87,7 @@ PacerTrace::PacerTrace(int displayHz) :
     m_LatePartialsMissed(0),
     m_LatePartialPercentTotal(0),
     m_LatePartialPercentMin(100),
+    m_DrawnAheadFrames(0),
     m_PresentIds{},
     m_PresentTimesUs{},
     m_LastDisplayedId(0),
@@ -178,12 +179,16 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "# partial: the frame was decoded from part of its data: 0 no, 1 packets were lost, 2 it was still\n"
                     << "#   arriving at its deadline and was cut short (last_packet_us is then when it was cut). partial_pct:\n"
                     << "#   roughly what percentage of its packets had arrived, 100 when partial is 0.\n"
+                    << "# drawn_ahead: the frame was drawn as soon as the pacer took it, its drawing waiting on the GPU for\n"
+                    << "#   the decode (ML_PACING_DRAW_AHEAD=0 turns this off). arrival_us is then when the GPU had finished\n"
+                    << "#   both, so decode_wait_us includes the drawing and draw_us the rest of the decode, and only the\n"
+                    << "#   Present() call is timed.\n"
                     << "frame,host_us,arrival_us,smoothed_us,delay_us,target_us,render_start_us,present_us,"
                        "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,draw_us,present_call_us,"
                        "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step,"
                        "dequeue_us,draw_due_us,present_id,displayed_id,displayed_us,presentation_mode,queued_presents,"
                        "display_latency_us,drained_before,tear_guard,displayed_refresh,sync_refresh,"
-                       "first_packet_us,last_packet_us,decoded_us,receive_us,decode_us,decode_wait_us,partial,partial_pct\n";
+                       "first_packet_us,last_packet_us,decoded_us,receive_us,decode_us,decode_wait_us,partial,partial_pct,drawn_ahead\n";
 
     trace->m_Thread = SDL_CreateThread(PacerTrace::writerThread, "PacerTrace", trace);
     if (trace->m_Thread == nullptr) {
@@ -323,6 +328,8 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
     if (row.hostStep) {
         m_HostStepFrames++;
     }
+
+    m_DrawnAheadFrames += row.drawnAhead;
 
     if (row.partial == 1) {
         m_LostPartials++;
@@ -479,7 +486,8 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
              << decodeUs << ','
              << decodeWaitUs << ','
              << (int)row.partial << ','
-             << (row.partial != 0 ? (int)row.partialPercent : 100) << '\n';
+             << (row.partial != 0 ? (int)row.partialPercent : 100) << ','
+             << (int)row.drawnAhead << '\n';
 
     m_Previous = row;
     m_HavePrevious = true;
@@ -507,6 +515,7 @@ void PacerTrace::writeFooter()
              << "# receive, first packet to last: " << m_Receive.describe() << "\n"
              << "# decoder, last packet to handed over: " << m_Decode.describe() << "\n"
              << "# waiting for the GPU to finish decoding: " << m_DecodeWait.describe() << "\n"
+             << "# drawn ahead, the drawing waiting on the GPU for the decode: " << m_DrawnAheadFrames << " of " << m_Rows << "\n"
              << "# hold arrival to present: " << m_Hold.describe() << "\n"
              << "# drawing: " << m_Draw.describe() << "\n"
              << "# Present() call: " << m_PresentCall.describe() << "\n"

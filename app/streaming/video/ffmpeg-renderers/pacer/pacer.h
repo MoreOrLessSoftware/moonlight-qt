@@ -113,6 +113,7 @@ private:
     int m_ArrivalPercentile;
     double m_NoTearFraction;
     int m_TearGuardUs;
+    bool m_DrawAheadEnabled;
 
     // What has been learned about the host's cadence
     int m_LearnFramesLeft;

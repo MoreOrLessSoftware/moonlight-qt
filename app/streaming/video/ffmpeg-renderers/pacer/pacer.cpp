@@ -215,6 +215,7 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_ArrivalPercentile(CADENCE_ARRIVAL_PERCENTILE),
     m_NoTearFraction(CADENCE_NO_TEAR_FRACTION),
     m_TearGuardUs(CADENCE_TEAR_GUARD_US),
+    m_DrawAheadEnabled(true),
     m_LearnFramesLeft(0),
     m_LastHostUs(0),
     m_IntervalUs(0),
@@ -555,6 +556,9 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
         if (qEnvironmentVariableIsSet("ML_PACING_PARTIAL_MARGIN_US")) {
             m_PartialMarginUs = qBound(-20000, qEnvironmentVariableIntValue("ML_PACING_PARTIAL_MARGIN_US"), 20000);
         }
+        if (qEnvironmentVariableIsSet("ML_PACING_DRAW_AHEAD")) {
+            m_DrawAheadEnabled = qEnvironmentVariableIntValue("ML_PACING_DRAW_AHEAD") != 0;
+        }
 
         m_LearnFramesLeft = qMax(CADENCE_MIN_LEARN_FRAMES, m_MaxVideoFps);
 
@@ -576,7 +580,7 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
 
         QString settings = QString("smoothing gain %1% on errors up to %5 us, arrival percentile %2, "
                                    "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin, %8 us spin, display queue drain %9, %10 us tear guard, "
-                                   "late frames cut short %11")
+                                   "late frames cut short %11, %12")
                 .arg((int)std::lround(m_SmoothGain * 100))
                 .arg(m_ArrivalPercentile)
                 .arg((int)std::lround(m_NoTearFraction * 100))
@@ -589,7 +593,10 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
                 .arg(m_TearGuardUs)
                 .arg(m_PartialEnabled ?
                          QString("with %1% of their packets in, %2 us margin").arg(m_PartialMinPercent).arg(m_PartialMarginUs) :
-                         QString("off"));
+                         QString("off"))
+                .arg(!m_DrawAheadEnabled ? "drawing after the decode" :
+                     m_VsyncRenderer->canPrepareBeforeDecode() ? "drawing ahead of the decode" :
+                                                                 "drawing after the decode (renderer can't draw ahead)");
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Frame pacing: following the host's cadence, %d FPS stream on a %d Hz display (%s)",
@@ -858,23 +865,53 @@ int Pacer::cadenceThread(void* context)
         row.partial = (uint8_t)ML_FRAME_PARTIAL_KIND(frame);
         row.partialPercent = (uint8_t)ML_FRAME_PARTIAL_PERCENT(frame);
 
-        // Wait for the GPU to finish decoding the frame, and count it as arriving once it
-        // has, so it is scheduled from when it can actually be drawn. Only a wait that
-        // blocked moves the arrival: a frame that finished decoding while it queued
-        // arrived when the decoder handed it over.
-        if (me->m_VsyncRenderer->waitForDecode(frame)) {
-            int64_t decodedUs = (int64_t)LiGetMicroseconds();
+        // Moves the frame's arrival to now. The packet times are kept relative to the
+        // arrival, so they move with it.
+        auto arriveNow = [frame]() {
+            int64_t nowUs = (int64_t)LiGetMicroseconds();
 
-            // The packet times are kept relative to the arrival, so move them with it
             if (ML_FRAME_RECEIVE_TIMING(frame) != 0) {
                 uint64_t timing = (uint64_t)ML_FRAME_RECEIVE_TIMING(frame);
-                uint64_t movedUs = (uint64_t)qMax<int64_t>(0, decodedUs - frame->pkt_dts);
+                uint64_t movedUs = (uint64_t)qMax<int64_t>(0, nowUs - frame->pkt_dts);
                 uint64_t sinceFirstUs = qMin<uint64_t>((timing >> 32) + movedUs, UINT32_MAX);
                 uint64_t sinceLastUs = qMin<uint64_t>((timing & 0xFFFFFFFF) + movedUs, UINT32_MAX);
                 ML_FRAME_RECEIVE_TIMING(frame) = (int64_t)(sinceFirstUs << 32 | sinceLastUs);
             }
 
-            frame->pkt_dts = decodedUs;
+            frame->pkt_dts = nowUs;
+        };
+
+        // Draw the frame now, with the drawing waiting on the GPU for the decode, and
+        // count it as arriving once the GPU has finished both. Only the Present() call
+        // is then scheduled.
+        //
+        // Waiting for the decode on the CPU and only then drawing costs the drawing, and
+        // the wait to start it, after every decode. On a Radeon 760M at 120 FPS, with the
+        // GPU finishing decodes 10.6 ms after the decoder handed frames over, frames were
+        // presented 4.5 ms after their decode finished, 2.9 ms of it drawing. With one
+        // device, the drawing queued behind the decode and frames were presented 4.4 ms
+        // sooner, but drawing then took as long as the rest of the decode, which the pacer
+        // could not foresee: 44% of frames were presented over 1 ms late.
+        //
+        // Not where the frame is about to be skipped to clear the display's queue, which
+        // must not be drawn into the back buffer. ML_PACING_DRAW_AHEAD=0 turns this off.
+        if (me->m_DrawAheadEnabled && !me->m_DrainNext && me->m_VsyncRenderer->canPrepareBeforeDecode()) {
+            row.renderStartUs = (int64_t)LiGetMicroseconds();
+            row.drawDueUs = row.renderStartUs;
+
+            if (me->m_VsyncRenderer->prepareFrame(frame)) {
+                row.drawnAhead = 1;
+                row.drawEndUs = (int64_t)LiGetMicroseconds();
+                arriveNow();
+            }
+        }
+
+        // Otherwise wait for the GPU to finish decoding the frame, and count it as
+        // arriving once it has, so it is scheduled from when it can actually be drawn.
+        // Only a wait that blocked moves the arrival: a frame that finished decoding
+        // while it queued arrived when the decoder handed it over.
+        if (!row.drawnAhead && me->m_VsyncRenderer->waitForDecode(frame)) {
+            arriveNow();
         }
 
         int64_t targetUs = me->scheduleFrame(frame, &row);
@@ -947,8 +984,13 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
     // started drawing as they arrived and were presented when drawing finished, a
     // median 1.4 ms late, and presented intervals varied six times more than the
     // schedule.
+    //
+    // A frame drawn ahead already has been, so only the Present() call is left.
     m_DrawLeadUs = m_RenderCostUs;
-    if (m_DrawCostCount > 0) {
+    if (row->drawnAhead) {
+        m_DrawLeadUs = m_PresentCostUs;
+    }
+    else if (m_DrawCostCount > 0) {
         uint32_t costs[PACER_CADENCE_DRAW_SAMPLES];
         std::copy(m_DrawCostsUs, m_DrawCostsUs + m_DrawCostCount, costs);
         uint32_t* percentile = costs + (m_DrawCostCount - 1) * CADENCE_DRAW_PERCENTILE / 100;
@@ -1220,13 +1262,20 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
     int64_t presentCostUs = (int64_t)m_PresentCostUs;
 
     row->presentationMode = -1;
-    row->drawDueUs = targetUs - (int64_t)m_DrawLeadUs;
-    waitUntilUs(row->drawDueUs);
 
-    row->renderStartUs = (int64_t)LiGetMicroseconds();
-    uint64_t pacerTimeUs = (uint64_t)(row->renderStartUs - frame->pkt_dts);
+    // A frame drawn ahead (see cadenceThread()) only waits for its Present()
+    if (!row->drawnAhead) {
+        row->drawDueUs = targetUs - (int64_t)m_DrawLeadUs;
+        waitUntilUs(row->drawDueUs);
+        row->renderStartUs = (int64_t)LiGetMicroseconds();
+    }
 
-    if (!m_VsyncRenderer->prepareFrame(frame)) {
+    uint64_t pacerTimeUs = (uint64_t)qMax<int64_t>(0, row->renderStartUs - frame->pkt_dts);
+
+    if (row->drawnAhead) {
+        // Drawn already
+    }
+    else if (!m_VsyncRenderer->prepareFrame(frame)) {
         // This renderer only draws and presents together, so start that by what
         // the two usually take
         waitUntilUs(targetUs - (int64_t)m_RenderCostUs);
@@ -1241,8 +1290,9 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
         m_RenderCostUs += ((row->presentUs - row->renderStartUs) - m_RenderCostUs) / 16;
         return;
     }
-
-    row->drawEndUs = (int64_t)LiGetMicroseconds();
+    else {
+        row->drawEndUs = (int64_t)LiGetMicroseconds();
+    }
 
     waitUntilUs(targetUs - presentCostUs);
 
@@ -1250,6 +1300,11 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
     m_VsyncRenderer->presentPreparedFrame();
     row->presentUs = (int64_t)LiGetMicroseconds();
     m_LastPresentUs = row->presentUs;
+
+    // A frame drawn ahead waited in the pacer from when the GPU finished it to Present()
+    if (row->drawnAhead) {
+        pacerTimeUs = (uint64_t)qMax<int64_t>(0, row->presentStartUs - frame->pkt_dts);
+    }
 
     // What the display has done with frames so far, where the renderer reads it back.
     // After the timestamp, so reading it never counts as part of the Present() call.
@@ -1291,9 +1346,13 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
     int64_t drawUs = row->drawEndUs - row->renderStartUs;
     int64_t presentCallUs = row->presentUs - row->presentStartUs;
 
-    m_DrawCostsUs[m_NextDrawCost] = (uint32_t)qBound<int64_t>(0, drawUs, UINT32_MAX);
-    m_NextDrawCost = (m_NextDrawCost + 1) % PACER_CADENCE_DRAW_SAMPLES;
-    m_DrawCostCount = qMin(m_DrawCostCount + 1, PACER_CADENCE_DRAW_SAMPLES);
+    // A frame drawn ahead spent most of its drawing waiting for the decode, which says
+    // nothing about how long drawing takes
+    if (!row->drawnAhead) {
+        m_DrawCostsUs[m_NextDrawCost] = (uint32_t)qBound<int64_t>(0, drawUs, UINT32_MAX);
+        m_NextDrawCost = (m_NextDrawCost + 1) % PACER_CADENCE_DRAW_SAMPLES;
+        m_DrawCostCount = qMin(m_DrawCostCount + 1, PACER_CADENCE_DRAW_SAMPLES);
+    }
     m_PresentCostUs += (presentCallUs - m_PresentCostUs) / 16;
 
     m_VideoStats->totalPacerTimeUs += pacerTimeUs;

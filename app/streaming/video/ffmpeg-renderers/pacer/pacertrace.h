@@ -45,6 +45,7 @@ typedef struct _PACER_TRACE_ROW {
     uint8_t tearGuard;          // Held out of the previous frame's scanout to avoid tearing across it
     uint8_t partial;            // Decoded from part of its data: 0 no, 1 packets lost, 2 cut short at its deadline
     uint8_t partialPercent;     // About how much of its packets had arrived, where partial
+    uint8_t drawnAhead;         // Drawn as the pacer took it, with the drawing waiting on the GPU for the decode
 } PACER_TRACE_ROW, *PPACER_TRACE_ROW;
 
 // Writes one CSV row per presented frame and a summary on close. Rows are handed
@@ -117,6 +118,7 @@ private:
     uint64_t m_LatePartialsMissed;
     uint64_t m_LatePartialPercentTotal;
     int m_LatePartialPercentMin;
+    uint64_t m_DrawnAheadFrames;
 
     // DXGI frame statistics, where the renderer reads them back. Recent presents by
     // id, to match the frame the display reports showing to when it was presented.
