@@ -692,16 +692,28 @@ void Pacer::finishFrame(AVFrame* frame, uint64_t renderTimeUs, uint64_t presentU
     m_VideoStats->totalRenderTimeUs += renderTimeUs;
     m_VideoStats->renderedFrames++;
 
-    // Capture to present, less the network transit, which nothing measures per frame.
-    // The host part is on the host's clock and the rest on ours, so each is exact on its
-    // own and they add without needing the clocks to agree.
+    // Capture to present. A frame without a host latency has no capture time of its own
+    // (the host repeated a frame), so it is left out either way.
     uint16_t hostLatency = ML_FRAME_HOST_LATENCY(frame);
-    if (hostLatency != 0 && ML_FRAME_RECEIVE_TIMING(frame) != 0) {
+    uint64_t captureUs;
+    if (hostLatency != 0 && frame->pts != 0 && LiGetHostTimeOnLocalClock((uint64_t)frame->pts, &captureUs)) {
+        // With clock sync, measured directly. Outside a second the sync must be wrong.
+        int64_t latencyUs = (int64_t)presentUs - (int64_t)captureUs;
+        if (latencyUs >= 0 && latencyUs < 1000000) {
+            m_VideoStats->totalCaptureToPresentUs += (uint64_t)latencyUs;
+            m_VideoStats->framesWithCaptureToPresent++;
+        }
+    }
+    else if (hostLatency != 0 && ML_FRAME_RECEIVE_TIMING(frame) != 0) {
+        // Without it, less the network transit, which nothing measures per frame. The host
+        // part is on the host's clock and the rest on ours, so each is exact on its own and
+        // they add without needing the clocks to agree.
         uint64_t hostUs = (uint64_t)hostLatency * 100;
         uint64_t clientUs = (uint64_t)qMax<int64_t>(0, (int64_t)presentUs - ML_FRAME_FIRST_PACKET_US(frame));
 
         m_VideoStats->totalCaptureToPresentUs += hostUs + clientUs;
         m_VideoStats->framesWithCaptureToPresent++;
+        m_VideoStats->framesWithoutNetworkTransit++;
     }
 
     // Wait until after next frame to free this one to ensure the GPU

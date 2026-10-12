@@ -821,6 +821,7 @@ void FFmpegVideoDecoder::addVideoStats(VIDEO_STATS& src, VIDEO_STATS& dst)
 
     dst.totalCaptureToPresentUs += src.totalCaptureToPresentUs;
     dst.framesWithCaptureToPresent += src.framesWithCaptureToPresent;
+    dst.framesWithoutNetworkTransit += src.framesWithoutNetworkTransit;
 
     if (!LiGetEstimatedRttInfo(&dst.lastRtt, &dst.lastRttVariance)) {
         dst.lastRtt = 0;
@@ -1044,16 +1045,17 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
     }
 
     if (stats.framesWithCaptureToPresent != 0) {
-        // The host and the client times are each exact, but the host's clock and ours
-        // never meet, so the transit between them can only be estimated as half the
-        // round trip. That assumes the path is symmetric, at enet's 1 ms resolution.
-        // Present to photons is not in it at all.
+        // Frames measured with clock sync include the network transit. For the rest, from
+        // hosts that don't answer it, the transit can only be estimated as half the round
+        // trip, which assumes the path is symmetric, at enet's 1 ms resolution. Present to
+        // photons is not in it at all.
         double networkMs = stats.lastRtt != 0 ? stats.lastRtt / 2.0 : 0.0;
+        double totalMs = (double)stats.totalCaptureToPresentUs / 1000.0 + networkMs * stats.framesWithoutNetworkTransit;
 
         ret = snprintf(&output[offset],
                        length - offset,
                        "Capture to present (avg): %.1f ms\n",
-                       (double)stats.totalCaptureToPresentUs / 1000.0 / stats.framesWithCaptureToPresent + networkMs);
+                       totalMs / stats.framesWithCaptureToPresent);
         if (ret < 0 || ret >= length - offset) {
             SDL_assert(false);
             return;
