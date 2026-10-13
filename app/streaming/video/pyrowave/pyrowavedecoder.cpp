@@ -6,8 +6,10 @@
 #include <QDir>
 
 #include <cstring>
+#include <algorithm>
 #include <mutex>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #ifdef Q_OS_WIN32
@@ -269,56 +271,116 @@ void PyrowaveDecoder::setHdrMode(bool enabled)
     m_HdrMode = enabled;
 }
 
-// The length of data up to the end of its last complete block. A frame cut short ends
-// wherever its data stopped arriving, usually partway into a block, and PyroWave rejects
-// the whole of data if its last block is incomplete. Every block, and the sequence header,
-// starts with 8 bytes whose second 16-bit word holds the block's length in 32-bit words in
-// its low 12 bits, and in its top bit whether it is a sequence header, which is 8 bytes long.
-// A block's index is in the top 24 bits of its second 32-bit word. lastBlockIndex is the
-// index of the last complete block, or -1 if there is none.
-static size_t completeBlocksLength(const uint8_t* data, size_t length, int64_t* lastBlockIndex)
+// The number of blocks in PyroWave's coarsest wavelet level, which it indexes first. Each
+// dimension is padded to 32 pixels (at least 128) and halved by five wavelet levels, and the
+// level has four bands of three components.
+static uint32_t coarseBlockCount(uint32_t width, uint32_t height)
 {
+    auto blocks = [](uint32_t extent) {
+        uint32_t aligned = std::max<uint32_t>((extent + 31) / 32 * 32, 128);
+        return ((aligned >> 5) + 31) / 32;
+    };
+    return blocks(width) * blocks(height) * 4 * 3;
+}
+
+// The records of what arrived of a frame. Every record starts with 8 bytes. The second 16-bit
+// word holds its length in 32-bit words in its low 12 bits, and in its top bit whether it is the
+// sequence header, which is 8 bytes long and holds the frame's size. A block's index is in the
+// top 24 bits of its second 32-bit word. In record framing, which we ask hosts for, there may be
+// padding records between them, 0xFFFFFFFF, a word count N, then N zero words, which PyroWave
+// doesn't take.
+struct FrameRecords
+{
+    // Runs of whole records to push, leaving out padding records
+    std::vector<std::pair<size_t, size_t>> runs;
+
+    // The length of data up to the end of its last whole record. A frame cut short ends
+    // wherever its data stopped arriving, usually partway into a record.
+    size_t length = 0;
+
+    // The index of the last whole block, or -1 if there is none
+    int64_t lastBlockIndex = -1;
+
+    // Whether the blocks are in index order without padding between them, as hosts that don't
+    // lay records out on packets send them
+    bool inOrder = true;
+
+    // Whether there is a block of a finer level than the coarsest
+    bool finerBlock = false;
+};
+
+static FrameRecords parseRecords(const uint8_t* data, size_t length)
+{
+    FrameRecords records;
+    uint32_t coarseBlocks = 0;
+    size_t runStart = 0;
     size_t offset = 0;
 
-    *lastBlockIndex = -1;
     while (length - offset >= 8) {
-        uint16_t bits;
-        memcpy(&bits, data + offset + 2, sizeof(bits));
+        uint32_t first, second;
+        memcpy(&first, data + offset, sizeof(first));
+        memcpy(&second, data + offset + 4, sizeof(second));
 
-        bool sequenceHeader = (bits & 0x8000) != 0;
-        size_t size = sequenceHeader ? 8 : (size_t)(bits & 0xFFF) * 4;
-        if (size < 8 || size > length - offset) {
-            break;
+        if (first == 0xFFFFFFFF) {
+            if (second > (length - offset - 8) / 4) {
+                break;
+            }
+            if (offset > runStart) {
+                records.runs.emplace_back(runStart, offset - runStart);
+            }
+            offset += 8 + (size_t)second * 4;
+            runStart = offset;
+            records.length = offset;
+            records.inOrder = false;
+            continue;
         }
-        if (!sequenceHeader) {
-            uint32_t word;
-            memcpy(&word, data + offset + 4, sizeof(word));
-            *lastBlockIndex = word >> 8;
+
+        size_t size;
+        if (first & 0x80000000) {
+            size = 8;
+            coarseBlocks = coarseBlockCount((first & 0x3FFF) + 1, ((first >> 14) & 0x3FFF) + 1);
+        }
+        else {
+            size = (size_t)((first >> 16) & 0xFFF) * 4;
+            if (size < 8 || size > length - offset) {
+                break;
+            }
+            int64_t blockIndex = second >> 8;
+            if (blockIndex < records.lastBlockIndex) {
+                records.inOrder = false;
+            }
+            if (blockIndex >= coarseBlocks) {
+                records.finerBlock = true;
+            }
+            records.lastBlockIndex = blockIndex;
         }
         offset += size;
+        records.length = offset;
+    }
+    if (offset > runStart) {
+        records.runs.emplace_back(runStart, offset - runStart);
     }
 
-    return offset;
+    return records;
 }
 
 AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFrame partial)
 {
-    pyrowave_result result;
-    int64_t lastBlockIndex = -1;
+    pyrowave_result result = PYROWAVE_SUCCESS;
 
     // Each frame arrives on its own, so anything left from an earlier one is stale
     m_Api->decoderClear(m_Handles->decoder);
 
-    if (partial != PartialFrame::Complete) {
-        length = completeBlocksLength(data, length, &lastBlockIndex);
-        if (length == 0) {
-            return nullptr;
-        }
+    // A whole frame must be whole records. A partial frame is pushed up to its last whole one.
+    FrameRecords records = parseRecords(data, length);
+    if (records.runs.empty() || (partial == PartialFrame::Complete && records.length != length)) {
+        result = PYROWAVE_ERROR_INVALID_ARGUMENT;
     }
-
-    result = m_Api->decoderPushPacket(m_Handles->decoder, data, length);
+    for (size_t i = 0; i < records.runs.size() && result == PYROWAVE_SUCCESS; i++) {
+        result = m_Api->decoderPushPacket(m_Handles->decoder, data + records.runs[i].first, records.runs[i].second);
+    }
     if (result != PYROWAVE_SUCCESS) {
-        if (!m_LoggedDecodeFailure) {
+        if (!m_LoggedDecodeFailure && partial == PartialFrame::Complete) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                          "PyroWave: invalid frame (%d)",
                          result);
@@ -342,11 +404,19 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFram
         // its first gap, and blocks are sent in index order, coarsest first, so every block
         // up to the last one here that isn't here was left out on purpose. Only the blocks
         // after it are missing, which the mask says.
+        //
+        // In record framing, blocks needn't be in index order, but the coarsest level comes
+        // before any other. A finer block means that all of it arrived, and the frame is then
+        // decoded with whatever else did, as the mask can't be worked out.
         bool ready;
-        if (partial != PartialFrame::Complete && m_Api->decoderDecodeIsReadyWithSideband != nullptr) {
-            size_t wordCount = (size_t)(lastBlockIndex + 1) / 32 + 1;
+        if (partial != PartialFrame::Complete && !records.inOrder) {
+            ready = records.finerBlock && m_Api->decoderDecodeIsReadyWithSideband != nullptr &&
+                    m_Api->decoderDecodeIsReadyWithSideband(m_Handles->decoder, true, 0, 0.0f, nullptr, 0);
+        }
+        else if (partial != PartialFrame::Complete && m_Api->decoderDecodeIsReadyWithSideband != nullptr) {
+            size_t wordCount = (size_t)(records.lastBlockIndex + 1) / 32 + 1;
             std::vector<uint32_t> expectedBlocks(wordCount, 0);
-            expectedBlocks[wordCount - 1] = ~0u << ((lastBlockIndex + 1) % 32);
+            expectedBlocks[wordCount - 1] = ~0u << ((records.lastBlockIndex + 1) % 32);
 
             ready = m_Api->decoderDecodeIsReadyWithSideband(m_Handles->decoder, true, 2,
                                                             partial == PartialFrame::Late ? 0.0f : 0.9f,
