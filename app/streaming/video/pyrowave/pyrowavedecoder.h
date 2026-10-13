@@ -3,6 +3,8 @@
 #include "streaming/video/decoder.h"
 
 #include <atomic>
+#include <cstddef>
+#include <vector>
 
 extern "C" {
 #include <libavutil/frame.h>
@@ -35,9 +37,21 @@ public:
         Late,
     };
 
-    // Decodes a frame. A partial frame's data is what arrived up to the first gap.
-    // Returns a frame for the renderer, or nullptr if the frame couldn't be decoded.
-    AVFrame* decode(const uint8_t* data, size_t length, PartialFrame partial);
+    // A stretch of a partial frame that didn't arrive
+    struct Gap
+    {
+        size_t offset;
+        size_t length;
+    };
+
+    // Decodes a frame. A partial frame comes with its gaps, in order, and in record
+    // framing (DECODE_UNIT.partialRecords) with the offsets where the host flagged a record
+    // as starting, in order, otherwise null. Its records needn't be in block order then, and
+    // whatever arrived whole is decoded. Otherwise its blocks are in order, and only what
+    // arrived up to its first gap is decoded, since the data after one starts partway into
+    // a block. Returns a frame for the renderer, or nullptr if the frame couldn't be decoded.
+    AVFrame* decode(const uint8_t* data, size_t length, PartialFrame partial,
+                    const std::vector<Gap>& gaps, const std::vector<size_t>* recordStarts);
 
     // The host switched to HDR (PQ) or back to SDR
     void setHdrMode(bool enabled);

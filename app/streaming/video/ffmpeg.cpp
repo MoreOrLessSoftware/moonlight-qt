@@ -2338,13 +2338,20 @@ int FFmpegVideoDecoder::submitPyrowaveDecodeUnit(PDECODE_UNIT du)
 #ifdef HAVE_PYROWAVE
     recordReceivedFrame(du);
 
-    // Gather the frame into one buffer. A partial frame's blocks can only be found up to
-    // its first gap, since the data after one starts partway into a block.
+    // Gather the frame into one buffer, leaving a partial frame's gaps where they are. In
+    // record framing, also where records start in it, besides at its start.
     m_DecodeBuffer.reserve(du->fullLength);
+    std::vector<PyrowaveDecoder::Gap> gaps;
+    std::vector<size_t> recordStarts;
     int offset = 0;
     for (PLENTRY entry = du->bufferList; entry != nullptr; entry = entry->next) {
         if (entry->bufferType == BUFFER_TYPE_MISSING) {
-            break;
+            gaps.push_back({ (size_t)offset, (size_t)entry->length });
+            offset += entry->length;
+            continue;
+        }
+        if (entry->bufferType == BUFFER_TYPE_RECORD_START) {
+            recordStarts.push_back(offset);
         }
         memcpy(&m_DecodeBuffer.data()[offset], entry->data, entry->length);
         offset += entry->length;
@@ -2357,7 +2364,8 @@ int FFmpegVideoDecoder::submitPyrowaveDecodeUnit(PDECODE_UNIT du)
         partial = du->partialLate ? PyrowaveDecoder::PartialFrame::Late : PyrowaveDecoder::PartialFrame::Lost;
     }
 
-    AVFrame* frame = m_Pyrowave->decode((const uint8_t*)m_DecodeBuffer.constData(), offset, partial);
+    AVFrame* frame = m_Pyrowave->decode((const uint8_t*)m_DecodeBuffer.constData(), offset, partial,
+                                        gaps, du->partialRecords ? &recordStarts : nullptr);
     if (frame == nullptr && partial != PyrowaveDecoder::PartialFrame::Complete) {
         // Too little of it arrived to show. That says nothing about the decoder's health.
         return DR_OK;

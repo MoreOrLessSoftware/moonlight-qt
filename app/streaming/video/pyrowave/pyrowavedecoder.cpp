@@ -5,6 +5,7 @@
 #include <QCoreApplication>
 #include <QDir>
 
+#include <cstdint>
 #include <cstring>
 #include <algorithm>
 #include <mutex>
@@ -364,15 +365,113 @@ static FrameRecords parseRecords(const uint8_t* data, size_t length)
     return records;
 }
 
-AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFrame partial)
+// The runs of records that arrived whole in a partial frame in record framing, leaving out
+// padding records. A record that lost any of its data is left out. Its header gives its
+// length, so the next record is still found; if the header itself was lost, parsing resumes
+// at the next of recordStarts, where the host flagged a packet as starting with a record.
+// Records aren't in block order, so there's no telling where one starts otherwise.
+static std::vector<std::pair<size_t, size_t>> arrivedRecordRuns(const uint8_t* data, size_t length,
+                                                                const std::vector<PyrowaveDecoder::Gap>& gaps,
+                                                                const std::vector<size_t>& recordStarts)
+{
+    std::vector<std::pair<size_t, size_t>> runs;
+
+    // Whether any of [begin, end) is in a gap
+    auto missing = [&](size_t begin, size_t end) {
+        for (const PyrowaveDecoder::Gap& gap : gaps) {
+            if (gap.offset < end && begin < gap.offset + gap.length) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // The first record start after from, or the end if there's none
+    size_t nextStart = 0;
+    auto resync = [&](size_t from) {
+        while (nextStart < recordStarts.size() && recordStarts[nextStart] <= from) {
+            nextStart++;
+        }
+        return nextStart < recordStarts.size() ? recordStarts[nextStart] : length;
+    };
+
+    size_t runStart = SIZE_MAX;
+    size_t runEnd = 0;
+    auto flush = [&]() {
+        if (runStart != SIZE_MAX) {
+            runs.emplace_back(runStart, runEnd - runStart);
+            runStart = SIZE_MAX;
+        }
+    };
+
+    size_t offset = 0;
+    while (offset < length) {
+        if (length - offset < 8 || missing(offset, offset + 8)) {
+            flush();
+            offset = resync(offset);
+            continue;
+        }
+
+        uint32_t first, second;
+        memcpy(&first, data + offset, sizeof(first));
+        memcpy(&second, data + offset + 4, sizeof(second));
+
+        bool padding = first == 0xFFFFFFFF;
+        size_t size;
+        if (padding) {
+            size = second <= (length - offset - 8) / 4 ? 8 + (size_t)second * 4 : SIZE_MAX;
+        }
+        else if (first & 0x80000000) {
+            size = 8;
+        }
+        else {
+            size = (size_t)((first >> 16) & 0xFFF) * 4;
+        }
+        if (size < 8 || size > length - offset) {
+            // Not a record, or it runs past what arrived of the frame
+            flush();
+            offset = resync(offset);
+            continue;
+        }
+
+        if (padding || missing(offset, offset + size)) {
+            flush();
+        }
+        else {
+            if (runStart == SIZE_MAX) {
+                runStart = offset;
+            }
+            runEnd = offset + size;
+        }
+        offset += size;
+    }
+    flush();
+
+    return runs;
+}
+
+AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFrame partial,
+                                 const std::vector<Gap>& gaps, const std::vector<size_t>* recordStarts)
 {
     pyrowave_result result = PYROWAVE_SUCCESS;
 
     // Each frame arrives on its own, so anything left from an earlier one is stale
     m_Api->decoderClear(m_Handles->decoder);
 
-    // A whole frame must be whole records. A partial frame is pushed up to its last whole one.
-    FrameRecords records = parseRecords(data, length);
+    // A whole frame must be whole records. A partial frame in record framing is pushed as
+    // whatever records arrived whole. Any other partial frame is pushed up to its last whole
+    // record before its first gap.
+    bool partialRecords = partial != PartialFrame::Complete && recordStarts != nullptr;
+    FrameRecords records;
+    if (partialRecords) {
+        records.runs = arrivedRecordRuns(data, length, gaps, *recordStarts);
+    }
+    else {
+        if (partial != PartialFrame::Complete && !gaps.empty()) {
+            length = gaps.front().offset;
+        }
+        records = parseRecords(data, length);
+    }
     if (records.runs.empty() || (partial == PartialFrame::Complete && records.length != length)) {
         result = PYROWAVE_ERROR_INVALID_ARGUMENT;
     }
@@ -405,11 +504,19 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFram
         // up to the last one here that isn't here was left out on purpose. Only the blocks
         // after it are missing, which the mask says.
         //
-        // In record framing, blocks needn't be in index order, but the coarsest level comes
-        // before any other. A finer block means that all of it arrived, and the frame is then
-        // decoded with whatever else did, as the mask can't be worked out.
+        // In record framing, moonlight-common-c only delivers a partial frame whose coarsest
+        // level arrived, so it's decoded with whatever else did. PyroWave's test can't tell
+        // the blocks that were lost from those left out, as they needn't be in index order.
+        //
+        // A frame without that, whose blocks are out of order anyway, still has the coarsest
+        // level before any other. A finer block means that all of it arrived.
         bool ready;
-        if (partial != PartialFrame::Complete && !records.inOrder) {
+        if (partialRecords) {
+            ready = m_Api->decoderDecodeIsReadyWithSideband != nullptr ?
+                        m_Api->decoderDecodeIsReadyWithSideband(m_Handles->decoder, true, 0, 0.0f, nullptr, 0) :
+                        m_Api->decoderDecodeIsReady(m_Handles->decoder, true);
+        }
+        else if (partial != PartialFrame::Complete && !records.inOrder) {
             ready = records.finerBlock && m_Api->decoderDecodeIsReadyWithSideband != nullptr &&
                     m_Api->decoderDecodeIsReadyWithSideband(m_Handles->decoder, true, 0, 0.0f, nullptr, 0);
         }
