@@ -1191,6 +1191,9 @@ IFFmpegRenderer* FFmpegVideoDecoder::createHwAccelRenderer(const AVCodecHWConfig
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 36, 100)
         case AV_HWDEVICE_TYPE_D3D12VA: // Covered by D3D11VA
 #endif
+#if LIBAVUTIL_VERSION_MAJOR >= 60
+        case AV_HWDEVICE_TYPE_AMF: // Covered by tryInitializeAmfDecoder() on Windows
+#endif
             // If we have a specific renderer for this hwaccel device type, never allow it to fall back
             // to the GenericHwAccelRenderer.
             //
@@ -1713,6 +1716,83 @@ bool FFmpegVideoDecoder::tryInitializeNonHwAccelDecoder(PDECODER_PARAMETERS para
     return false;
 }
 
+// On AMD GPUs, AMD's own decoder through AMF can take much less time per frame than
+// D3D11VA: a 4K HEVC frame took about 5.7 ms from submission to decoded on a Radeon
+// 780M, against 10 ms with D3D11VA, at about the same throughput. Tried ahead of
+// D3D11VA, which takes over wherever AMF isn't available (other GPUs, FFmpeg builds
+// without AMF). ML_AMF_DECODE=0 turns it off, and ML_AMF_DECODE=1 also tries the
+// H.264 and AV1 decoders, which haven't been measured.
+bool FFmpegVideoDecoder::tryInitializeAmfDecoder(PDECODER_PARAMETERS params)
+{
+#ifdef Q_OS_WIN32
+    bool allCodecs = false;
+    if (qEnvironmentVariableIsSet("ML_AMF_DECODE")) {
+        if (qEnvironmentVariableIntValue("ML_AMF_DECODE") == 0) {
+            return false;
+        }
+        allCodecs = true;
+    }
+
+    if (D3D11VARenderer::isAmfDecodingFailed()) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Not using AMF decoding after its frames couldn't be drawn");
+        return false;
+    }
+
+    // The D3D11 renderer only draws 4:4:4 from AYUV/Y410 textures
+    if (params->videoFormat & VIDEO_FORMAT_MASK_YUV444) {
+        return false;
+    }
+
+    const char* decoderName;
+    if (params->videoFormat & VIDEO_FORMAT_MASK_H265) {
+        decoderName = "hevc_amf";
+    }
+    else if (allCodecs && (params->videoFormat & VIDEO_FORMAT_MASK_H264)) {
+        decoderName = "h264_amf";
+    }
+    else if (allCodecs && (params->videoFormat & VIDEO_FORMAT_MASK_AV1)) {
+        decoderName = "av1_amf";
+    }
+    else {
+        return false;
+    }
+
+    const AVCodec* decoder = avcodec_find_decoder_by_name(decoderName);
+    if (decoder == nullptr) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "FFmpeg was built without the %s decoder",
+                    decoderName);
+        return false;
+    }
+
+    for (int i = 0;; i++) {
+        const AVCodecHWConfig* config = avcodec_get_hw_config(decoder, i);
+        if (config == nullptr) {
+            break;
+        }
+
+        if (config->device_type != AV_HWDEVICE_TYPE_AMF ||
+                !(config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
+            continue;
+        }
+
+        if (tryInitializeRenderer(decoder, AV_PIX_FMT_NONE, params, config, nullptr,
+                                  []() -> IFFmpegRenderer* { return new D3D11VARenderer(0, true); })) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Decoding with %s",
+                        decoderName);
+            return true;
+        }
+    }
+
+    return false;
+#else
+    Q_UNUSED(params);
+    return false;
+#endif
+}
+
 bool FFmpegVideoDecoder::initializePyrowave(PDECODER_PARAMETERS params)
 {
 #ifdef HAVE_PYROWAVE
@@ -1877,6 +1957,11 @@ bool FFmpegVideoDecoder::initialize(PDECODER_PARAMETERS params)
     if (params->vds != StreamingPreferences::VDS_FORCE_SOFTWARE) {
         QSet<const AVCodec*> terminallyFailedHardwareDecoders;
 
+        // AMD's own decoder where it's available
+        if (tryInitializeAmfDecoder(params)) {
+            return true;
+        }
+
         // Try tier 1 hwaccel decoders first
         if (tryInitializeHwAccelDecoder(params, 0, terminallyFailedHardwareDecoders)) {
             return true;
@@ -2030,6 +2115,13 @@ int FFmpegVideoDecoder::decoderThreadProcThunk(void *context)
 
 void FFmpegVideoDecoder::deliverDecodedFrame(AVFrame* frame, const DECODE_UNIT* du)
 {
+    // Turn the frame into one the renderer can draw, where it needs to (AMF frames for
+    // the D3D11 renderer). The renderer logs why when it can't.
+    if (!m_BackendRenderer->mapDecodedFrame(frame)) {
+        av_frame_free(&frame);
+        return;
+    }
+
     // Attach HDR metadata to the frame if it's not already present. We will defer to
     // any metadata contained in the bitstream itself since that is guaranteed to be
     // correctly synchronized to each frame, unlike our async HDR metadata message.

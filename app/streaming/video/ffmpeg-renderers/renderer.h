@@ -264,6 +264,13 @@ public:
         // Nothing
     }
 
+    // Turns a decoded frame into one this renderer can draw, in place. Called on the
+    // decoder thread for each frame as it comes out of the decoder, before
+    // captureDecodeBoundary(). Returns false to drop the frame.
+    virtual bool mapDecodedFrame(AVFrame*) {
+        return true;
+    }
+
     // Marks the GPU work that produced a frame. Called on the decoder thread as the
     // frame comes out of the decoder, before the next frame is decoded. Returns a value
     // for waitForDecode(), or 0 when there is nothing to wait for.

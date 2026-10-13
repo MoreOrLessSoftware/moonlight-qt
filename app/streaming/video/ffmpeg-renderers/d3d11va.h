@@ -15,7 +15,9 @@ extern "C" {
 class D3D11VARenderer : public IFFmpegRenderer
 {
 public:
-    D3D11VARenderer(int decoderSelectionPass);
+    // With amfDecoder, frames come from one of FFmpeg's AMF decoders (hevc_amf) instead
+    // of D3D11VA, decoding on our decode device. See mapDecodedFrame().
+    D3D11VARenderer(int decoderSelectionPass, bool amfDecoder = false);
     virtual ~D3D11VARenderer() override;
     virtual bool initialize(PDECODER_PARAMETERS params) override;
     virtual bool prepareDecoderContext(AVCodecContext* context, AVDictionary**) override;
@@ -30,6 +32,7 @@ public:
     virtual void setPresentTearing(bool tear) override;
     virtual bool prepareFrame(AVFrame* frame) override;
     virtual void presentPreparedFrame() override;
+    virtual bool mapDecodedFrame(AVFrame* frame) override;
     virtual uint64_t captureDecodeBoundary(AVFrame* frame) override;
     virtual bool waitForDecode(AVFrame* frame) override;
     virtual bool canPrepareBeforeDecode() override;
@@ -39,6 +42,10 @@ public:
     // that renders like the hardware decoder's. The caller owns the returned reference.
     AVBufferRef* createFramesContext(AVPixelFormat swFormat, int width, int height, int poolSize, UINT bindFlags);
 
+    // Whether AMF decoding has produced frames this renderer can't draw, which turns it
+    // off for the rest of the run
+    static bool isAmfDecodingFailed();
+
     enum PixelShaders {
         GENERIC_YUV_420,
         GENERIC_AYUV,
@@ -47,6 +54,8 @@ public:
     };
 
 private:
+    void failAmfDecoding();
+
     static void lockContext(void* lock_ctx);
     static void unlockContext(void* lock_ctx);
 
@@ -142,5 +151,14 @@ private:
     Microsoft::WRL::ComPtr<ID3D11PixelShader> m_OverlayPixelShader;
 
     AVBufferRef* m_HwDeviceContext;
+
+    // AMF decoding. The device is derived from m_HwDeviceContext, so AMF decodes on our
+    // decode device, and each frame is copied into a frame from m_AmfFramesContext,
+    // which renders like a D3D11VA frame.
+    bool m_AmfDecoder;
+    AVBufferRef* m_AmfDeviceContext;
+    AVBufferRef* m_AmfFramesContext;
+    bool m_AmfMappingFailed;
+    static SDL_atomic_t s_AmfDecodingFailed;
 };
 

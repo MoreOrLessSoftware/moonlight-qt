@@ -77,6 +77,9 @@ private:
                                         bool requireZeroCopyFormat,
                                         QSet<const AVCodec*>& terminallyFailedHardwareDecoders);
 
+    // AMD's own decoders (hevc_amf) with the D3D11 renderer, ahead of D3D11VA
+    bool tryInitializeAmfDecoder(PDECODER_PARAMETERS params);
+
     bool tryInitializeRendererForUnknownDecoder(const AVCodec* decoder,
                                                 PDECODER_PARAMETERS params,
                                                 bool tryHwAccel);

@@ -5,6 +5,10 @@
 #include "dxutil.h"
 #include "path.h"
 #include "utils.h"
+#include "pacer/pacer.h"
+
+// AMF's surface interface, to find the texture an AMF decoder decoded into
+#include "AMF/core/Surface.h"
 
 #include "streaming/streamutils.h"
 #include "streaming/session.h"
@@ -18,6 +22,9 @@ using Microsoft::WRL::ComPtr;
 // Standard DXVA GUIDs for HEVC RExt profiles (redefined for compatibility with pre-24H2 SDKs)
 DEFINE_GUID(k_D3D11_DECODER_PROFILE_HEVC_VLD_MAIN_444,   0x4008018f, 0xf537, 0x4b36, 0x98, 0xcf, 0x61, 0xaf, 0x8a, 0x2c, 0x1a, 0x33);
 DEFINE_GUID(k_D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10_444, 0x0dabeffa, 0x4458, 0x4602, 0xbc, 0x03, 0x07, 0x95, 0x65, 0x9d, 0x61, 0x7c);
+
+// Private data AMF sets on its D3D11 textures: the array slice a surface is in (an int)
+DEFINE_GUID(k_AmfTextureArrayIndexGuid, 0x28115527, 0xe7c3, 0x4b66, 0x99, 0xd3, 0x4f, 0x2a, 0xe6, 0xb4, 0x7f, 0xaf);
 
 typedef struct _VERTEX
 {
@@ -55,7 +62,7 @@ static const std::array<const char*, D3D11VARenderer::PixelShaders::_COUNT> k_Vi
     "d3d11_y410_pixel.fxc",
 };
 
-D3D11VARenderer::D3D11VARenderer(int decoderSelectionPass)
+D3D11VARenderer::D3D11VARenderer(int decoderSelectionPass, bool amfDecoder)
     : IFFmpegRenderer(RendererType::D3D11VA),
       m_DecoderSelectionPass(decoderSelectionPass),
       m_DevicesWithFL11Support(0),
@@ -73,7 +80,11 @@ D3D11VARenderer::D3D11VARenderer(int decoderSelectionPass)
       m_LastPresentationMode(-1),
       m_PresentationModeChanges(0),
       m_OverlayLock(0),
-      m_HwDeviceContext(nullptr)
+      m_HwDeviceContext(nullptr),
+      m_AmfDecoder(amfDecoder),
+      m_AmfDeviceContext(nullptr),
+      m_AmfFramesContext(nullptr),
+      m_AmfMappingFailed(false)
 {
     m_ContextLock = SDL_CreateMutex();
 
@@ -135,6 +146,8 @@ D3D11VARenderer::~D3D11VARenderer()
 
     m_RenderSharedTextureArray.Reset();
 
+    av_buffer_unref(&m_AmfFramesContext);
+    av_buffer_unref(&m_AmfDeviceContext);
     av_buffer_unref(&m_HwDeviceContext);
     m_DecodeDevice.Reset();
     m_DecodeDeviceContext.Reset();
@@ -567,6 +580,15 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
         }
     }
 
+    // AMF uses the decode device's context from inside the decoder without our context
+    // lock, and may change its pipeline state. That's only safe on a device we don't
+    // also render with.
+    if (m_AmfDecoder && m_DecodeDevice == m_RenderDevice) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Not using AMF decoding without a separate decode device");
+        return false;
+    }
+
     DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
     swapChainDesc.Stereo = FALSE;
     swapChainDesc.SampleDesc.Count = 1;
@@ -771,6 +793,35 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
         }
     }
 
+    if (m_AmfDecoder) {
+        // Have D3D11 serialize calls into the decode device's context, since AMF calls
+        // into it from the decoder thread without taking our lock
+        ComPtr<ID3D11Multithread> multithread;
+        if (SUCCEEDED(m_DecodeDeviceContext.As(&multithread))) {
+            multithread->SetMultithreadProtected(TRUE);
+        }
+
+        // AMF on our decode device, so its frames can be copied into ours. This fails on
+        // GPUs without AMF and with FFmpeg builds without it.
+        //
+        // FFmpeg sets AMF's trace level from its own log level here, once, for AMF's
+        // trace to the debugger as well as to FFmpeg's log. Decoder setup raises the log
+        // level to debug, which would leave AMF tracing every SubmitInput()/QueryOutput()
+        // for the whole stream, so create it at info (AMF warnings and errors).
+        int logLevel = av_log_get_level();
+        av_log_set_level(AV_LOG_INFO);
+        int err = av_hwdevice_ctx_create_derived(&m_AmfDeviceContext, AV_HWDEVICE_TYPE_AMF, m_HwDeviceContext, 0);
+        av_log_set_level(logLevel);
+        if (err < 0) {
+            char errorString[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(err, errorString, sizeof(errorString));
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "AMF isn't available on the decode device: %s",
+                        errorString);
+            return false;
+        }
+    }
+
     if (!setupRenderingResources()) {
         return false;
     }
@@ -778,8 +829,29 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
     return true;
 }
 
-bool D3D11VARenderer::prepareDecoderContext(AVCodecContext* context, AVDictionary**)
+bool D3D11VARenderer::prepareDecoderContext(AVCodecContext* context, AVDictionary** options)
 {
+    if (m_AmfDecoder) {
+        context->hw_device_ctx = av_buffer_ref(m_AmfDeviceContext);
+
+        // Hand each frame over as soon as it's decoded. By default AMF holds frames back
+        // for reordering a stream without B-frames never needs: two frames, in testing.
+        // This way a 4K HEVC frame took about 5.7 ms from submission to decoded on a
+        // Radeon 780M, against 10 ms with D3D11VA.
+        av_dict_set(options, "decoder_mode", "low_latency", 0);
+        av_dict_set(options, "lowlatency", "1", 0);
+
+        // AMF runtimes up to 1.4.35 can't tell the bit depth from the stream. FFmpeg then
+        // picks the decoder from the pixel format it is opened with, and without one it
+        // decodes Main10 as 8-bit NV12 (seen on a Radeon 760M, driver 31.0.21023).
+        context->pix_fmt = (m_DecoderParams.videoFormat & VIDEO_FORMAT_MASK_10BIT) ?
+                    AV_PIX_FMT_YUV420P10 : AV_PIX_FMT_YUV420P;
+
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Using AMF decoder with D3D11 renderer");
+        return true;
+    }
+
     context->hw_device_ctx = av_buffer_ref(m_HwDeviceContext);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -790,6 +862,11 @@ bool D3D11VARenderer::prepareDecoderContext(AVCodecContext* context, AVDictionar
 
 bool D3D11VARenderer::prepareDecoderContextInGetFormat(AVCodecContext *context, AVPixelFormat pixelFormat)
 {
+    // AMF allocates its own frames. Ours are set up from the first one it decodes.
+    if (m_AmfDecoder) {
+        return true;
+    }
+
     // Create a new hardware frames context suitable for decoding our specified format
     av_buffer_unref(&context->hw_frames_ctx);
     int err = avcodec_get_hw_frames_parameters(context, m_HwDeviceContext, pixelFormat, &context->hw_frames_ctx);
@@ -1692,6 +1769,177 @@ bool D3D11VARenderer::supportsPresentTearing()
 void D3D11VARenderer::setPresentTearing(bool tear)
 {
     m_TearNextPresent = tear;
+}
+
+SDL_atomic_t D3D11VARenderer::s_AmfDecodingFailed;
+
+bool D3D11VARenderer::isAmfDecodingFailed()
+{
+    return SDL_AtomicGet(&s_AmfDecodingFailed) != 0;
+}
+
+// Stops this renderer copying AMF frames and has the stream's decoder recreated. AMF
+// is skipped from then on, so it comes back with D3D11VA instead of dropping every frame.
+void D3D11VARenderer::failAmfDecoding()
+{
+    m_AmfMappingFailed = true;
+    SDL_AtomicSet(&s_AmfDecodingFailed, 1);
+
+    SDL_Event event;
+    event.type = SDL_RENDER_DEVICE_RESET;
+    SDL_PushEvent(&event);
+}
+
+// AMF decodes into textures of its own, which aren't shared with the render device.
+// Copy each frame into one from our pool, on the decode device, so it renders like a
+// D3D11VA frame: through the shared texture array and the decode->render fence.
+bool D3D11VARenderer::mapDecodedFrame(AVFrame* frame)
+{
+    if (frame->format != AV_PIX_FMT_AMF_SURFACE) {
+        return true;
+    }
+
+    auto surface = (amf::AMFSurface*)frame->data[0];
+    if (surface->GetMemoryType() != amf::AMF_MEMORY_DX11) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "AMF frame isn't a D3D11 texture (memory type %d)",
+                     (int)surface->GetMemoryType());
+        return false;
+    }
+
+    amf::AMFPlane* lumaPlane = surface->GetPlaneAt(0);
+    auto texture = lumaPlane != nullptr ? (ID3D11Texture2D*)lumaPlane->GetNative() : nullptr;
+    if (texture == nullptr) {
+        return false;
+    }
+
+    // Copying between devices would fail, so make sure AMF really is on ours
+    ComPtr<ID3D11Device> textureDevice;
+    texture->GetDevice(&textureDevice);
+    if (textureDevice.Get() != m_DecodeDevice.Get()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "AMF frame isn't on the decode device");
+        return false;
+    }
+
+    // AMF decodes into texture arrays. It names the slice as a surface property, and
+    // as private data on the texture.
+    UINT slice = 0;
+    amf_int64 surfaceIndex;
+    if (surface->GetProperty(L"TextureArrayIndex", &surfaceIndex) == AMF_OK) {
+        slice = (UINT)surfaceIndex;
+    }
+    else {
+        int textureIndex;
+        UINT size = sizeof(textureIndex);
+        if (SUCCEEDED(texture->GetPrivateData(k_AmfTextureArrayIndexGuid, &size, &textureIndex))) {
+            slice = (UINT)textureIndex;
+        }
+    }
+
+    D3D11_TEXTURE2D_DESC textureDesc;
+    texture->GetDesc(&textureDesc);
+
+    // Our pool matches AMF's textures, so whole slices copy across. The pacer can hold
+    // all of its outstanding frames while another is copied, as with PyroWave.
+    if (m_AmfFramesContext == nullptr) {
+        // Don't try again for every frame once it has failed
+        if (m_AmfMappingFailed) {
+            return false;
+        }
+
+        // The format comes from the texture, not AMF's frames context. FFmpeg sets that
+        // up before the decoder has seen the stream, as NV12 when it can't tell.
+        AVPixelFormat swFormat;
+        switch (textureDesc.Format) {
+        case DXGI_FORMAT_NV12:
+            swFormat = AV_PIX_FMT_NV12;
+            break;
+        case DXGI_FORMAT_P010:
+            swFormat = AV_PIX_FMT_P010;
+            break;
+        default:
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "AMF frame has unsupported texture format %d",
+                         textureDesc.Format);
+            failAmfDecoding();
+            return false;
+        }
+
+        // The SRVs and shaders are picked from the stream's bit depth
+        bool tenBit = (m_DecoderParams.videoFormat & VIDEO_FORMAT_MASK_10BIT) != 0;
+        if (tenBit != (swFormat == AV_PIX_FMT_P010)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "AMF frame format %d doesn't match the stream's bit depth (%s); falling back to D3D11VA",
+                         textureDesc.Format,
+                         tenBit ? "10-bit" : "8-bit");
+            failAmfDecoding();
+            return false;
+        }
+
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Copying AMF frames from %ux%u textures (format %d, array size %u), picture %dx%d at %d,%d",
+                    textureDesc.Width, textureDesc.Height, textureDesc.Format, textureDesc.ArraySize,
+                    lumaPlane->GetWidth(), lumaPlane->GetHeight(),
+                    lumaPlane->GetOffsetX(), lumaPlane->GetOffsetY());
+
+        m_AmfFramesContext = createFramesContext(swFormat,
+                                                 textureDesc.Width, textureDesc.Height,
+                                                 PACER_MAX_OUTSTANDING_FRAMES + 2,
+                                                 D3D11_BIND_DECODER);
+        if (m_AmfFramesContext == nullptr) {
+            failAmfDecoding();
+            return false;
+        }
+    }
+
+    AVFrame* mappedFrame = av_frame_alloc();
+    if (mappedFrame == nullptr) {
+        return false;
+    }
+
+    // Fails when every frame in the pool is still queued for rendering
+    int err = av_hwframe_get_buffer(m_AmfFramesContext, mappedFrame, 0);
+    if (err < 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "No free frame to copy the AMF frame into: %d",
+                    err);
+        av_frame_free(&mappedFrame);
+        return false;
+    }
+
+    auto mappedTexture = (ID3D11Texture2D*)mappedFrame->data[0];
+    D3D11_TEXTURE2D_DESC mappedDesc;
+    mappedTexture->GetDesc(&mappedDesc);
+    if (mappedDesc.Format != textureDesc.Format ||
+            mappedDesc.Width != textureDesc.Width || mappedDesc.Height != textureDesc.Height) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "AMF frame (%ux%u, format %d) doesn't match our frames (%ux%u, format %d)",
+                     textureDesc.Width, textureDesc.Height, textureDesc.Format,
+                     mappedDesc.Width, mappedDesc.Height, mappedDesc.Format);
+        av_frame_free(&mappedFrame);
+        return false;
+    }
+
+    // The copy reads what AMF decoded, so the GPU runs it once the decode is done, and
+    // AMF's next decode into this surface only once the copy is. Starting it now lets
+    // it finish as soon as the decode does.
+    lockContext(this);
+    m_DecodeDeviceContext->CopySubresourceRegion(mappedTexture, (UINT)(intptr_t)mappedFrame->data[1], 0, 0, 0,
+                                                 texture, D3D11CalcSubresource(0, slice, textureDesc.MipLevels),
+                                                 nullptr);
+    m_DecodeDeviceContext->Flush();
+    unlockContext(this);
+
+    av_frame_copy_props(mappedFrame, frame);
+    mappedFrame->width = frame->width;
+    mappedFrame->height = frame->height;
+
+    // Replace the AMF frame with ours, which releases the AMF surface back to its pool
+    av_frame_unref(frame);
+    av_frame_move_ref(frame, mappedFrame);
+    av_frame_free(&mappedFrame);
+    return true;
 }
 
 // Marks the decode work behind a frame that has just come out of the decoder, so the
