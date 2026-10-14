@@ -3,6 +3,8 @@
 #include <Limelight.h>
 #include "SDL_compat.h"
 
+#include <QRandomGenerator>
+
 #define VK_0 0x30
 #define VK_A 0x41
 
@@ -11,7 +13,16 @@
 #define VK_F1 0x70
 #define VK_F13 0x7C
 #define VK_NUMPAD0 0x60
+#define VK_F24 0x87
 #endif
+
+// Automatic latency test: how many presses, how long each is held and the range of gaps
+// between them. Random gaps keep the presses from lining up with frame boundaries.
+#define LATENCY_TEST_PRESSES 30
+#define LATENCY_TEST_START_DELAY_MS 1000
+#define LATENCY_TEST_HOLD_MS 40
+#define LATENCY_TEST_MIN_GAP_MS 300
+#define LATENCY_TEST_MAX_GAP_MS 700
 
 #define MAKE_KEYPRESS_STATE(code, modifiers, flags) \
     ((uint32_t)(uint16_t)(code) | \
@@ -191,9 +202,84 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         updateKeyboardGrabState();
         break;
 
+    case KeyComboToggleLatencyMarker:
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Detected latency marker toggle combo");
+
+        // Toggle the marker that flips on every key or button press sent to the host,
+        // for timing against the latency-test app's trigger patch with a camera
+        Session::get()->getOverlayManager().setOverlayState(Overlay::OverlayLatencyMarker,
+                                                            !Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayLatencyMarker));
+
+        // An automatic test stops with the marker
+        if (!Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayLatencyMarker) &&
+                SDL_AtomicGet(&m_LatencyTestRunning)) {
+            toggleLatencyTest();
+        }
+        break;
+
     default:
         Q_UNREACHABLE();
     }
+}
+
+void SdlInputHandler::toggleLatencyTest()
+{
+    SDL_RemoveTimer(m_LatencyTestTimer);
+    m_LatencyTestTimer = 0;
+
+    if (SDL_AtomicGet(&m_LatencyTestRunning)) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Latency test stopped");
+        SDL_AtomicSet(&m_LatencyTestRunning, 0);
+
+        // Don't leave the key held on the host
+        if (m_LatencyTestKeyDown) {
+            LiSendKeyboardEvent2(0x8000 | VK_F24, KEY_ACTION_UP, 0, 0);
+            m_LatencyTestKeyDown = false;
+        }
+        Session::get()->getOverlayManager().setLatencyTestProgress(0, 0);
+        return;
+    }
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Latency test started: %d presses of F24",
+                LATENCY_TEST_PRESSES);
+    m_LatencyTestPressesDone = 0;
+    m_LatencyTestKeyDown = false;
+    SDL_AtomicSet(&m_LatencyTestRunning, 1);
+    Session::get()->getOverlayManager().setLatencyTestProgress(0, LATENCY_TEST_PRESSES);
+    m_LatencyTestTimer = SDL_AddTimer(LATENCY_TEST_START_DELAY_MS, latencyTestTimerCallback, this);
+}
+
+Uint32 SdlInputHandler::latencyTestTimerCallback(Uint32, void* param)
+{
+    auto me = reinterpret_cast<SdlInputHandler*>(param);
+
+    if (me->m_LatencyTestKeyDown) {
+        LiSendKeyboardEvent2(0x8000 | VK_F24, KEY_ACTION_UP, 0, 0);
+        me->m_LatencyTestKeyDown = false;
+
+        if (me->m_LatencyTestPressesDone >= LATENCY_TEST_PRESSES) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Latency test finished");
+            SDL_AtomicSet(&me->m_LatencyTestRunning, 0);
+            Session::get()->getOverlayManager().setLatencyTestProgress(0, 0);
+            return 0;
+        }
+
+        return QRandomGenerator::global()->bounded(LATENCY_TEST_MIN_GAP_MS, LATENCY_TEST_MAX_GAP_MS + 1) - LATENCY_TEST_HOLD_MS;
+    }
+
+    if (!SDL_AtomicGet(&me->m_LatencyTestRunning)) {
+        return 0;
+    }
+
+    // Same order as a real key press: send, then flip the marker
+    LiSendKeyboardEvent2(0x8000 | VK_F24, KEY_ACTION_DOWN, 0, 0);
+    Session::get()->getOverlayManager().flipLatencyMarker();
+    me->m_LatencyTestKeyDown = true;
+    me->m_LatencyTestPressesDone++;
+    Session::get()->getOverlayManager().setLatencyTestProgress(me->m_LatencyTestPressesDone, LATENCY_TEST_PRESSES);
+    return LATENCY_TEST_HOLD_MS;
 }
 
 void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
@@ -238,6 +324,16 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
                 return;
             }
         }
+    }
+
+    // While the latency marker is shown, Space starts or stops an automatic test instead of
+    // going to the host (its release is swallowed too)
+    if (event->keysym.scancode == SDL_SCANCODE_SPACE &&
+            Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayLatencyMarker)) {
+        if (event->state == SDL_PRESSED) {
+            toggleLatencyTest();
+        }
+        return;
     }
 
     // Set modifier flags
@@ -530,6 +626,11 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
                              KEY_ACTION_DOWN : KEY_ACTION_UP,
                          modifiers,
                          flags);
+
+    // Flip after sending, so the marker never delays the input itself
+    if (event->state == SDL_PRESSED) {
+        Session::get()->getOverlayManager().flipLatencyMarker();
+    }
 }
 
 void SdlInputHandler::raiseAllKeys()

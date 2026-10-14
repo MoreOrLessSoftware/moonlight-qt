@@ -246,9 +246,25 @@ void SdlRenderer::renderOverlay(Overlay::OverlayType type)
                 m_OverlayRects[type].x = 0;
                 m_OverlayRects[type].y = 0;
             }
+            else if (type == Overlay::OverlayLatencyTimer) {
+                // Below the marker
+                SDL_Rect viewportRect;
+                SDL_RenderGetViewport(m_Renderer, &viewportRect);
+                SDL_Point position = Overlay::OverlayManager::getLatencyTimerPosition(viewportRect.w, viewportRect.h);
+                m_OverlayRects[type].x = position.x;
+                m_OverlayRects[type].y = position.y;
+            }
 
-            m_OverlayRects[type].w = newSurface->w;
-            m_OverlayRects[type].h = newSurface->h;
+            if (type == Overlay::OverlayLatencyMarker) {
+                // Stretched to its fixed spot
+                SDL_Rect viewportRect;
+                SDL_RenderGetViewport(m_Renderer, &viewportRect);
+                m_OverlayRects[type] = Overlay::OverlayManager::getLatencyMarkerRect(viewportRect.w, viewportRect.h);
+            }
+            else {
+                m_OverlayRects[type].w = newSurface->w;
+                m_OverlayRects[type].h = newSurface->h;
+            }
 
             m_OverlayTextures[type] = SDL_CreateTextureFromSurface(m_Renderer, newSurface);
             SDL_FreeSurface(newSurface);

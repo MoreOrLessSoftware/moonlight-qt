@@ -33,8 +33,13 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_RightButtonReleaseTimer(0),
       m_DragTimer(0),
       m_DragButton(0),
-      m_NumFingersDown(0)
+      m_NumFingersDown(0),
+      m_LatencyTestTimer(0),
+      m_LatencyTestPressesDone(0),
+      m_LatencyTestKeyDown(false)
 {
+    SDL_AtomicSet(&m_LatencyTestRunning, 0);
+
     // System keys are always captured when running without a DE
     if (!WMUtils::isRunningDesktopEnvironment()) {
         m_CaptureSystemKeysMode = StreamingPreferences::CSK_ALWAYS;
@@ -140,6 +145,11 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
     m_SpecialKeyCombos[KeyComboDisconnectOnly].scanCode = SDL_SCANCODE_W;
     m_SpecialKeyCombos[KeyComboDisconnectOnly].enabled = true;
 
+    m_SpecialKeyCombos[KeyComboToggleLatencyMarker].keyCombo = KeyComboToggleLatencyMarker;
+    m_SpecialKeyCombos[KeyComboToggleLatencyMarker].keyCode = SDLK_t;
+    m_SpecialKeyCombos[KeyComboToggleLatencyMarker].scanCode = SDL_SCANCODE_T;
+    m_SpecialKeyCombos[KeyComboToggleLatencyMarker].enabled = true;
+
     m_OldIgnoreDevices = SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES);
     m_OldIgnoreDevicesExcept = SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT);
 
@@ -242,6 +252,7 @@ SdlInputHandler::~SdlInputHandler()
     SDL_RemoveTimer(m_LeftButtonReleaseTimer);
     SDL_RemoveTimer(m_RightButtonReleaseTimer);
     SDL_RemoveTimer(m_DragTimer);
+    SDL_RemoveTimer(m_LatencyTestTimer);
 
 #if !SDL_VERSION_ATLEAST(2, 0, 9)
     SDL_QuitSubSystem(SDL_INIT_HAPTIC);

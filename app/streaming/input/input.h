@@ -169,6 +169,7 @@ private:
         KeyComboQuitAndExit,
         KeyComboToggleKeyboardGrab,
         KeyComboDisconnectOnly,
+        KeyComboToggleLatencyMarker,
         KeyComboMax
     };
 
@@ -203,6 +204,11 @@ private:
 
     static
     Uint32 dragTimerCallback(Uint32 interval, void* param);
+
+    void toggleLatencyTest();
+
+    static
+    Uint32 latencyTestTimerCallback(Uint32 interval, void* param);
 
     SDL_Window* m_Window;
     bool m_MultiController;
@@ -250,6 +256,12 @@ private:
     SDL_TimerID m_DragTimer;
     char m_DragButton;
     int m_NumFingersDown;
+
+    // Automatic key presses for timing against the latency-test app
+    SDL_TimerID m_LatencyTestTimer;
+    SDL_atomic_t m_LatencyTestRunning;
+    int m_LatencyTestPressesDone;
+    bool m_LatencyTestKeyDown;
 
     static const int k_ButtonMap[];
 };

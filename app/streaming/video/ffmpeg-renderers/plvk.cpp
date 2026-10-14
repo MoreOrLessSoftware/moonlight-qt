@@ -1118,8 +1118,27 @@ bool PlVkRenderer::drawFrame(AVFrame* frame, pl_frame* mappedFrame, pl_frame* ta
                 overlayParts[i].dst.x0 = 0;
                 overlayParts[i].dst.y0 = 0;
             }
-            overlayParts[i].dst.x1 = overlayParts[i].dst.x0 + overlayParts[i].src.x1;
-            overlayParts[i].dst.y1 = overlayParts[i].dst.y0 + overlayParts[i].src.y1;
+            else if (i == Overlay::OverlayLatencyTimer) {
+                // Below the marker
+                SDL_Point position = Overlay::OverlayManager::getLatencyTimerPosition(targetFrame->crop.x1 - targetFrame->crop.x0,
+                                                                                      targetFrame->crop.y1 - targetFrame->crop.y0);
+                overlayParts[i].dst.x0 = targetFrame->crop.x0 + position.x;
+                overlayParts[i].dst.y0 = targetFrame->crop.y0 + position.y;
+            }
+
+            if (i == Overlay::OverlayLatencyMarker) {
+                // Stretched to its fixed spot
+                SDL_Rect marker = Overlay::OverlayManager::getLatencyMarkerRect(targetFrame->crop.x1 - targetFrame->crop.x0,
+                                                                                targetFrame->crop.y1 - targetFrame->crop.y0);
+                overlayParts[i].dst.x0 = targetFrame->crop.x0 + marker.x;
+                overlayParts[i].dst.y0 = targetFrame->crop.y0 + marker.y;
+                overlayParts[i].dst.x1 = overlayParts[i].dst.x0 + marker.w;
+                overlayParts[i].dst.y1 = overlayParts[i].dst.y0 + marker.h;
+            }
+            else {
+                overlayParts[i].dst.x1 = overlayParts[i].dst.x0 + overlayParts[i].src.x1;
+                overlayParts[i].dst.y1 = overlayParts[i].dst.y0 + overlayParts[i].src.y1;
+            }
 
             m_Overlays[i].overlay.parts = &overlayParts[i];
             m_Overlays[i].overlay.num_parts = 1;

@@ -1466,6 +1466,20 @@ bool D3D11VARenderer::createOverlayVertexBuffer(Overlay::OverlayType type, int w
         renderRect.x = 0;
         renderRect.y = m_DisplayHeight - height;
     }
+    else if (type == Overlay::OverlayLatencyMarker) {
+        // Stretched to its fixed spot; y counts up from the bottom here
+        SDL_Rect marker = Overlay::OverlayManager::getLatencyMarkerRect(m_DisplayWidth, m_DisplayHeight);
+        renderRect.x = marker.x;
+        renderRect.y = m_DisplayHeight - marker.y - marker.h;
+        width = marker.w;
+        height = marker.h;
+    }
+    else if (type == Overlay::OverlayLatencyTimer) {
+        // Below the marker; y counts up from the bottom here
+        SDL_Point position = Overlay::OverlayManager::getLatencyTimerPosition(m_DisplayWidth, m_DisplayHeight);
+        renderRect.x = position.x;
+        renderRect.y = m_DisplayHeight - position.y - height;
+    }
 
     renderRect.w = width;
     renderRect.h = height;

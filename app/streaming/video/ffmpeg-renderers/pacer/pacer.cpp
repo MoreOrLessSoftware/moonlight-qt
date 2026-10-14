@@ -1,5 +1,6 @@
 #include "pacer.h"
 #include "streaming/streamutils.h"
+#include "streaming/session.h"
 
 #ifdef Q_OS_WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -740,6 +741,7 @@ void Pacer::renderFrame(AVFrame* frame)
     m_VideoStats->totalPacerTimeUs += (beforeRender - (uint64_t)frame->pkt_dts);
 
     // Render it
+    Session::get()->getOverlayManager().updateLatencyTimer();
     m_VsyncRenderer->renderFrame(frame);
 
     uint64_t presentUs = LiGetMicroseconds();
@@ -953,6 +955,7 @@ int Pacer::cadenceThread(void* context)
             row.renderStartUs = (int64_t)LiGetMicroseconds();
             row.drawDueUs = row.renderStartUs;
 
+            Session::get()->getOverlayManager().updateLatencyTimer();
             if (me->m_VsyncRenderer->prepareFrame(frame)) {
                 row.drawnAhead = 1;
                 row.drawEndUs = (int64_t)LiGetMicroseconds();
@@ -1373,6 +1376,10 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
     }
 
     uint64_t pacerTimeUs = (uint64_t)qMax<int64_t>(0, row->renderStartUs - frame->pkt_dts);
+
+    if (!row->drawnAhead) {
+        Session::get()->getOverlayManager().updateLatencyTimer();
+    }
 
     if (row->drawnAhead) {
         // Drawn already

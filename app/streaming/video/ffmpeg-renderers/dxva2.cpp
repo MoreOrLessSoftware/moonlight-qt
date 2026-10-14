@@ -668,9 +668,25 @@ void DXVA2Renderer::notifyOverlayUpdated(Overlay::OverlayType type)
         renderRect.x = 0;
         renderRect.y = 0;
     }
+    else if (type == Overlay::OverlayLatencyTimer) {
+        // Below the marker
+        SDL_Point position = Overlay::OverlayManager::getLatencyTimerPosition(m_DisplayWidth, m_DisplayHeight);
+        renderRect.x = position.x;
+        renderRect.y = position.y;
+    }
 
-    renderRect.w = newSurface->w;
-    renderRect.h = newSurface->h;
+    if (type == Overlay::OverlayLatencyMarker) {
+        // Stretched to its fixed spot
+        SDL_Rect marker = Overlay::OverlayManager::getLatencyMarkerRect(m_DisplayWidth, m_DisplayHeight);
+        renderRect.x = marker.x;
+        renderRect.y = marker.y;
+        renderRect.w = marker.w;
+        renderRect.h = marker.h;
+    }
+    else {
+        renderRect.w = newSurface->w;
+        renderRect.h = newSurface->h;
+    }
 
     // The surface is no longer required
     SDL_FreeSurface(newSurface);

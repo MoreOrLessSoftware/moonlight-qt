@@ -3,6 +3,7 @@
 #include <Limelight.h>
 #include "SDL_compat.h"
 #include "streaming/streamutils.h"
+#include "streaming/session.h"
 
 void SdlInputHandler::notifyMouseLeave()
 {
@@ -88,6 +89,11 @@ void SdlInputHandler::handleMouseButtonEvent(SDL_MouseButtonEvent* event)
                                BUTTON_ACTION_PRESS :
                                BUTTON_ACTION_RELEASE,
                            button);
+
+    // Flip after sending, so the marker never delays the input itself
+    if (event->state == SDL_PRESSED) {
+        Session::get()->getOverlayManager().flipLatencyMarker();
+    }
 }
 
 void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
