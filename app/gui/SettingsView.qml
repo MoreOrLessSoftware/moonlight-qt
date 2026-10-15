@@ -1575,24 +1575,17 @@ Flickable {
                     function createModel() {
                         var model = Qt.createQmlObject('import QtQuick 2.0; ListModel {}', parent, '')
 
+                        model.append({ text: qsTr("On"), val: 50 })
                         model.append({ text: qsTr("Off"), val: 100 })
-                        model.append({ text: qsTr("Light"), val: 50 })
-                        model.append({ text: qsTr("Strong"), val: 25 })
 
                         return model
                     }
 
                     function reinitialize() {
                         model = createModel()
-                        currentIndex = 0
 
-                        var saved = StreamingPreferences.pacingSmoothingPercent
-                        for (var i = 0; i < model.count; i++) {
-                            if (saved === model.get(i).val) {
-                                currentIndex = i
-                                break
-                            }
-                        }
+                        // Any gain below 100% is On, including the old Light and Strong
+                        currentIndex = StreamingPreferences.pacingSmoothingPercent >= 100 ? 1 : 0
 
                         activated(currentIndex)
                     }
@@ -1613,7 +1606,7 @@ Flickable {
                     ToolTip.delay: 1000
                     ToolTip.timeout: 5000
                     ToolTip.visible: hovered
-                    ToolTip.text: qsTr("How much of the host's frame timing jitter is ironed out. Off follows the host's timing exactly. Stronger smoothing evens out more jitter but takes slightly longer to follow real frame rate changes. Default: Light.")
+                    ToolTip.text: qsTr("Irons out jitter in the host's frame timing, including hosts that only time their frames to the nearest few milliseconds. Off follows the host's timing exactly. Default: On.")
                 }
 
                 Label {
