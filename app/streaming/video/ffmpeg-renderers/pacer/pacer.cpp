@@ -74,6 +74,34 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 // each new interval taken in
 #define CADENCE_INTERVAL_EMA_DIVISOR 8
 
+// The tracker, which replaces the smoothing above unless smoothing is set to Off (a gain
+// of 100%, following the host exactly). ML_PACING_TRACKER=0 goes back to the smoothing
+// above at the chosen gain, and ML_PACING_TRACKER=1 uses the tracker whatever the gain.
+//
+// Some hosts stamp a frame when their capture loop wakes rather than when the game
+// presented it. One captured with WGC put 88% of its stamps on a 2.5 ms grid, so each
+// carried up to 2.5 ms of error, and a 60 FPS game read as alternating 15 and 17.5 ms
+// intervals. The interval average above takes that noise in, and lower gains only made
+// it lag the game's changes of pace: the best replay left 450 us of interval-to-interval
+// change against the host's 1620.
+//
+// The tracker predicts each host time from the last smoothed time and its interval, and
+// corrects both from the prediction's error, the time by ALPHA and the interval by BETA
+// (an alpha-beta filter). On the same traces it left 200-460 us at the same delay, and on
+// hosts that stamp at the game's present it matched or beat the smoothing above.
+// ML_PACING_TRACKER_ALPHA and ML_PACING_TRACKER_BETA set them as percentages.
+#define CADENCE_TRACKER_ALPHA 0.2
+#define CADENCE_TRACKER_BETA 0.1
+
+// An error larger than this, or than half an interval, on two frames in a row restarts
+// the tracker from the host's time. It replaces CADENCE_SMOOTH_MAX_US for the
+// tracker, whose 2000 us default restarted it on 30% of grid-stamped frames.
+// ML_PACING_TRACKER_RESYNC_US sets it.
+#define CADENCE_TRACKER_RESYNC_US 5000
+
+// How many of the latest host intervals the tracker's interval restarts from, by median
+#define CADENCE_TRACKER_RESTART_INTERVALS 8
+
 // Which point in the recent spread of arrivals frames wait for, and the margin on
 // top. Frames arriving later than that go out when they arrive.
 // ML_PACING_PERCENTILE sets the percentile.
@@ -212,6 +240,10 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_WaitTimerHighRes(false),
     m_SmoothGain(CADENCE_SMOOTH_GAIN),
     m_SmoothMaxUs(CADENCE_SMOOTH_MAX_US),
+    m_TrackerEnabled(false),
+    m_TrackerAlpha(CADENCE_TRACKER_ALPHA),
+    m_TrackerBeta(CADENCE_TRACKER_BETA),
+    m_TrackerResyncUs(CADENCE_TRACKER_RESYNC_US),
     m_ArrivalPercentile(CADENCE_ARRIVAL_PERCENTILE),
     m_NoTearFraction(CADENCE_NO_TEAR_FRACTION),
     m_TearGuardUs(CADENCE_TEAR_GUARD_US),
@@ -220,6 +252,7 @@ Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
     m_LastHostUs(0),
     m_IntervalUs(0),
     m_SmoothedUs(0),
+    m_TrackerOutlier(false),
     m_HostIntervalsUs{},
     m_HostIntervalCount(0),
     m_NextHostInterval(0),
@@ -517,14 +550,28 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
             m_VsyncRenderer->isRenderThreadSupported() && m_VsyncRenderer->supportsCadencePacing()) {
         // What the user chose, which the environment variables below override
         m_SmoothGain = qBound(1, params->pacingSmoothingPercent, 100) / 100.0;
+        m_TrackerEnabled = m_SmoothGain < 1.0;
         m_ArrivalPercentile = qBound(50, params->pacingArrivalPercentile, 100);
         m_NoTearFraction = qBound(0, params->pacingTearPercent, 100) / 100.0;
 
         if (qEnvironmentVariableIsSet("ML_PACING_SMOOTH")) {
             m_SmoothGain = qBound(1, qEnvironmentVariableIntValue("ML_PACING_SMOOTH"), 100) / 100.0;
+            m_TrackerEnabled = m_SmoothGain < 1.0;
         }
         if (qEnvironmentVariableIsSet("ML_PACING_SMOOTH_MAX_US")) {
             m_SmoothMaxUs = qBound(0, qEnvironmentVariableIntValue("ML_PACING_SMOOTH_MAX_US"), 100000);
+        }
+        if (qEnvironmentVariableIsSet("ML_PACING_TRACKER")) {
+            m_TrackerEnabled = qEnvironmentVariableIntValue("ML_PACING_TRACKER") != 0;
+        }
+        if (qEnvironmentVariableIsSet("ML_PACING_TRACKER_ALPHA")) {
+            m_TrackerAlpha = qBound(1, qEnvironmentVariableIntValue("ML_PACING_TRACKER_ALPHA"), 100) / 100.0;
+        }
+        if (qEnvironmentVariableIsSet("ML_PACING_TRACKER_BETA")) {
+            m_TrackerBeta = qBound(0, qEnvironmentVariableIntValue("ML_PACING_TRACKER_BETA"), 100) / 100.0;
+        }
+        if (qEnvironmentVariableIsSet("ML_PACING_TRACKER_RESYNC_US")) {
+            m_TrackerResyncUs = qBound(0, qEnvironmentVariableIntValue("ML_PACING_TRACKER_RESYNC_US"), 100000);
         }
         if (qEnvironmentVariableIsSet("ML_PACING_PERCENTILE")) {
             m_ArrivalPercentile = qBound(50, qEnvironmentVariableIntValue("ML_PACING_PERCENTILE"), 100);
@@ -578,14 +625,21 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
         m_WaitTimerHighRes = true;
 #endif
 
-        QString settings = QString("smoothing gain %1% on errors up to %5 us, arrival percentile %2, "
-                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %6, %7 us drawing margin, %8 us spin, display queue drain %9, %10 us tear guard, "
-                                   "late frames cut short %11, %12")
-                .arg((int)std::lround(m_SmoothGain * 100))
+        QString smoothing = m_TrackerEnabled ?
+                    QString("tracker alpha %1% beta %2% restarting past %3 us")
+                        .arg((int)std::lround(m_TrackerAlpha * 100))
+                        .arg((int)std::lround(m_TrackerBeta * 100))
+                        .arg((int)m_TrackerResyncUs) :
+                    QString("smoothing gain %1% on errors up to %2 us")
+                        .arg((int)std::lround(m_SmoothGain * 100))
+                        .arg((int)m_SmoothMaxUs);
+        QString settings = QString("%1, arrival percentile %2, "
+                                   "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %5, %6 us drawing margin, %7 us spin, display queue drain %8, %9 us tear guard, "
+                                   "late frames cut short %10, %11")
+                .arg(smoothing)
                 .arg(m_ArrivalPercentile)
                 .arg((int)std::lround(m_NoTearFraction * 100))
                 .arg(m_WaitTimerHighRes ? "high resolution" : "standard")
-                .arg((int)m_SmoothMaxUs)
                 .arg(m_HostStepsEnabled ? "handled" : "ignored")
                 .arg((int)m_DrawMarginUs)
                 .arg(m_WaitTimerHighRes ? m_SpinUs : qMax(m_SpinUs, CADENCE_SPIN_LOW_RES_US))
@@ -1023,31 +1077,79 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
         m_TimelineArrivals = 0;
         m_LearnFramesLeft = qMax(CADENCE_MIN_LEARN_FRAMES, m_MaxVideoFps);
         m_HostStepActive = false;
+        m_TrackerOutlier = false;
     }
     else {
         m_HostIntervalsUs[m_NextHostInterval] = hostIntervalUs;
         m_NextHostInterval = (m_NextHostInterval + 1) % PACER_CADENCE_INTERVAL_SAMPLES;
         m_HostIntervalCount = qMin(m_HostIntervalCount + 1, PACER_CADENCE_INTERVAL_SAMPLES);
 
-        // Tracked for prediction. A single long gap is limited so it cannot drag the
-        // prediction far, but a real change of pace still comes through in a few frames.
-        m_IntervalUs = m_IntervalUs > 0 ?
-                    m_IntervalUs + (qBound(m_IntervalUs / 4, (double)hostIntervalUs, m_IntervalUs * 4) - m_IntervalUs) / CADENCE_INTERVAL_EMA_DIVISOR :
-                    (double)hostIntervalUs;
+        if (m_TrackerEnabled) {
+            if (m_IntervalUs <= 0) {
+                m_IntervalUs = (double)hostIntervalUs;
+                m_SmoothedUs = (double)hostUs;
+            }
+            else {
+                double predictedUs = m_SmoothedUs + m_IntervalUs;
+                double errorUs = hostUs - predictedUs;
 
-        double predictedUs = m_SmoothedUs + m_IntervalUs;
-        double errorUs = hostUs - predictedUs;
+                double resyncUs = m_IntervalUs * CADENCE_RESYNC_INTERVALS;
+                if (m_TrackerResyncUs > 0) {
+                    resyncUs = qMin(resyncUs, m_TrackerResyncUs);
+                }
 
-        double resyncUs = m_IntervalUs * CADENCE_RESYNC_INTERVALS;
-        if (m_SmoothMaxUs > 0) {
-            resyncUs = qMin(resyncUs, m_SmoothMaxUs);
-        }
+                if (std::fabs(errorUs) > resyncUs && !m_TrackerOutlier) {
+                    // One stamp this far out is taken as an outlier and the prediction
+                    // stands. The WGC host sometimes stamps a single frame 4-6 ms off while
+                    // its frames keep arriving 10 ms apart; restarting on it showed as a
+                    // 13 / 13 / 7 ms hitch, and the stamp after it is back in line.
+                    m_TrackerOutlier = true;
+                    m_SmoothedUs = predictedUs;
+                }
+                else if (std::fabs(errorUs) > resyncUs) {
+                    // Two in a row are a change of pace or a stall. Restart from this stamp
+                    // and the median of the latest intervals: either interval alone could
+                    // be the odd one out, and a wrong one restarted again on the next frame.
+                    int count = qMin(CADENCE_TRACKER_RESTART_INTERVALS, m_HostIntervalCount);
+                    int64_t intervals[CADENCE_TRACKER_RESTART_INTERVALS];
+                    for (int i = 0; i < count; i++) {
+                        intervals[i] = m_HostIntervalsUs[(m_NextHostInterval - 1 - i + PACER_CADENCE_INTERVAL_SAMPLES) % PACER_CADENCE_INTERVAL_SAMPLES];
+                    }
+                    int64_t* median = intervals + count / 2;
+                    std::nth_element(intervals, median, intervals + count);
 
-        if (std::fabs(errorUs) > resyncUs) {
-            m_SmoothedUs = (double)hostUs;
+                    m_TrackerOutlier = false;
+                    m_IntervalUs = (double)*median;
+                    m_SmoothedUs = (double)hostUs;
+                }
+                else {
+                    m_TrackerOutlier = false;
+                    m_SmoothedUs = predictedUs + errorUs * m_TrackerAlpha;
+                    m_IntervalUs = qMax(1.0, m_IntervalUs + errorUs * m_TrackerBeta);
+                }
+            }
         }
         else {
-            m_SmoothedUs = predictedUs + errorUs * m_SmoothGain;
+            // Tracked for prediction. A single long gap is limited so it cannot drag the
+            // prediction far, but a real change of pace still comes through in a few frames.
+            m_IntervalUs = m_IntervalUs > 0 ?
+                        m_IntervalUs + (qBound(m_IntervalUs / 4, (double)hostIntervalUs, m_IntervalUs * 4) - m_IntervalUs) / CADENCE_INTERVAL_EMA_DIVISOR :
+                        (double)hostIntervalUs;
+
+            double predictedUs = m_SmoothedUs + m_IntervalUs;
+            double errorUs = hostUs - predictedUs;
+
+            double resyncUs = m_IntervalUs * CADENCE_RESYNC_INTERVALS;
+            if (m_SmoothMaxUs > 0) {
+                resyncUs = qMin(resyncUs, m_SmoothMaxUs);
+            }
+
+            if (std::fabs(errorUs) > resyncUs) {
+                m_SmoothedUs = (double)hostUs;
+            }
+            else {
+                m_SmoothedUs = predictedUs + errorUs * m_SmoothGain;
+            }
         }
     }
 

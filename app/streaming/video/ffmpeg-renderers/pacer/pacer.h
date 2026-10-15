@@ -110,6 +110,10 @@ private:
     // Tunables, read once in initialize()
     double m_SmoothGain;
     double m_SmoothMaxUs;
+    bool m_TrackerEnabled;
+    double m_TrackerAlpha;
+    double m_TrackerBeta;
+    double m_TrackerResyncUs;
     int m_ArrivalPercentile;
     double m_NoTearFraction;
     int m_TearGuardUs;
@@ -120,6 +124,7 @@ private:
     int64_t m_LastHostUs;
     double m_IntervalUs;
     double m_SmoothedUs;
+    bool m_TrackerOutlier;
     int64_t m_HostIntervalsUs[PACER_CADENCE_INTERVAL_SAMPLES];
     int m_HostIntervalCount;
     int m_NextHostInterval;
