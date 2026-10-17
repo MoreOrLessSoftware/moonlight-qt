@@ -16,6 +16,17 @@
 // frame time, so the pair across it is not charged as spacing error.
 #define PACER_TRACE_STALL_INTERVALS 2.5
 
+// The pacer cannot tell a host timestamp step from a frame held up on the way when it
+// arrives, so the trace tells them apart from the frame after it. A held-up frame
+// was stamped about a stream frame after the one before, at least this many stream
+// intervals, and the frames queued behind it on the way arrive right after it, the
+// next one's last packet within this many. A step's frame was stamped only a few ms
+// after the one before, and the next frame arrives a game frame later. Across 2947
+// steps in 171 traces this marked 101, and none of the 1203 in the two sessions
+// of a game rendering at about 21 FPS.
+#define PACER_TRACE_LATE_DELIVERY_HOST_INTERVALS 0.75
+#define PACER_TRACE_LATE_DELIVERY_CATCH_UP_INTERVALS 0.5
+
 void PacerTrace::Histogram::add(int64_t us)
 {
     int64_t magnitude = us < 0 ? -us : us;
@@ -62,13 +73,17 @@ QString PacerTrace::Histogram::describe() const
             .arg(samples);
 }
 
-PacerTrace::PacerTrace(int displayHz) :
+PacerTrace::PacerTrace(int displayHz, int streamFps) :
     m_PeriodUs(displayHz > 0 ? 1000000 / displayHz : 0),
+    m_StreamIntervalUs(streamFps > 0 ? 1000000 / streamFps : 0),
     m_Thread(nullptr),
     m_Stopping(false),
     m_DroppedRows(0),
+    m_HaveHeld(false),
+    m_Held{},
     m_HavePrevious(false),
     m_Previous{},
+    m_PreviousHostStep(0),
     m_FirstPresentUs(0),
     m_Rows(0),
     m_LearningRows(0),
@@ -82,6 +97,7 @@ PacerTrace::PacerTrace(int displayHz) :
     m_TearThirds{},
     m_TearSwitches(0),
     m_HostStepFrames(0),
+    m_LateDeliveryFrames(0),
     m_LostPartials(0),
     m_LatePartials(0),
     m_LatePartialsMissed(0),
@@ -129,7 +145,7 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                                         .arg(QDateTime::currentSecsSinceEpoch()));
     }
 
-    PacerTrace* trace = new PacerTrace(displayHz);
+    PacerTrace* trace = new PacerTrace(displayHz, streamFps);
 
     trace->m_File.setFileName(path);
     if (!trace->m_File.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -158,8 +174,10 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "#   one, where down the screen the tear lands if the display was still scanning that frame out.\n"
                     << "#   A variable refresh display that had already finished shows no tear. -1 otherwise.\n"
                     << "# A row with dropped_before > 0 follows frames that were never shown; its intervals are not frame times.\n"
-                    << "# host_step: the host stamped the frame well before it appeared, so it was held as long as the frame\n"
-                    << "#   before it instead of being paced by its stamp. Pairs touching one are left out of the spacing figures.\n"
+                    << "# host_step: the frame appeared well after its stamp, so it was held as long as the frame before it\n"
+                    << "#   instead of being paced by its stamp. 1: the host stamped it early, a timestamp step; pairs touching\n"
+                    << "#   one are left out of the spacing figures. 2: it was held up on the way, the frames behind it arriving\n"
+                    << "#   right after it; these count in the spacing figures.\n"
                     << "# dequeue_us: when the pacing thread took the frame from the queue. draw_due_us: when drawing was\n"
                     << "#   meant to start; render_start_us - draw_due_us is how late the thread woke for it.\n"
                     << "# drained_before: frames skipped since the previous row to clear a frame waiting in the display's queue.\n"
@@ -218,6 +236,10 @@ PacerTrace::~PacerTrace()
 
         // Whatever the writer had not reached yet, then the summary
         drain();
+        if (m_HaveHeld) {
+            writeRow(m_Held, nullptr);
+            m_HaveHeld = false;
+        }
         writeFooter();
     }
 
@@ -274,13 +296,17 @@ void PacerTrace::drain()
     m_Lock.unlock();
 
     for (const PACER_TRACE_ROW& row : std::as_const(m_Writing)) {
-        writeRow(row);
+        if (m_HaveHeld) {
+            writeRow(m_Held, &row);
+        }
+        m_Held = row;
+        m_HaveHeld = true;
     }
 
     m_Writing.clear();
 }
 
-void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
+void PacerTrace::writeRow(const PACER_TRACE_ROW& row, const PACER_TRACE_ROW* next)
 {
     int64_t hostIntervalUs = 0;
     int64_t presentIntervalUs = 0;
@@ -325,8 +351,29 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
         m_TearSwitches++;
     }
 
+    // 1 a host timestamp step, 2 a frame held up on the way that the pacer took for
+    // one. The frames after the first of a step go the way it went.
+    int hostStep = 0;
     if (row.hostStep) {
+        if (m_PreviousHostStep != 0) {
+            hostStep = m_PreviousHostStep;
+        }
+        else if (next != nullptr && m_StreamIntervalUs > 0 &&
+                 row.lastPacketUs != 0 && next->lastPacketUs != 0 &&
+                 hostIntervalUs >= m_StreamIntervalUs * PACER_TRACE_LATE_DELIVERY_HOST_INTERVALS &&
+                 next->lastPacketUs - row.lastPacketUs < m_StreamIntervalUs * PACER_TRACE_LATE_DELIVERY_CATCH_UP_INTERVALS) {
+            hostStep = 2;
+        }
+        else {
+            hostStep = 1;
+        }
+    }
+
+    if (hostStep == 1) {
         m_HostStepFrames++;
+    }
+    else if (hostStep == 2) {
+        m_LateDeliveryFrames++;
     }
 
     m_DrawnAheadFrames += row.drawnAhead;
@@ -365,9 +412,10 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
         }
 
         // Spacing only means a frame time across two consecutive paced frames with
-        // nothing dropped between them
+        // nothing dropped between them. A frame held up on the way counts: that was
+        // a frame time on screen.
         if (m_HavePrevious && !m_Previous.learning && row.droppedBefore == 0 && hostIntervalUs > 0 &&
-                !row.hostStep && !m_Previous.hostStep) {
+                hostStep != 1 && m_PreviousHostStep != 1) {
             if (row.intervalUs > 0 && hostIntervalUs > row.intervalUs * PACER_TRACE_STALL_INTERVALS) {
                 m_SourceStalls++;
             }
@@ -466,7 +514,7 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
              << row.queueDepth << ','
              << row.droppedBefore << ','
              << (row.learning ? 1 : 0) << ','
-             << (row.hostStep ? 1 : 0) << ','
+             << hostStep << ','
              << row.dequeueUs << ','
              << row.drawDueUs << ','
              << row.presentId << ','
@@ -491,6 +539,7 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row)
 
     m_Previous = row;
     m_HavePrevious = true;
+    m_PreviousHostStep = hostStep;
 }
 
 void PacerTrace::writeFooter()
@@ -525,7 +574,8 @@ void PacerTrace::writeFooter()
              << ", tear line top/middle/bottom third: " << m_TearThirds[0] << '/' << m_TearThirds[1] << '/'
              << m_TearThirds[2] << "\n"
              << "# host timestamp steps: " << m_HostStepFrames
-             << " frames held as long as the frame before them, left out of the spacing figures\n"
+             << " frames held as long as the frame before them, left out of the spacing figures; frames held up on the way"
+             << " and handled the same: " << m_LateDeliveryFrames << ", counted in them\n"
              << "# tearing presents held out of the previous frame's scanout: " << m_TearGuards << "\n"
              << "# partial frames: " << m_LatePartials << " cut short at their deadline";
 

@@ -64,11 +64,11 @@ public:
     void record(const PACER_TRACE_ROW& row);
 
 private:
-    explicit PacerTrace(int displayHz);
+    PacerTrace(int displayHz, int streamFps);
 
     static int writerThread(void* context);
     void drain();
-    void writeRow(const PACER_TRACE_ROW& row);
+    void writeRow(const PACER_TRACE_ROW& row, const PACER_TRACE_ROW* next);
     void writeFooter();
 
     // Magnitudes in 100 us buckets up to 50 ms, the last bucket collecting the rest.
@@ -85,6 +85,7 @@ private:
     };
 
     int64_t m_PeriodUs;
+    int64_t m_StreamIntervalUs;
 
     QFile m_File;
     QTextStream m_Stream;
@@ -97,9 +98,13 @@ private:
     QVector<PACER_TRACE_ROW> m_Writing;
     uint64_t m_DroppedRows;
 
-    // Accumulated by the writer thread only
+    // Accumulated by the writer thread only. Each row is written once the one after
+    // it is in, which tells a host timestamp step from a frame held up on the way.
+    bool m_HaveHeld;
+    PACER_TRACE_ROW m_Held;
     bool m_HavePrevious;
     PACER_TRACE_ROW m_Previous;
+    int m_PreviousHostStep;
     int64_t m_FirstPresentUs;
     uint64_t m_Rows;
     uint64_t m_LearningRows;
@@ -113,6 +118,7 @@ private:
     uint64_t m_TearThirds[3];
     uint64_t m_TearSwitches;
     uint64_t m_HostStepFrames;
+    uint64_t m_LateDeliveryFrames;
     uint64_t m_LostPartials;
     uint64_t m_LatePartials;
     uint64_t m_LatePartialsMissed;
