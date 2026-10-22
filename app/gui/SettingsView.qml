@@ -2286,22 +2286,80 @@ Flickable {
                     }
                 }
 
-                CheckBox {
-                    id: showPerformanceOverlay
+                Row {
+                    spacing: 5
                     width: parent.width
-                    text: qsTr("Show performance stats while streaming")
-                    font.pointSize: 12
-                    checked: StreamingPreferences.showPerformanceOverlay
-                    onCheckedChanged: {
-                        StreamingPreferences.showPerformanceOverlay = checked
+
+                    CheckBox {
+                        id: showPerformanceOverlay
+                        text: qsTr("Show performance stats while streaming")
+                        font.pointSize: 12
+                        checked: StreamingPreferences.showPerformanceOverlay
+                        onCheckedChanged: {
+                            StreamingPreferences.showPerformanceOverlay = checked
+                        }
+
+                        ToolTip.delay: 1000
+                        ToolTip.timeout: 5000
+                        ToolTip.visible: hovered
+                        ToolTip.text: qsTr("Display real-time stream performance information while streaming.") + "\n\n" +
+                                      qsTr("You can toggle it at any time while streaming using Ctrl+Alt+Shift+S or Select+L1+R1+X.") + "\n\n" +
+                                      qsTr("The performance overlay is not supported on Steam Link or Raspberry Pi.")
                     }
 
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 5000
-                    ToolTip.visible: hovered
-                    ToolTip.text: qsTr("Display real-time stream performance information while streaming.") + "\n\n" +
-                                  qsTr("You can toggle it at any time while streaming using Ctrl+Alt+Shift+S or Select+L1+R1+X.") + "\n\n" +
-                                  qsTr("The performance overlay is not supported on Steam Link or Raspberry Pi.")
+                    AutoResizingComboBox {
+                        id: overlayColorComboBox
+                        anchors.verticalCenter: parent.verticalCenter
+                        textRole: "text"
+                        model: ListModel {
+                            id: overlayColorListModel
+                            ListElement {
+                                text: qsTr("Yellow")
+                                val: StreamingPreferences.OC_YELLOW
+                            }
+                            ListElement {
+                                text: qsTr("Red")
+                                val: StreamingPreferences.OC_RED
+                            }
+                            ListElement {
+                                text: qsTr("Blue")
+                                val: StreamingPreferences.OC_BLUE
+                            }
+                            ListElement {
+                                text: qsTr("Green")
+                                val: StreamingPreferences.OC_GREEN
+                            }
+                            ListElement {
+                                text: qsTr("Magenta")
+                                val: StreamingPreferences.OC_MAGENTA
+                            }
+                            ListElement {
+                                text: qsTr("Cyan")
+                                val: StreamingPreferences.OC_CYAN
+                            }
+                        }
+
+                        Component.onCompleted: {
+                            currentIndex = 0
+                            for (var i = 0; i < overlayColorListModel.count; i++) {
+                                if (overlayColorListModel.get(i).val === StreamingPreferences.overlayColor) {
+                                    currentIndex = i
+                                    break
+                                }
+                            }
+                            recalculateWidth()
+                        }
+
+                        // ::onActivated must be used, as it only listens for when the index is changed by a human
+                        onActivated: {
+                            StreamingPreferences.overlayColor = overlayColorListModel.get(currentIndex).val
+                        }
+
+                        ToolTip.delay: 1000
+                        ToolTip.timeout: 5000
+                        ToolTip.visible: hovered
+                        ToolTip.text: qsTr("Color of the performance stats text")
+                    }
                 }
             }
         }

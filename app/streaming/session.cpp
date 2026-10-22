@@ -2033,7 +2033,20 @@ void Session::exec()
     // Start rich presence to indicate we're in game
     RichPresenceManager presence(*m_Preferences, m_App.name);
 
-    // Toggle the stats overlay if requested by the user
+    // Toggle the stats overlay if requested by the user, in the color they chose
+    static const SDL_Color k_OverlayColors[] = {
+        {0xD0, 0xD0, 0x00, 0xFF}, // OC_YELLOW
+        {0xE0, 0x20, 0x20, 0xFF}, // OC_RED
+        {0x40, 0x80, 0xFF, 0xFF}, // OC_BLUE
+        {0x00, 0xD0, 0x00, 0xFF}, // OC_GREEN
+        {0xE0, 0x00, 0xE0, 0xFF}, // OC_MAGENTA
+        {0x00, 0xD0, 0xD0, 0xFF}, // OC_CYAN
+    };
+    int overlayColor = m_Preferences->overlayColor;
+    if (overlayColor < 0 || overlayColor >= (int)SDL_arraysize(k_OverlayColors)) {
+        overlayColor = StreamingPreferences::OC_YELLOW;
+    }
+    m_OverlayManager.setOverlayColor(Overlay::OverlayDebug, k_OverlayColors[overlayColor]);
     m_OverlayManager.setOverlayState(Overlay::OverlayDebug, m_Preferences->showPerformanceOverlay);
 
     // Switch to async logging mode when we enter the SDL loop

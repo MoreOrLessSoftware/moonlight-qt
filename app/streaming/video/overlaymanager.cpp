@@ -131,6 +131,12 @@ SDL_Color OverlayManager::getOverlayColor(OverlayType type)
     return m_Overlays[type].color;
 }
 
+void OverlayManager::setOverlayColor(OverlayType type, SDL_Color color)
+{
+    m_Overlays[type].color = color;
+    setOverlayTextUpdated(type);
+}
+
 void OverlayManager::flipLatencyMarker()
 {
     if (m_Overlays[OverlayType::OverlayLatencyMarker].enabled) {
