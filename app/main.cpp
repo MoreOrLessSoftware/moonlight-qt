@@ -708,6 +708,14 @@ int main(int argc, char *argv[])
     // releases of Moonlight.
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
 
+#ifdef Q_OS_WIN32
+    // Xbox controllers are otherwise opened through XInput, which has no way to drive the
+    // trigger motors. The RawInput driver correlates each controller with its Windows.Gaming.Input
+    // gamepad and uses that for trigger rumble. The correlation only happens once the controller
+    // has sent some input, so trigger rumble requests fail until a button is pressed.
+    SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1");
+#endif
+
     // Disable relative mouse scaling to renderer size or logical DPI. We want to send
     // the mouse motion exactly how it was given to us.
     SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SCALING, "0");
