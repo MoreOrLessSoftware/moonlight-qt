@@ -1054,7 +1054,7 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
 
         ret = snprintf(&output[offset],
                        length - offset,
-                       "Capture to present (avg): %.1f ms\n",
+                       "Capture to present: %.1f ms\n",
                        totalMs / stats.framesWithCaptureToPresent);
         if (ret < 0 || ret >= length - offset) {
             SDL_assert(false);
