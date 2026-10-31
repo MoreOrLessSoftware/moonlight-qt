@@ -4,7 +4,4 @@ fxc /T ps_5_0 /O3 /Fo d3d11_overlay_pixel.fxc d3d11_overlay_pixel.hlsl
 fxc /T ps_5_0 /O3 /Fo d3d11_yuv420_pixel.fxc d3d11_yuv420_pixel.hlsl
 fxc /T ps_5_0 /O3 /Fo d3d11_ayuv_pixel.fxc d3d11_ayuv_pixel.hlsl
 fxc /T ps_5_0 /O3 /Fo d3d11_y410_pixel.fxc d3d11_y410_pixel.hlsl
-fxc /T vs_5_0 /O3 /Fo d3d11_pyrowave_vertex.fxc d3d11_pyrowave_vertex.hlsl
-fxc /T ps_5_0 /O3 /Fo d3d11_pyrowave_luma_pixel.fxc d3d11_pyrowave_luma_pixel.hlsl
-fxc /T ps_5_0 /O3 /Fo d3d11_pyrowave_chroma_pixel.fxc d3d11_pyrowave_chroma_pixel.hlsl
-fxc /T ps_5_0 /O3 /Fo d3d11_pyrowave_444_pixel.fxc d3d11_pyrowave_444_pixel.hlsl
+fxc /T ps_5_0 /O3 /Fo d3d11_yuv_planar_pixel.fxc d3d11_yuv_planar_pixel.hlsl

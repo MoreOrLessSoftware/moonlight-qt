@@ -3,6 +3,8 @@
 #include "pyrowavedecoder.h"
 
 #include <array>
+#include <mutex>
+#include <vector>
 
 #include <d3d11_4.h>
 #include <wrl/client.h>
@@ -10,13 +12,13 @@
 class D3D11VARenderer;
 struct PyrowaveD3D11Handles;
 
-// Decodes PyroWave frames into D3D11 textures that D3D11VARenderer draws like hardware
-// decoded ones.
+// Decodes PyroWave frames into D3D11 textures that D3D11VARenderer draws directly.
 //
-// PyroWave decodes into three plane textures shared with D3D11. A small D3D11 pass then
-// packs them into a frame from a pool the renderer made: NV12 or P010 for 4:2:0. For
-// 4:4:4, AYUV-ordered YUV in an ordinary BGRA or R10G10B10A2 texture, since some GPUs
-// (AMD's) have no AYUV/Y410 textures. A shared fence orders the two APIs.
+// Each frame is decoded into a set of Y, Cb and Cr plane textures shared with D3D11, one
+// of a few sets so the pacer can hold on to its outstanding frames while another is
+// decoded. The renderer draws a frame straight from its planes. A shared fence orders
+// the drawing after PyroWave's decode, and a D3D11 fence says when the renderer is done
+// with a set so it can be decoded into again.
 class PyrowaveD3D11Decoder : public PyrowaveDecoder
 {
 public:
@@ -31,50 +33,51 @@ protected:
     virtual AVFrame* decodePushedFrame() override;
 
 private:
+    struct PlaneSet {
+        int index;
+        std::array<Microsoft::WRL::ComPtr<ID3D11Texture2D>, 3> textures;
+
+        // m_ReleaseFence's value once the renderer is done with the planes. Written when
+        // the frame holding them is freed, and read on the decoder thread after it takes
+        // the set from the free list.
+        uint64_t releasedValue;
+    };
+
     bool createSync();
     bool testSharedFence();
-    bool createPlanes();
-    bool createPackResources();
-    bool createPack444Resources();
+    bool createPlaneSets();
     void lockContext();
     void unlockContext();
 
+    static void releaseSet(void* opaque, uint8_t* data);
+
     PyrowaveD3D11Handles* m_D3D11Handles;
 
-    // The renderer's decode device, and the pool of frames it renders
-    AVBufferRef* m_FramesContext;
+    // The renderer's decode device
     Microsoft::WRL::ComPtr<ID3D11Device5> m_Device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext4> m_DeviceContext;
     void (*m_Lock)(void*);
     void (*m_Unlock)(void*);
     void* m_LockContext;
 
-    // Y, Cb and Cr planes PyroWave decodes into
-    std::array<Microsoft::WRL::ComPtr<ID3D11Texture2D>, 3> m_PlaneTextures;
-    std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, 3> m_PlaneViews;
+    std::vector<PlaneSet> m_PlaneSets;
+    std::mutex m_FreeSetsLock;
+    std::vector<int> m_FreeSets;
+    bool m_LoggedNoFreeSet;
 
-    // Ordering between PyroWave and D3D11: PyroWave signals when a frame is decoded, and
-    // D3D11 when it has packed it (so the planes can be decoded into again)
+    // PyroWave signals this when it has decoded a frame, for D3D11 to wait on before
+    // drawing it. Null with CPU sync. See createSync().
     Microsoft::WRL::ComPtr<ID3D11Fence> m_Fence;
     uint64_t m_FenceValue;
-    uint64_t m_PackedValue;
 
-    // Without a fence shared with PyroWave, each side waits for the other's signal on
-    // the CPU instead. m_Fence is then D3D11's alone. See createSync().
+    // Without a fence shared with PyroWave, the decoder thread waits for PyroWave to
+    // finish each decode on the CPU instead
     bool m_CpuSync;
-    HANDLE m_FenceEvent;
 
-    // Packing the planes into a frame, with its own pipeline state so the renderer's
-    // state on a shared device context isn't disturbed
-    Microsoft::WRL::ComPtr<ID3DDeviceContextState> m_PackState;
-    Microsoft::WRL::ComPtr<ID3D11VertexShader> m_PackVertexShader;
-    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_PackLumaShader;
-    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_PackChromaShader;
-    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_Pack444Shader;
-
-    // The planes are packed into this texture, then copied into a frame from the pool.
-    // D3D11 doesn't allow NV12/P010 texture arrays to be render targets. 4:4:4 uses
-    // just the first target.
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_PackTexture;
-    std::array<Microsoft::WRL::ComPtr<ID3D11RenderTargetView>, 2> m_PackTargets;
+    // Signalled on the decode device's context when a frame's planes are released, which
+    // is after the renderer's last drawing from them. The decoder thread waits for it on
+    // the CPU before decoding into them again, which it rarely has to.
+    Microsoft::WRL::ComPtr<ID3D11Fence> m_ReleaseFence;
+    uint64_t m_ReleaseValue;
+    HANDLE m_ReleaseEvent;
 };

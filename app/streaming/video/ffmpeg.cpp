@@ -330,7 +330,7 @@ void FFmpegVideoDecoder::reset()
     avcodec_free_context(&m_VideoDecoderCtx);
 
 #ifdef HAVE_PYROWAVE
-    // Same for the PyroWave decoder, which holds the renderer's frame pool
+    // Same for the PyroWave decoder, which holds the planes the renderer draws
     delete m_Pyrowave;
     m_Pyrowave = nullptr;
 #endif
@@ -2276,9 +2276,9 @@ void FFmpegVideoDecoder::deliverDecodedFrame(AVFrame* frame, const DECODE_UNIT* 
     ML_FRAME_DECODE_BOUNDARY(frame) = (int64_t)m_FrontendRenderer->captureDecodeBoundary(frame);
 
 #ifdef HAVE_PYROWAVE
-    // With D3D11, the boundary is signaled on the context PyroWave packs frames on, and
+    // With D3D11, the boundary is signaled on the context that waits for PyroWave, and
     // a signal only reaches the GPU when that context is flushed. Without this the
-    // renderer could wait for it until the next frame's packing.
+    // renderer could wait for it until the next frame.
     if (m_Pyrowave != nullptr && ML_FRAME_DECODE_BOUNDARY(frame) != 0) {
         m_Pyrowave->flush();
     }

@@ -60,6 +60,7 @@ static const std::array<const char*, D3D11VARenderer::PixelShaders::_COUNT> k_Vi
     "d3d11_yuv420_pixel.fxc",
     "d3d11_ayuv_pixel.fxc",
     "d3d11_y410_pixel.fxc",
+    "d3d11_yuv_planar_pixel.fxc",
 };
 
 D3D11VARenderer::D3D11VARenderer(int decoderSelectionPass, bool amfDecoder)
@@ -1001,6 +1002,61 @@ AVBufferRef* D3D11VARenderer::createFramesContext(AVPixelFormat swFormat, int wi
     return framesRef;
 }
 
+AVD3D11VADeviceContext* D3D11VARenderer::getDecodeDeviceContext()
+{
+    return (AVD3D11VADeviceContext*)((AVHWDeviceContext*)m_HwDeviceContext->data)->hwctx;
+}
+
+bool D3D11VARenderer::setPlaneSets(const std::vector<std::array<ID3D11Texture2D*, 3>>& planeSets)
+{
+    m_PlaneSetResourceViews.clear();
+    m_PlaneSetResourceViews.resize(planeSets.size());
+
+    for (size_t set = 0; set < planeSets.size(); set++) {
+        for (int plane = 0; plane < 3; plane++) {
+            HRESULT hr;
+
+            // The planes are shared (with PyroWave's Vulkan device), so with separate
+            // devices the render device opens them too
+            ComPtr<ID3D11Texture2D> texture = planeSets[set][plane];
+            if (m_DecodeDevice != m_RenderDevice) {
+                ComPtr<IDXGIResource1> resource;
+                HANDLE sharedHandle;
+                hr = texture.As(&resource);
+                if (SUCCEEDED(hr)) {
+                    hr = resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &sharedHandle);
+                }
+                if (FAILED(hr)) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                                 "IDXGIResource1::CreateSharedHandle() failed: %x",
+                                 hr);
+                    return false;
+                }
+
+                texture.Reset();
+                hr = m_RenderDevice->OpenSharedResource1(sharedHandle, IID_PPV_ARGS(&texture));
+                CloseHandle(sharedHandle);
+                if (FAILED(hr)) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                                 "ID3D11Device1::OpenSharedResource1() failed: %x",
+                                 hr);
+                    return false;
+                }
+            }
+
+            hr = m_RenderDevice->CreateShaderResourceView(texture.Get(), nullptr, &m_PlaneSetResourceViews[set][plane]);
+            if (FAILED(hr)) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                             "ID3D11Device::CreateShaderResourceView() failed: %x",
+                             hr);
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 void D3D11VARenderer::renderFrame(AVFrame* frame)
 {
     if (prepareFrame(frame)) {
@@ -1205,10 +1261,13 @@ void D3D11VARenderer::bindVideoVertexBuffer(bool frameChanged, AVFrame* frame)
         SDL_FRect renderRect;
         StreamUtils::screenSpaceToNormalizedDeviceCoords(&dst, &renderRect, m_DisplayWidth, m_DisplayHeight);
 
-        // Don't sample from the alignment padding area
-        auto framesContext = (AVHWFramesContext*)frame->hw_frames_ctx->data;
-        float uMax = (float)frame->width / framesContext->width;
-        float vMax = (float)frame->height / framesContext->height;
+        // Don't sample from the alignment padding area. Plane sets have none.
+        float uMax = 1.0f, vMax = 1.0f;
+        if (frame->hw_frames_ctx != nullptr) {
+            auto framesContext = (AVHWFramesContext*)frame->hw_frames_ctx->data;
+            uMax = (float)frame->width / framesContext->width;
+            vMax = (float)frame->height / framesContext->height;
+        }
 
         VERTEX verts[] =
         {
@@ -1247,17 +1306,26 @@ void D3D11VARenderer::bindVideoVertexBuffer(bool frameChanged, AVFrame* frame)
 void D3D11VARenderer::bindColorConversion(bool frameChanged, AVFrame* frame)
 {
     bool yuv444 = (m_DecoderParams.videoFormat & VIDEO_FORMAT_MASK_YUV444);
-    auto framesContext = (AVHWFramesContext*)frame->hw_frames_ctx->data;
 
-    if (yuv444) {
+    // Plane sets have no frames context, and no alignment padding
+    bool planar = frame->hw_frames_ctx == nullptr;
+    int textureWidth = frame->width;
+    int textureHeight = frame->height;
+    if (!planar) {
+        auto framesContext = (AVHWFramesContext*)frame->hw_frames_ctx->data;
+        textureWidth = framesContext->width;
+        textureHeight = framesContext->height;
+    }
+
+    if (planar) {
+        // Y, Cb and Cr from planes of their own, 4:2:0 or 4:4:4
+        m_RenderDeviceContext->PSSetShader(m_VideoPixelShaders[PixelShaders::GENERIC_YUV_PLANAR].Get(), nullptr, 0);
+    }
+    else if (yuv444) {
         // We'll need to use one of the 4:4:4 shaders for this pixel format
         switch (m_TextureFormat)
         {
         case DXGI_FORMAT_AYUV:
-        // PyroWave packs 4:4:4 into these in AYUV's VUYA order, as not every GPU
-        // supports AYUV/Y410 textures
-        case DXGI_FORMAT_B8G8R8A8_UNORM:
-        case DXGI_FORMAT_R10G10B10A2_UNORM:
             m_RenderDeviceContext->PSSetShader(m_VideoPixelShaders[PixelShaders::GENERIC_AYUV].Get(), nullptr, 0);
             break;
         case DXGI_FORMAT_Y410:
@@ -1299,16 +1367,19 @@ void D3D11VARenderer::bindColorConversion(bool frameChanged, AVFrame* frame)
         }
     }
 
-    std::array<float, 2> chromaOffset;
-    getFrameChromaCositingOffsets(frame, chromaOffset);
-    constBuf.chromaOffset[0] = chromaOffset[0] / framesContext->width;
-    constBuf.chromaOffset[1] = chromaOffset[1] / framesContext->height;
+    // The 4:4:4 shaders ignore the chroma offset, but the planar one doesn't
+    std::array<float, 2> chromaOffset = {};
+    if (!yuv444) {
+        getFrameChromaCositingOffsets(frame, chromaOffset);
+    }
+    constBuf.chromaOffset[0] = chromaOffset[0] / textureWidth;
+    constBuf.chromaOffset[1] = chromaOffset[1] / textureHeight;
 
     // Limit chroma texcoords to avoid sampling from alignment texels
-    constBuf.chromaUVMax[0] = frame->width != framesContext->width ?
-                                  ((float)(frame->width - 1) / framesContext->width) : 1.0f;
-    constBuf.chromaUVMax[1] = frame->height != (int)framesContext->height ?
-                                  ((float)(frame->height - 1) / framesContext->height) : 1.0f;
+    constBuf.chromaUVMax[0] = frame->width != textureWidth ?
+                                  ((float)(frame->width - 1) / textureWidth) : 1.0f;
+    constBuf.chromaUVMax[1] = frame->height != textureHeight ?
+                                  ((float)(frame->height - 1) / textureHeight) : 1.0f;
 
     D3D11_SUBRESOURCE_DATA constData = {};
     constData.pSysMem = &constBuf;
@@ -1350,6 +1421,57 @@ void D3D11VARenderer::renderVideo(AVFrame* frame)
         }
     }
 
+    bool frameChanged = hasFrameFormatChanged(frame);
+
+    // A frame from one of PyroWave's plane sets is drawn straight from its planes
+    if (frame->hw_frames_ctx == nullptr) {
+        UINT setIndex = (UINT)(uintptr_t)frame->data[1];
+        if (setIndex >= m_PlaneSetResourceViews.size()) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "Unexpected plane set index: %u",
+                         setIndex);
+            return;
+        }
+
+        bindVideoVertexBuffer(frameChanged, frame);
+        bindColorConversion(frameChanged, frame);
+
+        ID3D11ShaderResourceView* planeSrvs[3];
+        for (int i = 0; i < 3; i++) {
+            planeSrvs[i] = m_PlaneSetResourceViews[setIndex][i].Get();
+        }
+        m_RenderDeviceContext->PSSetShaderResources(0, 3, planeSrvs);
+        m_RenderDeviceContext->DrawIndexed(6, 0, 0);
+
+        ID3D11ShaderResourceView* nullSrvs[3] = {};
+        m_RenderDeviceContext->PSSetShaderResources(0, 3, nullSrvs);
+    }
+    else {
+        renderVideoTexture(frame, frameChanged);
+    }
+
+    // Insert a fence to force the decode context to wait for the render context to finish reading
+    if (m_DecodeDevice != m_RenderDevice) {
+        SDL_assert(m_DecodeR2DFence);
+        SDL_assert(m_RenderR2DFence);
+
+        // Because Pacer keeps a reference to the current frame until the next frame is rendered,
+        // we insert a wait for the previous frame's fence value rather than the current one.
+        // This means the fence should generally not cause a pipeline bubble for the decoder
+        // unless rendering is taking much longer than expected.
+        if (SUCCEEDED(m_RenderDeviceContext->Signal(m_RenderR2DFence.Get(), m_R2DFenceValue))) {
+            lockContext(this);
+            SDL_assert(m_R2DFenceValue > 0);
+            m_DecodeDeviceContext->Wait(m_DecodeR2DFence.Get(), m_R2DFenceValue - 1);
+            unlockContext(this);
+            m_R2DFenceValue++;
+        }
+    }
+}
+
+// Draws a frame from a D3D11 texture pool, through its views or a copy of it
+void D3D11VARenderer::renderVideoTexture(AVFrame* frame, bool frameChanged)
+{
     UINT srvIndex;
     if (m_BindDecoderOutputTextures) {
         // Our indexing logic depends on a direct mapping into m_VideoTextureResourceViews
@@ -1374,8 +1496,6 @@ void D3D11VARenderer::renderVideo(AVFrame* frame)
         srvIndex = 0;
     }
 
-    bool frameChanged = hasFrameFormatChanged(frame);
-
     // Bind our vertex buffer
     bindVideoVertexBuffer(frameChanged, frame);
 
@@ -1392,24 +1512,6 @@ void D3D11VARenderer::renderVideo(AVFrame* frame)
     // Unbind SRVs for this frame
     ID3D11ShaderResourceView* nullSrvs[2] = {};
     m_RenderDeviceContext->PSSetShaderResources(0, 2, nullSrvs);
-
-    // Insert a fence to force the decode context to wait for the render context to finish reading
-    if (m_DecodeDevice != m_RenderDevice) {
-        SDL_assert(m_DecodeR2DFence);
-        SDL_assert(m_RenderR2DFence);
-
-        // Because Pacer keeps a reference to the current frame until the next frame is rendered,
-        // we insert a wait for the previous frame's fence value rather than the current one.
-        // This means the fence should generally not cause a pipeline bubble for the decoder
-        // unless rendering is taking much longer than expected.
-        if (SUCCEEDED(m_RenderDeviceContext->Signal(m_RenderR2DFence.Get(), m_R2DFenceValue))) {
-            lockContext(this);
-            SDL_assert(m_R2DFenceValue > 0);
-            m_DecodeDeviceContext->Wait(m_DecodeR2DFence.Get(), m_R2DFenceValue - 1);
-            unlockContext(this);
-            m_R2DFenceValue++;
-        }
-    }
 }
 
 // This function must NOT use any DXGI or ID3D11DeviceContext methods
@@ -2076,7 +2178,7 @@ bool D3D11VARenderer::canPrepareBeforeDecode()
 #define D3D11VA_MARK_DRAW 1
 
 // Signals the decode-end fence after everything on the decode context so far, which is
-// this frame's decode, and AMF's copy or PyroWave's packing into it where there is one.
+// this frame's decode, and AMF's copy or the wait for PyroWave's decode where there is one.
 // Unlike captureDecodeBoundary(), with one device too, and whether or not frame pacing
 // waits for decodes.
 bool D3D11VARenderer::markDecodeEnd(AVFrame*, PGPU_MARK mark)
@@ -2591,11 +2693,7 @@ bool D3D11VARenderer::setupFrameRenderingResources(AVHWFramesContext* framesCont
 std::vector<DXGI_FORMAT> D3D11VARenderer::getVideoTextureSRVFormats()
 {
     if (m_DecoderParams.videoFormat & VIDEO_FORMAT_MASK_YUV444) {
-        // YUV 4:4:4 formats don't use a second SRV. PyroWave's BGRA frames (see
-        // bindColorConversion()) can only be viewed as BGRA.
-        if (m_TextureFormat == DXGI_FORMAT_B8G8R8A8_UNORM) {
-            return { DXGI_FORMAT_B8G8R8A8_UNORM };
-        }
+        // YUV 4:4:4 formats don't use a second SRV
         return { (m_DecoderParams.videoFormat & VIDEO_FORMAT_MASK_10BIT) ?
                     DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM };
     }

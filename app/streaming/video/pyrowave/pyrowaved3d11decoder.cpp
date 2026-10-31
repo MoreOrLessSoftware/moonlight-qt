@@ -2,7 +2,6 @@
 #include "pyrowaveapi.h"
 #include "pyrowavestagetimer.h"
 
-#include "path.h"
 #include "streaming/video/ffmpeg-renderers/d3d11va.h"
 #include "streaming/video/ffmpeg-renderers/pacer/pacer.h"
 
@@ -18,12 +17,21 @@ extern "C" {
 
 using Microsoft::WRL::ComPtr;
 
+// The pacer can hold on to all of its outstanding frames while we decode another
+#define PYROWAVE_D3D11_PLANE_SETS (PACER_MAX_OUTSTANDING_FRAMES + 2)
+
+// The PyroWave objects for decoding into one set of planes
+struct PyrowaveD3D11SetHandles
+{
+    std::array<pyrowave_image, 3> planes = {};
+    pyrowave_gpu_buffers buffers = {};
+};
+
 // The PyroWave objects for decoding into the D3D11 planes
 struct PyrowaveD3D11Handles
 {
     pyrowave_sync_object sync = nullptr;
-    std::array<pyrowave_image, 3> planes = {};
-    pyrowave_gpu_buffers buffers = {};
+    std::array<PyrowaveD3D11SetHandles, PYROWAVE_D3D11_PLANE_SETS> sets;
 };
 
 // How PyroWave uses the planes it imports from D3D11
@@ -182,14 +190,14 @@ static void logVulkanInteropSupport(const PyrowaveApi* api, pyrowave_device devi
 
 PyrowaveD3D11Decoder::PyrowaveD3D11Decoder()
     : m_D3D11Handles(new PyrowaveD3D11Handles()),
-      m_FramesContext(nullptr),
       m_Lock(nullptr),
       m_Unlock(nullptr),
       m_LockContext(nullptr),
+      m_LoggedNoFreeSet(false),
       m_FenceValue(0),
-      m_PackedValue(0),
       m_CpuSync(false),
-      m_FenceEvent(nullptr)
+      m_ReleaseValue(0),
+      m_ReleaseEvent(nullptr)
 {
 }
 
@@ -199,9 +207,11 @@ PyrowaveD3D11Decoder::~PyrowaveD3D11Decoder()
     destroyDecoder();
 
     if (m_Api != nullptr) {
-        for (pyrowave_image plane : m_D3D11Handles->planes) {
-            if (plane != nullptr) {
-                m_Api->imageDestroy(plane);
+        for (PyrowaveD3D11SetHandles& set : m_D3D11Handles->sets) {
+            for (pyrowave_image plane : set.planes) {
+                if (plane != nullptr) {
+                    m_Api->imageDestroy(plane);
+                }
             }
         }
         if (m_D3D11Handles->sync != nullptr) {
@@ -211,11 +221,9 @@ PyrowaveD3D11Decoder::~PyrowaveD3D11Decoder()
 
     delete m_D3D11Handles;
 
-    if (m_FenceEvent != nullptr) {
-        CloseHandle(m_FenceEvent);
+    if (m_ReleaseEvent != nullptr) {
+        CloseHandle(m_ReleaseEvent);
     }
-
-    av_buffer_unref(&m_FramesContext);
 }
 
 void PyrowaveD3D11Decoder::lockContext()
@@ -236,29 +244,9 @@ bool PyrowaveD3D11Decoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAME
         return false;
     }
 
-    // The pool of frames the renderer draws, on its decode device. The pacer can hold
-    // on to all of its outstanding frames while we pack another. NV12/P010 texture
-    // arrays must be decoder outputs, like a hardware decoder's pool. 4:4:4 goes in
-    // BGRA or R10G10B10A2 textures holding AYUV's VUYA order, which every GPU has,
-    // unlike AYUV/Y410 (the renderer draws these like AYUV).
-    AVPixelFormat swFormat;
-    if (m_Yuv444) {
-        swFormat = m_TenBit ? AV_PIX_FMT_X2BGR10 : AV_PIX_FMT_BGRA;
-    }
-    else {
-        swFormat = m_TenBit ? AV_PIX_FMT_P010 : AV_PIX_FMT_NV12;
-    }
-    m_FramesContext = renderer->createFramesContext(swFormat,
-                                                    m_Width, m_Height,
-                                                    PACER_MAX_OUTSTANDING_FRAMES + 2,
-                                                    m_Yuv444 ? D3D11_BIND_SHADER_RESOURCE : D3D11_BIND_DECODER);
-    if (m_FramesContext == nullptr) {
-        return false;
-    }
-
+    // The planes go on the renderer's decode device, like a hardware decoder's frames
     {
-        auto framesContext = (AVHWFramesContext*)m_FramesContext->data;
-        auto d3d11vaDeviceContext = (AVD3D11VADeviceContext*)framesContext->device_ctx->hwctx;
+        AVD3D11VADeviceContext* d3d11vaDeviceContext = renderer->getDecodeDeviceContext();
 
         hr = d3d11vaDeviceContext->device->QueryInterface(IID_PPV_ARGS(&m_Device));
         if (FAILED(hr)) {
@@ -318,19 +306,19 @@ bool PyrowaveD3D11Decoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAME
         return false;
     }
 
-    if (!createSync()) {
+    if (!createSync() || !createPlaneSets() || !createDecoder()) {
         return false;
     }
 
-    if (!createPlanes() || !createPackResources()) {
+    std::vector<std::array<ID3D11Texture2D*, 3>> planeSets;
+    for (const PlaneSet& set : m_PlaneSets) {
+        planeSets.push_back({ set.textures[0].Get(), set.textures[1].Get(), set.textures[2].Get() });
+    }
+    if (!renderer->setPlaneSets(planeSets)) {
         return false;
     }
 
-    if (!createDecoder()) {
-        return false;
-    }
-
-    // Times up to the end of PyroWave's decode, which leaves out the packing that follows
+    // Nothing follows the decode before the renderer draws the planes
     m_StageTimer = PyrowaveStageTimer::createIfEnabled(m_Api->syncObjectCpuWait);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -342,14 +330,33 @@ bool PyrowaveD3D11Decoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAME
     return true;
 }
 
-// Orders PyroWave's and D3D11's use of the planes. The best way is a D3D11 fence PyroWave
-// imports. Some drivers, like Intel's last one for Gen9, can't import one but can export
-// a Vulkan timeline semaphore, which D3D11 may be able to open as a fence. Failing both,
-// each side waits for the other on the CPU. ML_PYROWAVE_CPU_SYNC=1 forces that.
+// Orders D3D11's drawing of a frame after PyroWave's decode of it. The best way is a
+// D3D11 fence PyroWave imports. Some drivers, like Intel's last one for Gen9, can't
+// import one but can export a Vulkan timeline semaphore, which D3D11 may be able to open
+// as a fence. Failing both, the decoder thread waits for each decode on the CPU.
+// ML_PYROWAVE_CPU_SYNC=1 forces that.
+//
+// Also creates the fence that says when the renderer is done with a set of planes.
 bool PyrowaveD3D11Decoder::createSync()
 {
     HRESULT hr;
     pyrowave_result result;
+
+    hr = m_Device->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_ReleaseFence));
+    if (FAILED(hr)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "PyroWave: ID3D11Device5::CreateFence() failed: %x",
+                     hr);
+        return false;
+    }
+
+    m_ReleaseEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (m_ReleaseEvent == nullptr) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "PyroWave: CreateEvent() failed: %d",
+                     (int)GetLastError());
+        return false;
+    }
 
     bool forceCpuSync = qEnvironmentVariableIntValue("ML_PYROWAVE_CPU_SYNC") != 0;
 
@@ -423,6 +430,7 @@ bool PyrowaveD3D11Decoder::createSync()
             else {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                             "PyroWave: D3D11 opened the fence exported from Vulkan, but they don't see each other's signals");
+                m_Fence.Reset();
             }
         }
         else {
@@ -430,24 +438,6 @@ bool PyrowaveD3D11Decoder::createSync()
                         "PyroWave: couldn't export the timeline semaphore (%d)",
                         result);
         }
-    }
-
-    // D3D11 signals this fence when it has packed the planes, and the decode thread
-    // waits for it before PyroWave decodes into them again. See decode().
-    hr = m_Device->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_Fence));
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Device5::CreateFence() failed: %x",
-                     hr);
-        return false;
-    }
-
-    m_FenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (m_FenceEvent == nullptr) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: CreateEvent() failed: %d",
-                     (int)GetLastError());
-        return false;
     }
 
     m_CpuSync = true;
@@ -462,7 +452,7 @@ bool PyrowaveD3D11Decoder::createSync()
 bool PyrowaveD3D11Decoder::testSharedFence()
 {
     // The semaphore's value is at least 2 afterwards, whether or not this works, so the
-    // values decode() signals have to start above it
+    // values decodePushedFrame() signals have to start above it
     m_FenceValue = 2;
 
     // Vulkan to D3D11
@@ -496,239 +486,100 @@ bool PyrowaveD3D11Decoder::testSharedFence()
         return false;
     }
 
-    // Already signaled, so the first decode waits for nothing
-    m_PackedValue = 2;
     return true;
 }
 
-bool PyrowaveD3D11Decoder::createPlanes()
+bool PyrowaveD3D11Decoder::createPlaneSets()
 {
-    const bool tenBit = m_TenBit;
+    m_PlaneSets.resize(PYROWAVE_D3D11_PLANE_SETS);
 
-    for (int i = 0; i < 3; i++) {
-        HRESULT hr;
+    for (int set = 0; set < PYROWAVE_D3D11_PLANE_SETS; set++) {
+        m_PlaneSets[set].index = set;
+        m_PlaneSets[set].releasedValue = 0;
 
-        // Cb and Cr are half size for 4:2:0
-        bool fullSize = i == 0 || m_Yuv444;
-        int planeWidth = fullSize ? m_Width : m_Width / 2;
-        int planeHeight = fullSize ? m_Height : m_Height / 2;
+        for (int i = 0; i < 3; i++) {
+            HRESULT hr;
 
-        D3D11_TEXTURE2D_DESC texDesc = {};
-        texDesc.Width = planeWidth;
-        texDesc.Height = planeHeight;
-        texDesc.MipLevels = 1;
-        texDesc.ArraySize = 1;
-        texDesc.Format = tenBit ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R8_UNORM;
-        texDesc.SampleDesc.Count = 1;
-        texDesc.Usage = D3D11_USAGE_DEFAULT;
-        // PyroWave writes these as storage images
-        texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-        texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+            // Cb and Cr are half size for 4:2:0
+            bool fullSize = i == 0 || m_Yuv444;
+            int planeWidth = fullSize ? m_Width : m_Width / 2;
+            int planeHeight = fullSize ? m_Height : m_Height / 2;
 
-        hr = m_Device->CreateTexture2D(&texDesc, nullptr, &m_PlaneTextures[i]);
-        if (FAILED(hr)) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "PyroWave: ID3D11Device::CreateTexture2D() failed: %x",
-                         hr);
-            return false;
+            D3D11_TEXTURE2D_DESC texDesc = {};
+            texDesc.Width = planeWidth;
+            texDesc.Height = planeHeight;
+            texDesc.MipLevels = 1;
+            texDesc.ArraySize = 1;
+            texDesc.Format = m_TenBit ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R8_UNORM;
+            texDesc.SampleDesc.Count = 1;
+            texDesc.Usage = D3D11_USAGE_DEFAULT;
+            // PyroWave writes these as storage images
+            texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+            texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+
+            hr = m_Device->CreateTexture2D(&texDesc, nullptr, &m_PlaneSets[set].textures[i]);
+            if (FAILED(hr)) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                             "PyroWave: ID3D11Device::CreateTexture2D() failed: %x",
+                             hr);
+                return false;
+            }
+
+            ComPtr<IDXGIResource1> resource;
+            HANDLE textureHandle;
+            hr = m_PlaneSets[set].textures[i].As(&resource);
+            if (SUCCEEDED(hr)) {
+                hr = resource->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &textureHandle);
+            }
+            if (FAILED(hr)) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                             "PyroWave: IDXGIResource1::CreateSharedHandle() failed: %x",
+                             hr);
+                return false;
+            }
+
+            // Must match the D3D11 texture closely enough for the driver to import it
+            VkImageCreateInfo imageCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+            imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+            imageCreateInfo.format = m_TenBit ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM;
+            imageCreateInfo.extent = { (uint32_t)planeWidth, (uint32_t)planeHeight, 1 };
+            imageCreateInfo.mipLevels = 1;
+            imageCreateInfo.arrayLayers = 1;
+            imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+            imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            imageCreateInfo.usage = k_PlaneImageUsage;
+            imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+            PyrowaveD3D11SetHandles& setHandles = m_D3D11Handles->sets[set];
+
+            pyrowave_image_create_info imageInfo = {};
+            imageInfo.device = m_Handles->device;
+            imageInfo.external_handle = (pyrowave_os_handle)textureHandle;
+            imageInfo.handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+            imageInfo.image_create_info = &imageCreateInfo;
+            pyrowave_result result = m_Api->imageCreate(&imageInfo, &setHandles.planes[i]);
+            if (result != PYROWAVE_SUCCESS) {
+                // Whether PyroWave closed the handle on failure isn't specified, so it is left open
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                             "PyroWave: couldn't import plane %d (%d)",
+                             i, result);
+                return false;
+            }
+
+            result = m_Api->imageGetImageView(setHandles.planes[i],
+                                              VK_IMAGE_ASPECT_COLOR_BIT,
+                                              VK_IMAGE_USAGE_STORAGE_BIT,
+                                              &setHandles.buffers.planes[i]);
+            if (result != PYROWAVE_SUCCESS) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                             "PyroWave: couldn't view plane %d (%d)",
+                             i, result);
+                return false;
+            }
         }
 
-        hr = m_Device->CreateShaderResourceView(m_PlaneTextures[i].Get(), nullptr, &m_PlaneViews[i]);
-        if (FAILED(hr)) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "PyroWave: ID3D11Device::CreateShaderResourceView() failed: %x",
-                         hr);
-            return false;
-        }
-
-        ComPtr<IDXGIResource1> resource;
-        HANDLE textureHandle;
-        hr = m_PlaneTextures[i].As(&resource);
-        if (SUCCEEDED(hr)) {
-            hr = resource->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &textureHandle);
-        }
-        if (FAILED(hr)) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "PyroWave: IDXGIResource1::CreateSharedHandle() failed: %x",
-                         hr);
-            return false;
-        }
-
-        // Must match the D3D11 texture closely enough for the driver to import it
-        VkImageCreateInfo imageCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-        imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageCreateInfo.format = tenBit ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM;
-        imageCreateInfo.extent = { (uint32_t)planeWidth, (uint32_t)planeHeight, 1 };
-        imageCreateInfo.mipLevels = 1;
-        imageCreateInfo.arrayLayers = 1;
-        imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageCreateInfo.usage = k_PlaneImageUsage;
-        imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-        pyrowave_image_create_info imageInfo = {};
-        imageInfo.device = m_Handles->device;
-        imageInfo.external_handle = (pyrowave_os_handle)textureHandle;
-        imageInfo.handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
-        imageInfo.image_create_info = &imageCreateInfo;
-        pyrowave_result result = m_Api->imageCreate(&imageInfo, &m_D3D11Handles->planes[i]);
-        if (result != PYROWAVE_SUCCESS) {
-            // Whether PyroWave closed the handle on failure isn't specified, so it is left open
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "PyroWave: couldn't import plane %d (%d)",
-                         i, result);
-            return false;
-        }
-
-        result = m_Api->imageGetImageView(m_D3D11Handles->planes[i],
-                                          VK_IMAGE_ASPECT_COLOR_BIT,
-                                          VK_IMAGE_USAGE_STORAGE_BIT,
-                                          &m_D3D11Handles->buffers.planes[i]);
-        if (result != PYROWAVE_SUCCESS) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "PyroWave: couldn't view plane %d (%d)",
-                         i, result);
-            return false;
-        }
-    }
-
-    return true;
-}
-
-bool PyrowaveD3D11Decoder::createPackResources()
-{
-    HRESULT hr;
-
-    ComPtr<ID3D11Device1> device1;
-    hr = m_Device.As(&device1);
-    if (SUCCEEDED(hr)) {
-        D3D_FEATURE_LEVEL featureLevel = m_Device->GetFeatureLevel();
-        hr = device1->CreateDeviceContextState(0, &featureLevel, 1, D3D11_SDK_VERSION,
-                                               __uuidof(ID3D11Device1), nullptr, &m_PackState);
-    }
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Device1::CreateDeviceContextState() failed: %x",
-                     hr);
-        return false;
-    }
-
-    if (m_Yuv444) {
-        return createPack444Resources();
-    }
-
-    D3D11_TEXTURE2D_DESC texDesc = {};
-    texDesc.Width = m_Width;
-    texDesc.Height = m_Height;
-    texDesc.MipLevels = 1;
-    texDesc.ArraySize = 1;
-    texDesc.Format = m_TenBit ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.Usage = D3D11_USAGE_DEFAULT;
-    texDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
-    hr = m_Device->CreateTexture2D(&texDesc, nullptr, &m_PackTexture);
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Device::CreateTexture2D() failed: %x",
-                     hr);
-        return false;
-    }
-
-    // The luma and chroma planes of an NV12/P010 texture are picked by the view format
-    const DXGI_FORMAT planeFormats[2] = {
-        m_TenBit ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R8_UNORM,
-        m_TenBit ? DXGI_FORMAT_R16G16_UNORM : DXGI_FORMAT_R8G8_UNORM,
-    };
-    for (int plane = 0; plane < 2; plane++) {
-        D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
-        rtvDesc.Format = planeFormats[plane];
-        rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-        hr = m_Device->CreateRenderTargetView(m_PackTexture.Get(), &rtvDesc, &m_PackTargets[plane]);
-        if (FAILED(hr)) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "PyroWave: ID3D11Device::CreateRenderTargetView() failed: %x",
-                         hr);
-            return false;
-        }
-    }
-
-    QByteArray vertexShaderBytecode = Path::readDataFile("d3d11_pyrowave_vertex.fxc");
-    hr = m_Device->CreateVertexShader(vertexShaderBytecode.constData(), vertexShaderBytecode.length(), nullptr, &m_PackVertexShader);
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Device::CreateVertexShader() failed: %x",
-                     hr);
-        return false;
-    }
-
-    QByteArray lumaShaderBytecode = Path::readDataFile("d3d11_pyrowave_luma_pixel.fxc");
-    hr = m_Device->CreatePixelShader(lumaShaderBytecode.constData(), lumaShaderBytecode.length(), nullptr, &m_PackLumaShader);
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Device::CreatePixelShader() failed: %x",
-                     hr);
-        return false;
-    }
-
-    QByteArray chromaShaderBytecode = Path::readDataFile("d3d11_pyrowave_chroma_pixel.fxc");
-    hr = m_Device->CreatePixelShader(chromaShaderBytecode.constData(), chromaShaderBytecode.length(), nullptr, &m_PackChromaShader);
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Device::CreatePixelShader() failed: %x",
-                     hr);
-        return false;
-    }
-
-    return true;
-}
-
-bool PyrowaveD3D11Decoder::createPack444Resources()
-{
-    HRESULT hr;
-
-    // The same format as the frames in the pool (see initialize())
-    D3D11_TEXTURE2D_DESC texDesc = {};
-    texDesc.Width = m_Width;
-    texDesc.Height = m_Height;
-    texDesc.MipLevels = 1;
-    texDesc.ArraySize = 1;
-    texDesc.Format = m_TenBit ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.Usage = D3D11_USAGE_DEFAULT;
-    texDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
-    hr = m_Device->CreateTexture2D(&texDesc, nullptr, &m_PackTexture);
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Device::CreateTexture2D() failed: %x",
-                     hr);
-        return false;
-    }
-
-    hr = m_Device->CreateRenderTargetView(m_PackTexture.Get(), nullptr, &m_PackTargets[0]);
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Device::CreateRenderTargetView() failed: %x",
-                     hr);
-        return false;
-    }
-
-    QByteArray vertexShaderBytecode = Path::readDataFile("d3d11_pyrowave_vertex.fxc");
-    hr = m_Device->CreateVertexShader(vertexShaderBytecode.constData(), vertexShaderBytecode.length(), nullptr, &m_PackVertexShader);
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Device::CreateVertexShader() failed: %x",
-                     hr);
-        return false;
-    }
-
-    QByteArray shaderBytecode = Path::readDataFile("d3d11_pyrowave_444_pixel.fxc");
-    hr = m_Device->CreatePixelShader(shaderBytecode.constData(), shaderBytecode.length(), nullptr, &m_Pack444Shader);
-    if (FAILED(hr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "PyroWave: ID3D11Device::CreatePixelShader() failed: %x",
-                     hr);
-        return false;
+        m_FreeSets.push_back(set);
     }
 
     return true;
@@ -745,40 +596,52 @@ AVFrame* PyrowaveD3D11Decoder::decodePushedFrame()
 {
     pyrowave_result result;
 
-    AVFrame* frame = av_frame_alloc();
-    if (frame == nullptr) {
+    PlaneSet* set;
+    {
+        std::lock_guard<std::mutex> lock(m_FreeSetsLock);
+        if (m_FreeSets.empty()) {
+            set = nullptr;
+        }
+        else {
+            set = &m_PlaneSets[m_FreeSets.back()];
+            m_FreeSets.pop_back();
+        }
+    }
+
+    // Every set is held by a frame waiting to be rendered
+    if (set == nullptr) {
+        if (!m_LoggedNoFreeSet) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "PyroWave: no free frame to decode into");
+            m_LoggedNoFreeSet = true;
+        }
         return nullptr;
     }
 
-    // Fails when every frame in the pool is still queued for rendering
-    int err = av_hwframe_get_buffer(m_FramesContext, frame, 0);
-    if (err < 0) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "PyroWave: no free frame to decode into: %d",
-                    err);
-        av_frame_free(&frame);
-        return nullptr;
-    }
+    auto returnSet = [this, set]() {
+        std::lock_guard<std::mutex> lock(m_FreeSetsLock);
+        m_FreeSets.push_back(set->index);
+    };
 
-    // With CPU sync, wait here for D3D11 to finish packing the last frame out of the
-    // planes. It normally has long since.
-    if (m_CpuSync && m_Fence->GetCompletedValue() < m_PackedValue) {
-        HRESULT hr = m_Fence->SetEventOnCompletion(m_PackedValue, m_FenceEvent);
-        if (FAILED(hr) || WaitForSingleObject(m_FenceEvent, 1000) != WAIT_OBJECT_0) {
+    // Wait for the renderer to be done with the planes. It normally has long since, as
+    // a set is released only once the frame after it has been drawn.
+    if (set->releasedValue != 0 && m_ReleaseFence->GetCompletedValue() < set->releasedValue) {
+        HRESULT hr = m_ReleaseFence->SetEventOnCompletion(set->releasedValue, m_ReleaseEvent);
+        if (FAILED(hr) || WaitForSingleObject(m_ReleaseEvent, 1000) != WAIT_OBJECT_0) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "PyroWave: timed out waiting for D3D11 to pack the last frame");
-            av_frame_free(&frame);
+                         "PyroWave: timed out waiting for the renderer to finish with a frame");
+            returnSet();
             return nullptr;
         }
     }
 
-    VkSemaphore semaphore = m_Api->syncObjectGetSemaphore(m_D3D11Handles->sync);
+    PyrowaveD3D11SetHandles& setHandles = m_D3D11Handles->sets[set->index];
 
-    // The planes' old contents can be discarded, but not before D3D11 has packed them
+    // The planes' old contents can be discarded. They go to D3D11 when decoded.
     std::array<pyrowave_gpu_external_reference, 3> acquireRefs, releaseRefs;
     for (int i = 0; i < 3; i++) {
-        acquireRefs[i] = { m_D3D11Handles->planes[i], VK_QUEUE_FAMILY_IGNORED };
-        releaseRefs[i] = { m_D3D11Handles->planes[i], VK_QUEUE_FAMILY_EXTERNAL };
+        acquireRefs[i] = { setHandles.planes[i], VK_QUEUE_FAMILY_IGNORED };
+        releaseRefs[i] = { setHandles.planes[i], VK_QUEUE_FAMILY_EXTERNAL };
     }
 
     uint64_t decodedValue = ++m_FenceValue;
@@ -786,21 +649,18 @@ AVFrame* PyrowaveD3D11Decoder::decodePushedFrame()
     pyrowave_gpu_sync_operation acquire = {};
     acquire.images = acquireRefs.data();
     acquire.num_images = acquireRefs.size();
-    // Nothing to wait for before the first frame (PyroWave would take a value of 0 as a
-    // binary semaphore), or with CPU sync, which already waited
-    acquire.sync = { (m_PackedValue != 0 && !m_CpuSync) ? semaphore : VK_NULL_HANDLE, m_PackedValue };
 
     pyrowave_gpu_sync_operation release = {};
     release.images = releaseRefs.data();
     release.num_images = releaseRefs.size();
-    release.sync = { semaphore, decodedValue };
+    release.sync = { m_Api->syncObjectGetSemaphore(m_D3D11Handles->sync), decodedValue };
 
-    result = m_Api->decoderDecodeGpuBuffer(m_Handles->decoder, &acquire, &release, &m_D3D11Handles->buffers);
+    result = m_Api->decoderDecodeGpuBuffer(m_Handles->decoder, &acquire, &release, &setHandles.buffers);
     if (result != PYROWAVE_SUCCESS) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                      "PyroWave: decoding failed (%d)",
                      result);
-        av_frame_free(&frame);
+        returnSet();
         return nullptr;
     }
 
@@ -808,83 +668,75 @@ AVFrame* PyrowaveD3D11Decoder::decodePushedFrame()
         m_StageTimer->decodeSubmitted(m_D3D11Handles->sync, decodedValue);
     }
 
-    // With CPU sync, wait here for PyroWave to finish decoding before D3D11 packs the planes
     if (m_CpuSync) {
+        // Wait here for PyroWave to finish decoding before D3D11 draws the planes
         result = m_Api->syncObjectCpuWait(m_D3D11Handles->sync, decodedValue, 1000000000ULL);
         if (result != PYROWAVE_SUCCESS) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                          "PyroWave: waiting for the decode failed (%d)",
                          result);
-            av_frame_free(&frame);
+            returnSet();
             return nullptr;
         }
     }
-
-    lockContext();
-
-    ComPtr<ID3DDeviceContextState> previousState;
-    m_DeviceContext->SwapDeviceContextState(m_PackState.Get(), &previousState);
-
-    // Wait on the GPU for PyroWave to finish (unless the CPU already did), then pack
-    // the planes into the frame
-    if (!m_CpuSync) {
+    else {
+        // Or have the decode device's context wait for it on the GPU. The renderer's
+        // drawing follows that context: it is the render context too, or the renderer
+        // waits on the fence the decoder thread signals on it next (see
+        // D3D11VARenderer::captureDecodeBoundary()).
+        lockContext();
         m_DeviceContext->Wait(m_Fence.Get(), decodedValue);
+        m_DeviceContext->Flush();
+        unlockContext();
     }
 
-    m_DeviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_DeviceContext->VSSetShader(m_PackVertexShader.Get(), nullptr, 0);
+    AVFrame* frame = av_frame_alloc();
+    if (frame == nullptr) {
+        returnSet();
+        return nullptr;
+    }
 
-    D3D11_VIEWPORT viewport = { 0.0f, 0.0f, (float)m_Width, (float)m_Height, 0.0f, 1.0f };
-    m_DeviceContext->RSSetViewports(1, &viewport);
-
+    // The frame holds the set until it's freed. Its format says how the planes are laid
+    // out (PyroWave fills the whole range of the 16-bit planes for 10-bit), but its data
+    // is the set and its index, never pixels. Only the renderer reads it.
+    frame->buf[0] = av_buffer_create((uint8_t*)set, sizeof(*set), releaseSet, this, 0);
+    if (frame->buf[0] == nullptr) {
+        av_frame_free(&frame);
+        returnSet();
+        return nullptr;
+    }
+    frame->data[0] = (uint8_t*)set;
+    frame->data[1] = (uint8_t*)(uintptr_t)set->index;
+    frame->width = m_Width;
+    frame->height = m_Height;
     if (m_Yuv444) {
-        // Y, Cb and Cr into one texel each, in AYUV's order
-        m_DeviceContext->OMSetRenderTargets(1, m_PackTargets[0].GetAddressOf(), nullptr);
-        m_DeviceContext->PSSetShader(m_Pack444Shader.Get(), nullptr, 0);
-        ID3D11ShaderResourceView* planeViews[] = { m_PlaneViews[0].Get(), m_PlaneViews[1].Get(), m_PlaneViews[2].Get() };
-        m_DeviceContext->PSSetShaderResources(0, 3, planeViews);
-        m_DeviceContext->Draw(3, 0);
-
-        // Don't keep the planes bound
-        ID3D11ShaderResourceView* nullViews[3] = {};
-        m_DeviceContext->PSSetShaderResources(0, 3, nullViews);
-        m_DeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+        frame->format = m_TenBit ? AV_PIX_FMT_YUV444P16 : AV_PIX_FMT_YUV444P;
     }
     else {
-        // Y, and Cb with Cr, into the two planes of an NV12/P010 frame
-        m_DeviceContext->OMSetRenderTargets(1, m_PackTargets[0].GetAddressOf(), nullptr);
-        m_DeviceContext->PSSetShader(m_PackLumaShader.Get(), nullptr, 0);
-        m_DeviceContext->PSSetShaderResources(0, 1, m_PlaneViews[0].GetAddressOf());
-        m_DeviceContext->Draw(3, 0);
-
-        viewport.Width = (float)(m_Width / 2);
-        viewport.Height = (float)(m_Height / 2);
-        m_DeviceContext->RSSetViewports(1, &viewport);
-        m_DeviceContext->OMSetRenderTargets(1, m_PackTargets[1].GetAddressOf(), nullptr);
-        m_DeviceContext->PSSetShader(m_PackChromaShader.Get(), nullptr, 0);
-        ID3D11ShaderResourceView* chromaViews[] = { m_PlaneViews[1].Get(), m_PlaneViews[2].Get() };
-        m_DeviceContext->PSSetShaderResources(0, 2, chromaViews);
-        m_DeviceContext->Draw(3, 0);
-
-        // Don't keep the planes bound
-        ID3D11ShaderResourceView* nullViews[2] = {};
-        m_DeviceContext->PSSetShaderResources(0, 2, nullViews);
-        m_DeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+        frame->format = m_TenBit ? AV_PIX_FMT_YUV420P16 : AV_PIX_FMT_YUV420P;
     }
 
-    // Into the frame from the pool
-    m_DeviceContext->CopySubresourceRegion((ID3D11Texture2D*)frame->data[0], (UINT)(intptr_t)frame->data[1],
-                                           0, 0, 0, m_PackTexture.Get(), 0, nullptr);
-
-    // PyroWave decodes the next frame into the planes once they're packed. The signal
-    // only reaches the GPU when the context is flushed, which also starts the packing now.
-    m_PackedValue = ++m_FenceValue;
-    m_DeviceContext->Signal(m_Fence.Get(), m_PackedValue);
-    m_DeviceContext->Flush();
-
-    m_DeviceContext->SwapDeviceContextState(previousState.Get(), nullptr);
-
-    unlockContext();
-
     return frame;
+}
+
+// Frees a frame's set for decoding into again, when the last reference to the frame
+// goes. That is after the renderer has drawn the frame after it, so the decode device's
+// context is already ordered after the drawing from these planes: it is the render
+// context, or it waits for the render context's previous frame (see
+// D3D11VARenderer::renderVideo()). A signal on it now passes once that drawing is done.
+void PyrowaveD3D11Decoder::releaseSet(void* opaque, uint8_t* data)
+{
+    auto me = (PyrowaveD3D11Decoder*)opaque;
+    auto set = (PlaneSet*)data;
+
+    me->lockContext();
+    uint64_t value = ++me->m_ReleaseValue;
+    if (SUCCEEDED(me->m_DeviceContext->Signal(me->m_ReleaseFence.Get(), value))) {
+        set->releasedValue = value;
+    }
+    me->m_DeviceContext->Flush();
+    me->unlockContext();
+
+    std::lock_guard<std::mutex> lock(me->m_FreeSetsLock);
+    me->m_FreeSets.push_back(set->index);
 }

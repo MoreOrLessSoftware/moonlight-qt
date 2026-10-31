@@ -41,9 +41,17 @@ public:
     virtual int waitForGpuMark(const GPU_MARK& mark, uint32_t timeoutMs) override;
     virtual bool getPresentFeedback(PPRESENT_FEEDBACK feedback) override;
 
-    // For decoders outside FFmpeg (PyroWave): a pool of frames on the decode device
-    // that renders like the hardware decoder's. The caller owns the returned reference.
+    // For decoders outside FFmpeg (AMF): a pool of frames on the decode device that
+    // renders like the hardware decoder's. The caller owns the returned reference.
     AVBufferRef* createFramesContext(AVPixelFormat swFormat, int width, int height, int poolSize, UINT bindFlags);
+
+    // The decode device, its context, and the lock FFmpeg and the renderer share it with
+    AVD3D11VADeviceContext* getDecodeDeviceContext();
+
+    // For PyroWave: sets of Y, Cb and Cr plane textures on the decode device, which are
+    // drawn directly. A frame from one has no hw_frames_ctx, a planar YUV format, and the
+    // index of its set in data[1]. Called once, before any such frame is drawn.
+    bool setPlaneSets(const std::vector<std::array<ID3D11Texture2D*, 3>>& planeSets);
 
     // Whether AMF decoding has produced frames this renderer can't draw, which turns it
     // off for the rest of the run
@@ -53,6 +61,7 @@ public:
         GENERIC_YUV_420,
         GENERIC_AYUV,
         GENERIC_Y410,
+        GENERIC_YUV_PLANAR,
         _COUNT
     };
 
@@ -73,6 +82,7 @@ private:
     void bindColorConversion(bool frameChanged, AVFrame* frame);
     void bindVideoVertexBuffer(bool frameChanged, AVFrame* frame);
     void renderVideo(AVFrame* frame);
+    void renderVideoTexture(AVFrame* frame, bool frameChanged);
     bool checkDecoderSupport(IDXGIAdapter* adapter);
     bool createDeviceByAdapterIndex(int adapterIndex, bool* adapterNotFound = nullptr);
     bool setupSharedDevice(IDXGIAdapter1* adapter);
@@ -157,6 +167,9 @@ private:
 
     // Only index 0 is valid if !m_BindDecoderOutputTextures
     std::vector<std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, 2>> m_VideoTextureResourceViews;
+
+    // Y, Cb and Cr views of each of PyroWave's plane sets. See setPlaneSets().
+    std::vector<std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, 3>> m_PlaneSetResourceViews;
 
     SDL_SpinLock m_OverlayLock;
     std::array<Microsoft::WRL::ComPtr<ID3D11Buffer>, Overlay::OverlayMax> m_OverlayVertexBuffers;
