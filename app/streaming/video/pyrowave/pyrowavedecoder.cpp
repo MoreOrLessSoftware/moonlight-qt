@@ -1,5 +1,6 @@
 #include "pyrowavedecoder.h"
 #include "pyrowaveapi.h"
+#include "pyrowavestagetimer.h"
 
 #include <QtGlobal>
 #include <QCoreApplication>
@@ -165,6 +166,7 @@ PyrowaveDecoder::PyrowaveDecoder()
       m_Yuv444(false),
       m_Colorspace(COLORSPACE_REC_601),
       m_HdrMode(false),
+      m_StageTimer(nullptr),
       m_LoggedDecodeFailure(false)
 {
 }
@@ -224,6 +226,10 @@ bool PyrowaveDecoder::createDecoder()
 
 void PyrowaveDecoder::destroyDecoder()
 {
+    // Its thread waits on the subclass's sync objects
+    delete m_StageTimer;
+    m_StageTimer = nullptr;
+
     // Waits for the GPU to be done with it
     if (m_Api != nullptr && m_Handles->decoder != nullptr) {
         m_Api->decoderDestroy(m_Handles->decoder);
@@ -455,6 +461,10 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFram
 {
     pyrowave_result result = PYROWAVE_SUCCESS;
 
+    if (m_StageTimer != nullptr) {
+        m_StageTimer->frameStarted();
+    }
+
     // Each frame arrives on its own, so anything left from an earlier one is stale
     m_Api->decoderClear(m_Handles->decoder);
 
@@ -543,9 +553,17 @@ AVFrame* PyrowaveDecoder::decode(const uint8_t* data, size_t length, PartialFram
         }
     }
 
+    if (m_StageTimer != nullptr) {
+        m_StageTimer->framePushed();
+    }
+
     AVFrame* frame = decodePushedFrame();
     if (frame != nullptr) {
         setFrameColorProperties(frame);
+    }
+
+    if (m_StageTimer != nullptr) {
+        m_StageTimer->frameEnded();
     }
     return frame;
 }

@@ -12,6 +12,7 @@ extern "C" {
 
 struct PyrowaveApi;
 struct PyrowaveHandles;
+class PyrowaveStageTimer;
 
 // Decodes PyroWave frames on the GPU, into frames the renderer draws like hardware
 // decoded ones.
@@ -71,7 +72,8 @@ protected:
     bool createDecoder();
 
     // Destroys the decoder, which waits for the GPU to finish with everything it
-    // decoded into. Subclasses call this before destroying the images it used.
+    // decoded into, and the stage timer. Subclasses call this before destroying the
+    // images and sync objects they used.
     void destroyDecoder();
 
     // Decodes the frame whose data decode() pushed, into a new frame for the renderer.
@@ -89,6 +91,10 @@ protected:
     bool m_Yuv444;
     int m_Colorspace;
     std::atomic<bool> m_HdrMode;
+
+    // Null unless ML_PYROWAVE_STAGE_LOG=1. Subclasses create it, and tell it when they
+    // submit the GPU work for each frame.
+    PyrowaveStageTimer* m_StageTimer;
 
     bool m_LoggedDecodeFailure;
 };

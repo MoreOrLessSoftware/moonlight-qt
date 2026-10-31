@@ -1,5 +1,6 @@
 #include "pyrowaved3d11decoder.h"
 #include "pyrowaveapi.h"
+#include "pyrowavestagetimer.h"
 
 #include "path.h"
 #include "streaming/video/ffmpeg-renderers/d3d11va.h"
@@ -328,6 +329,9 @@ bool PyrowaveD3D11Decoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAME
     if (!createDecoder()) {
         return false;
     }
+
+    // Times up to the end of PyroWave's decode, which leaves out the packing that follows
+    m_StageTimer = PyrowaveStageTimer::createIfEnabled(m_Api->syncObjectCpuWait);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "PyroWave: decoding %dx%d %s %s on %S",
@@ -798,6 +802,10 @@ AVFrame* PyrowaveD3D11Decoder::decodePushedFrame()
                      result);
         av_frame_free(&frame);
         return nullptr;
+    }
+
+    if (m_StageTimer != nullptr) {
+        m_StageTimer->decodeSubmitted(m_D3D11Handles->sync, decodedValue);
     }
 
     // With CPU sync, wait here for PyroWave to finish decoding before D3D11 packs the planes

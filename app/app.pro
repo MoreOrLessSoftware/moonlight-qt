@@ -374,10 +374,12 @@ libplacebo {
         DEFINES += HAVE_PYROWAVE
         SOURCES += \
             streaming/video/pyrowave/pyrowavedecoder.cpp \
-            streaming/video/pyrowave/pyrowavevkdecoder.cpp
+            streaming/video/pyrowave/pyrowavevkdecoder.cpp \
+            streaming/video/pyrowave/pyrowavestagetimer.cpp
         HEADERS += \
             streaming/video/pyrowave/pyrowavedecoder.h \
             streaming/video/pyrowave/pyrowavevkdecoder.h \
+            streaming/video/pyrowave/pyrowavestagetimer.h \
             streaming/video/pyrowave/pyrowaveapi.h \
             streaming/video/pyrowave/pyrowave.h
         LIBS += -ldl
@@ -427,7 +429,8 @@ win32:!winrt {
         streaming/video/ffmpeg-renderers/d3d11va.cpp \
         streaming/video/ffmpeg-renderers/pacer/dxvsyncsource.cpp \
         streaming/video/pyrowave/pyrowavedecoder.cpp \
-        streaming/video/pyrowave/pyrowaved3d11decoder.cpp
+        streaming/video/pyrowave/pyrowaved3d11decoder.cpp \
+        streaming/video/pyrowave/pyrowavestagetimer.cpp
 
     HEADERS += \
         streaming/video/ffmpeg-renderers/dxva2.h \
@@ -435,6 +438,7 @@ win32:!winrt {
         streaming/video/ffmpeg-renderers/pacer/dxvsyncsource.h \
         streaming/video/pyrowave/pyrowavedecoder.h \
         streaming/video/pyrowave/pyrowaved3d11decoder.h \
+        streaming/video/pyrowave/pyrowavestagetimer.h \
         streaming/video/pyrowave/pyrowaveapi.h \
         streaming/video/pyrowave/pyrowave.h
 

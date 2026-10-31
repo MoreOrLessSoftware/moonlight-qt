@@ -1,5 +1,6 @@
 #include "pyrowavevkdecoder.h"
 #include "pyrowaveapi.h"
+#include "pyrowavestagetimer.h"
 
 #include "streaming/video/ffmpeg-renderers/pacer/pacer.h"
 
@@ -162,6 +163,9 @@ bool PyrowaveVkDecoder::initialize(PlVkRenderer* renderer, PDECODER_PARAMETERS p
     if (!createDecoder()) {
         return false;
     }
+
+    // Nothing follows the decode before the renderer draws the planes
+    m_StageTimer = PyrowaveStageTimer::createIfEnabled(m_Api->syncObjectCpuWait);
 
     m_Renderer = renderer;
     m_Renderer->setFrameSource(this);
@@ -558,6 +562,10 @@ AVFrame* PyrowaveVkDecoder::decodePushedFrame()
 
     m_State->decodedValue = decodedValue;
     slot->decodedValue = decodedValue;
+
+    if (m_StageTimer != nullptr) {
+        m_StageTimer->decodeSubmitted(m_State->decodedSync, decodedValue);
+    }
 
     AVFrame* frame = av_frame_alloc();
     if (frame == nullptr) {
