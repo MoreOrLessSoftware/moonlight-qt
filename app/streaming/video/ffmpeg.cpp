@@ -273,7 +273,10 @@ FFmpegVideoDecoder::FFmpegVideoDecoder(bool testOnly)
       m_TestOnly(testOnly),
       m_CurrentTestMode(TestMode::TestFrameOnly),
       m_DecoderThread(nullptr),
-      m_Pyrowave(nullptr)
+      m_Pyrowave(nullptr),
+      m_DecodeCallLog(qEnvironmentVariableIntValue("ML_DECODE_CALL_LOG") != 0),
+      m_DecodeCalls(),
+      m_PollsSinceFrame(0)
 {
     SDL_zero(m_ActiveWndVideoStats);
     SDL_zero(m_LastWndVideoStats);
@@ -314,6 +317,9 @@ void FFmpegVideoDecoder::reset()
 
     m_FramesIn = m_FramesOut = 0;
     m_FrameInfoQueue.clear();
+    m_SendEndTimes.clear();
+    m_DecodeCalls = {};
+    m_PollsSinceFrame = 0;
 
     delete m_Pacer;
     m_Pacer = nullptr;
@@ -2450,7 +2456,19 @@ void FFmpegVideoDecoder::decoderThreadProc()
 
             int err;
             do {
+                int64_t receiveStartUs = m_DecodeCallLog ? (int64_t)LiGetMicroseconds() : 0;
                 err = avcodec_receive_frame(m_VideoDecoderCtx, frame);
+                if (m_DecodeCallLog) {
+                    int64_t receiveEndUs = (int64_t)LiGetMicroseconds();
+                    if (err == 0) {
+                        countDecodedFrame(receiveStartUs, receiveEndUs);
+                    }
+                    else if (err == AVERROR(EAGAIN)) {
+                        m_DecodeCalls.polls++;
+                        m_PollsSinceFrame++;
+                    }
+                }
+
                 if (err == 0) {
                     SDL_assert(m_FrameInfoQueue.size() == m_FramesIn - m_FramesOut);
                     m_FramesOut++;
@@ -2477,6 +2495,9 @@ void FFmpegVideoDecoder::decoderThreadProc()
                     else {
                         // No output data or input data. Let's wait a little bit.
                         SDL_Delay(2);
+                        if (m_DecodeCallLog) {
+                            m_DecodeCalls.sleeps++;
+                        }
                     }
                 }
                 else {
@@ -2585,6 +2606,67 @@ void FFmpegVideoDecoder::recordReceivedFrame(PDECODE_UNIT du)
     m_ActiveWndVideoStats.totalFrames++;
 }
 
+void FFmpegVideoDecoder::countDecodeSend(int64_t startUs, int64_t sendStartUs, int64_t sendEndUs)
+{
+    m_DecodeCalls.sends++;
+    m_DecodeCalls.copyUs += sendStartUs - startUs;
+    m_DecodeCalls.copyMaxUs = qMax(m_DecodeCalls.copyMaxUs, sendStartUs - startUs);
+    m_DecodeCalls.sendUs += sendEndUs - sendStartUs;
+    m_DecodeCalls.sendMaxUs = qMax(m_DecodeCalls.sendMaxUs, sendEndUs - sendStartUs);
+    m_DecodeCalls.sendBuckets[qMin((int)((sendEndUs - sendStartUs) / 500), 5)]++;
+
+    // Frames come out in the order they were sent. Don't let the queue grow without
+    // bound if some never do.
+    m_SendEndTimes.enqueue(sendEndUs);
+    while (m_SendEndTimes.size() > 16) {
+        m_SendEndTimes.dequeue();
+    }
+}
+
+void FFmpegVideoDecoder::countDecodedFrame(int64_t receiveStartUs, int64_t receiveEndUs)
+{
+    m_DecodeCalls.frames++;
+    if (!m_SendEndTimes.isEmpty()) {
+        int64_t waitUs = receiveEndUs - m_SendEndTimes.dequeue();
+        m_DecodeCalls.waitUs += waitUs;
+        m_DecodeCalls.waitMaxUs = qMax(m_DecodeCalls.waitMaxUs, waitUs);
+    }
+    m_DecodeCalls.receiveUs += receiveEndUs - receiveStartUs;
+    m_DecodeCalls.receiveMaxUs = qMax(m_DecodeCalls.receiveMaxUs, receiveEndUs - receiveStartUs);
+    if (m_PollsSinceFrame == 0) {
+        m_DecodeCalls.immediate++;
+    }
+    m_PollsSinceFrame = 0;
+
+    if (m_DecodeCalls.periodStartUs == 0) {
+        m_DecodeCalls.periodStartUs = receiveEndUs;
+        return;
+    }
+    if (receiveEndUs - m_DecodeCalls.periodStartUs < 5000000 || m_DecodeCalls.sends == 0) {
+        return;
+    }
+
+    const DecodeCallStats& s = m_DecodeCalls;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Decode calls over %d frames, avg/max ms: packet copy %.2f/%.2f, avcodec_send_packet %.2f/%.2f, "
+                "send to frame out %.2f/%.2f, avcodec_receive_frame %.2f/%.2f; "
+                "%d%% out at the first receive after their send, %.1f empty receives and %.1f 2 ms sleeps per frame; "
+                "sends taking 0-0.5/0.5-1/1-1.5/1.5-2/2-2.5/2.5+ ms: %d/%d/%d/%d/%d/%d",
+                s.frames,
+                s.copyUs / 1000.0 / s.sends, s.copyMaxUs / 1000.0,
+                s.sendUs / 1000.0 / s.sends, s.sendMaxUs / 1000.0,
+                s.waitUs / 1000.0 / s.frames, s.waitMaxUs / 1000.0,
+                s.receiveUs / 1000.0 / s.frames, s.receiveMaxUs / 1000.0,
+                s.immediate * 100 / s.frames,
+                (double)s.polls / s.frames,
+                (double)s.sleeps / s.frames,
+                s.sendBuckets[0], s.sendBuckets[1], s.sendBuckets[2],
+                s.sendBuckets[3], s.sendBuckets[4], s.sendBuckets[5]);
+
+    m_DecodeCalls = {};
+    m_DecodeCalls.periodStartUs = receiveEndUs;
+}
+
 int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
 {
     PLENTRY entry = du->bufferList;
@@ -2596,6 +2678,8 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
     if (m_FramesIn == 0 && du->frameType != FRAME_TYPE_IDR) {
         return DR_NEED_IDR;
     }
+
+    int64_t startUs = m_DecodeCallLog ? (int64_t)LiGetMicroseconds() : 0;
 
     recordReceivedFrame(du);
 
@@ -2624,7 +2708,11 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
         m_Pkt->flags = 0;
     }
 
+    int64_t sendStartUs = m_DecodeCallLog ? (int64_t)LiGetMicroseconds() : 0;
     err = avcodec_send_packet(m_VideoDecoderCtx, m_Pkt);
+    if (m_DecodeCallLog && err >= 0) {
+        countDecodeSend(startUs, sendStartUs, (int64_t)LiGetMicroseconds());
+    }
     if (err < 0) {
         char errorstring[512];
         av_strerror(err, errorstring, sizeof(errorstring));

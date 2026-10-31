@@ -162,6 +162,29 @@ private:
     // Data buffers in the queued DU are not valid
     QQueue<DECODE_UNIT> m_FrameInfoQueue;
 
+    // ML_DECODE_CALL_LOG=1 logs every 5 s how long the decoder thread spends in each of
+    // FFmpeg's calls, to find where the time between a frame's last packet and its
+    // hand-over goes. Decoder thread only.
+    struct DecodeCallStats {
+        int sends;
+        int64_t copyUs, copyMaxUs;          // Writing the frame's data into the packet
+        int64_t sendUs, sendMaxUs;          // avcodec_send_packet()
+        int sendBuckets[6];                 // Its times in 0.5 ms steps, the last 2.5 ms and over
+        int frames;
+        int64_t waitUs, waitMaxUs;          // From its send returning to the frame coming out
+        int64_t receiveUs, receiveMaxUs;    // The avcodec_receive_frame() call that returned it
+        int immediate;                      // Frames out at the first call after their send
+        int polls;                          // avcodec_receive_frame() calls that returned nothing
+        int sleeps;                         // 2 ms waits for input or output
+        int64_t periodStartUs;
+    };
+    void countDecodeSend(int64_t startUs, int64_t sendStartUs, int64_t sendEndUs);
+    void countDecodedFrame(int64_t receiveStartUs, int64_t receiveEndUs);
+    bool m_DecodeCallLog;
+    DecodeCallStats m_DecodeCalls;
+    QQueue<int64_t> m_SendEndTimes;
+    int m_PollsSinceFrame;
+
     static const uint8_t k_H264TestFrame[];
     static const uint8_t k_HEVCMainTestFrame[];
     static const uint8_t k_HEVCMain10TestFrame[];
