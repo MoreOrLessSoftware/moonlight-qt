@@ -19,10 +19,13 @@ typedef struct _VIDEO_STATS {
     uint16_t maxHostProcessingLatency;         // low-res from RTP
     uint32_t totalHostProcessingLatency;       // low-res from RTP
     uint32_t framesWithHostProcessingLatency;  // low-res from RTP
+    // A presented frame's time from its first packet to its present, in four parts that
+    // add up to it. See Pacer::finishFrame().
     uint64_t totalReassemblyTimeUs;            // high-res (1us)
     uint64_t totalDecodeTimeUs;                // high-res (1us)
     uint64_t totalPacerTimeUs;                 // high-res (1us)
     uint64_t totalRenderTimeUs;                // high-res (1us)
+    uint32_t framesWithClientLatency;          // presented frames those were measured for
     uint64_t totalCaptureToPresentUs;          // high-res with clock sync, else host latency + first packet to present
     uint32_t framesWithCaptureToPresent;
     uint32_t framesWithoutNetworkTransit;      // those of them measured without clock sync

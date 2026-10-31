@@ -74,6 +74,8 @@ D3D11VARenderer::D3D11VARenderer(int decoderSelectionPass, bool amfDecoder)
       m_DecodeReadyEvent(nullptr),
       m_GpuReadyFenceValue(0),
       m_GpuReadyEnabled(false),
+      m_DecodeEndEvent(nullptr),
+      m_DecodeEndFenceValue(0),
       m_QpcFrequency{},
       m_FrameStatsEnabled(false),
       m_FrameStatsFailureLogged(false),
@@ -139,6 +141,11 @@ D3D11VARenderer::~D3D11VARenderer()
     }
     if (m_DecodeReadyEvent != nullptr) {
         CloseHandle(m_DecodeReadyEvent);
+    }
+
+    m_DecodeEndFence.Reset();
+    if (m_DecodeEndEvent != nullptr) {
+        CloseHandle(m_DecodeEndEvent);
     }
 
     m_RenderTargetView.Reset();
@@ -732,6 +739,23 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
                         "Unable to create a fence to wait for the GPU to finish frames: %x",
                         hr);
             m_GpuReadyFence.Reset();
+        }
+    }
+
+    // A fence on the decode device marks where each frame's decode ends, so the decoding
+    // time can run to when the GPU finishes it. See markDecodeEnd(). It needs a monitored
+    // fence, which can signal an event when the GPU gets to it.
+    if (m_FenceType == SupportedFenceType::Monitored) {
+        hr = m_DecodeDevice->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_DecodeEndFence));
+        if (SUCCEEDED(hr)) {
+            m_DecodeEndEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        }
+
+        if (FAILED(hr) || m_DecodeEndEvent == nullptr) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Unable to create a fence to time decodes on the GPU: %x",
+                        hr);
+            m_DecodeEndFence.Reset();
         }
     }
 
@@ -2017,6 +2041,61 @@ bool D3D11VARenderer::waitForDecode(AVFrame* frame)
 bool D3D11VARenderer::canPrepareBeforeDecode()
 {
     return m_GpuReadyEnabled;
+}
+
+// Signals the decode-end fence after everything on the decode context so far, which is
+// this frame's decode, and AMF's copy or PyroWave's packing into it where there is one.
+// Unlike captureDecodeBoundary(), with one device too, and whether or not frame pacing
+// waits for decodes.
+bool D3D11VARenderer::markDecodeEnd(AVFrame*, PDECODE_MARK mark)
+{
+    if (m_DecodeEndFence == nullptr) {
+        return false;
+    }
+
+    lockContext(this);
+    UINT64 value = ++m_DecodeEndFenceValue;
+    HRESULT hr = m_DecodeDeviceContext->Signal(m_DecodeEndFence.Get(), value);
+
+    // Otherwise the signal waits in the command buffer for whatever submits it next, and
+    // the decode seems to end then
+    if (SUCCEEDED(hr)) {
+        m_DecodeDeviceContext->Flush();
+    }
+    unlockContext(this);
+
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    mark->sync = 0;
+    mark->value = value;
+    return true;
+}
+
+int D3D11VARenderer::waitForDecodeEnd(const DECODE_MARK& mark, uint32_t timeoutMs)
+{
+    if (m_DecodeEndFence->GetCompletedValue() >= mark.value) {
+        return 1;
+    }
+    else if (timeoutMs == 0) {
+        // Only DecodeTimer's thread waits on the event
+        return 0;
+    }
+
+    if (FAILED(m_DecodeEndFence->SetEventOnCompletion(mark.value, m_DecodeEndEvent))) {
+        return -1;
+    }
+
+    switch (WaitForSingleObject(m_DecodeEndEvent, timeoutMs)) {
+    case WAIT_OBJECT_0:
+        // The event may have been set for a value an earlier wait timed out on
+        return m_DecodeEndFence->GetCompletedValue() >= mark.value ? 1 : 0;
+    case WAIT_TIMEOUT:
+        return 0;
+    default:
+        return -1;
+    }
 }
 
 static const char* presentationModeName(int mode)

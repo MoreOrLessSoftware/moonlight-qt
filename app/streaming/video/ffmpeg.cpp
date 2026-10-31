@@ -259,6 +259,7 @@ FFmpegVideoDecoder::FFmpegVideoDecoder(bool testOnly)
       m_FrontendRenderer(nullptr),
       m_ConsecutiveFailedDecodes(0),
       m_Pacer(nullptr),
+      m_DecodeTimer(nullptr),
       m_BwTracker(10, 250),
       m_NetworkBwTracker(10, 250),
       m_LastNetworkBytes(0),
@@ -316,6 +317,10 @@ void FFmpegVideoDecoder::reset()
 
     delete m_Pacer;
     m_Pacer = nullptr;
+
+    // Before the codec context and PyroWave free what its marks wait on
+    delete m_DecodeTimer;
+    m_DecodeTimer = nullptr;
 
     // This must be called after deleting Pacer because it
     // may be holding AVFrames to free in its destructor.
@@ -538,7 +543,8 @@ bool FFmpegVideoDecoder::completeInitialization(const AVCodec* decoder, enum AVP
 
     // Don't bother initializing Pacer if we're not actually going to render
     if (testMode != TestMode::TestFrameOnly) {
-        m_Pacer = new Pacer(m_FrontendRenderer, &m_ActiveWndVideoStats);
+        m_DecodeTimer = new DecodeTimer(m_FrontendRenderer);
+        m_Pacer = new Pacer(m_FrontendRenderer, m_DecodeTimer, &m_ActiveWndVideoStats);
         if (!m_Pacer->initialize(params,
                                  params->enableFramePacing || (params->enableVsync && (m_FrontendRenderer->getRendererAttributes() & RENDERER_ATTRIBUTE_FORCE_PACING)))) {
             return false;
@@ -808,6 +814,7 @@ void FFmpegVideoDecoder::addVideoStats(VIDEO_STATS& src, VIDEO_STATS& dst)
     dst.totalDecodeTimeUs += src.totalDecodeTimeUs;
     dst.totalPacerTimeUs += src.totalPacerTimeUs;
     dst.totalRenderTimeUs += src.totalRenderTimeUs;
+    dst.framesWithClientLatency += src.framesWithClientLatency;
 
     if (dst.minHostProcessingLatency == 0) {
         dst.minHostProcessingLatency = src.minHostProcessingLatency;
@@ -1014,6 +1021,10 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
     if (stats.renderedFrames != 0) {
         char rttString[32];
 
+        // The four parts of a frame's time on the client, over the same frames so they
+        // add up to it. See Pacer::finishFrame().
+        double clientFrames = qMax<uint32_t>(1, stats.framesWithClientLatency);
+
         if (stats.lastRtt != 0) {
             snprintf(rttString, sizeof(rttString), "%u ms (variance: %u ms)", stats.lastRtt, stats.lastRttVariance);
         }
@@ -1032,10 +1043,10 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
                        (float)stats.pacerDroppedFrames / stats.decodedFrames * 100,
                        rttString,
                        // First packet to last, so how long a frame takes to arrive in full
-                       stats.receivedFrames != 0 ? (double)(stats.totalReassemblyTimeUs / 1000.0) / stats.receivedFrames : 0.0,
-                       (double)(stats.totalDecodeTimeUs / 1000.0) / stats.decodedFrames,
-                       (double)(stats.totalPacerTimeUs / 1000.0) / stats.renderedFrames,
-                       (double)(stats.totalRenderTimeUs / 1000.0) / stats.renderedFrames);
+                       (double)(stats.totalReassemblyTimeUs / 1000.0) / clientFrames,
+                       (double)(stats.totalDecodeTimeUs / 1000.0) / clientFrames,
+                       (double)(stats.totalPacerTimeUs / 1000.0) / clientFrames,
+                       (double)(stats.totalRenderTimeUs / 1000.0) / clientFrames);
         if (ret < 0 || ret >= length - offset) {
             SDL_assert(false);
             return;
@@ -1847,7 +1858,8 @@ bool FFmpegVideoDecoder::initializePyrowave(PDECODER_PARAMETERS params)
         return true;
     }
 
-    m_Pacer = new Pacer(m_FrontendRenderer, &m_ActiveWndVideoStats);
+    m_DecodeTimer = new DecodeTimer(m_FrontendRenderer);
+    m_Pacer = new Pacer(m_FrontendRenderer, m_DecodeTimer, &m_ActiveWndVideoStats);
     if (!m_Pacer->initialize(params,
                              params->enableFramePacing || (params->enableVsync && (m_FrontendRenderer->getRendererAttributes() & RENDERER_ATTRIBUTE_FORCE_PACING)))) {
         reset();
@@ -2272,16 +2284,17 @@ void FFmpegVideoDecoder::deliverDecodedFrame(AVFrame* frame, const DECODE_UNIT* 
     }
 #endif
 
+    // And time the GPU's part of the decode, which a hardware decoder hands the frame
+    // over before finishing. See Pacer::finishFrame().
+    if (m_DecodeTimer != nullptr) {
+        m_DecodeTimer->track(frame);
+    }
+
     // Zero means there is no host capture time for this frame
     frame->pts = 0;
 
     if (du != nullptr) {
         // Data buffers in the DU are not valid here!
-
-        // Count time in avcodec_send_packet() and avcodec_receive_frame()
-        // as time spent decoding. Also count time spent in the decode unit
-        // queue because that's directly caused by decoder latency.
-        m_ActiveWndVideoStats.totalDecodeTimeUs += (LiGetMicroseconds() - du->enqueueTimeUs);
 
         // Store the host's capture time in microseconds. Frame pacing
         // follows the host's cadence from these.
@@ -2356,8 +2369,6 @@ int FFmpegVideoDecoder::submitPyrowaveDecodeUnit(PDECODE_UNIT du)
         memcpy(&m_DecodeBuffer.data()[offset], entry->data, entry->length);
         offset += entry->length;
     }
-
-    m_ActiveWndVideoStats.totalReassemblyTimeUs += (du->enqueueTimeUs - du->receiveTimeUs);
 
     PyrowaveDecoder::PartialFrame partial = PyrowaveDecoder::PartialFrame::Complete;
     if (du->partialFrame) {
@@ -2611,8 +2622,6 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
     else {
         m_Pkt->flags = 0;
     }
-
-    m_ActiveWndVideoStats.totalReassemblyTimeUs += (du->enqueueTimeUs - du->receiveTimeUs);
 
     err = avcodec_send_packet(m_VideoDecoderCtx, m_Pkt);
     if (err < 0) {

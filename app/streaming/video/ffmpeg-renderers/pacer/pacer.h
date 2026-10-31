@@ -3,6 +3,7 @@
 #include "../../decoder.h"
 #include "../renderer.h"
 #include "pacertrace.h"
+#include "decodetimer.h"
 
 #include <QQueue>
 #include <QMutex>
@@ -44,7 +45,7 @@ public:
 class Pacer
 {
 public:
-    Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats);
+    Pacer(IFFmpegRenderer* renderer, DecodeTimer* decodeTimer, PVIDEO_STATS videoStats);
 
     ~Pacer();
 
@@ -65,7 +66,7 @@ private:
 
     void enqueueFrameForRenderingAndUnlock(AVFrame* frame);
 
-    void renderFrame(AVFrame* frame);
+    void renderFrame(AVFrame* frame, int64_t handedOverUs);
 
     void dropFrameForEnqueue(QQueue<AVFrame*>& queue);
 
@@ -77,7 +78,8 @@ private:
 
     void presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row);
 
-    void finishFrame(AVFrame* frame, uint64_t renderTimeUs, uint64_t presentUs);
+    void finishFrame(AVFrame* frame, int64_t handedOverUs, int64_t renderStartUs, int64_t drawEndUs,
+                     int64_t presentStartUs, int64_t presentUs);
 
     void updatePartialDeadline(int64_t hostUs, bool paced);
 
@@ -96,6 +98,7 @@ private:
 
     IVsyncSource* m_VsyncSource;
     IFFmpegRenderer* m_VsyncRenderer;
+    DecodeTimer* m_DecodeTimer;
     int m_MaxVideoFps;
     int m_DisplayFps;
     PVIDEO_STATS m_VideoStats;

@@ -53,6 +53,10 @@ public:
     // See IFFmpegRenderer
     virtual uint64_t captureDecodeBoundary(AVFrame* frame) = 0;
     virtual bool waitForDecode(AVFrame* frame) = 0;
+
+    // See IFFmpegRenderer. The mark's sync is a timeline semaphore on the renderer's
+    // device, which the renderer waits on.
+    virtual bool markDecodeEnd(AVFrame* frame, PDECODE_MARK mark) = 0;
 };
 
 class PlVkRenderer : public IFFmpegRenderer {
@@ -70,6 +74,8 @@ public:
     virtual void presentPreparedFrame() override;
     virtual uint64_t captureDecodeBoundary(AVFrame* frame) override;
     virtual bool waitForDecode(AVFrame* frame) override;
+    virtual bool markDecodeEnd(AVFrame* frame, PDECODE_MARK mark) override;
+    virtual int waitForDecodeEnd(const DECODE_MARK& mark, uint32_t timeoutMs) override;
     virtual void notifyOverlayUpdated(Overlay::OverlayType) override;
     virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO) override;
     virtual int getRendererAttributes() override;

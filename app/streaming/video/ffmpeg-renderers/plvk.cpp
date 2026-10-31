@@ -14,6 +14,7 @@ extern "C" {
 #include <libavutil/hwcontext_vulkan.h>
 }
 
+#include <cstring>
 #include <vector>
 #include <set>
 
@@ -1432,6 +1433,67 @@ bool PlVkRenderer::waitForDecode(AVFrame* frame)
     }
 
     return true;
+}
+
+// The same semaphore and value as captureDecodeBoundary(), for DecodeTimer, and for as
+// long as waiting works even where frame pacing has stopped waiting for decodes
+bool PlVkRenderer::markDecodeEnd(AVFrame* frame, PDECODE_MARK mark)
+{
+    if (fn_vkGetSemaphoreCounterValue == nullptr || fn_vkWaitSemaphores == nullptr) {
+        return false;
+    }
+
+    if (m_FrameSource != nullptr) {
+        return m_FrameSource->markDecodeEnd(frame, mark);
+    }
+
+    if (frame->format != AV_PIX_FMT_VULKAN || frame->hw_frames_ctx == nullptr) {
+        return false;
+    }
+
+    AVHWFramesContext* framesContext = (AVHWFramesContext*)frame->hw_frames_ctx->data;
+    AVVulkanFramesContext* vkFramesContext = (AVVulkanFramesContext*)framesContext->hwctx;
+    AVVkFrame* vkFrame = (AVVkFrame*)frame->data[0];
+
+    if (vkFramesContext->lock_frame != nullptr) {
+        vkFramesContext->lock_frame(framesContext, vkFrame);
+    }
+    VkSemaphore semaphore = vkFrame->sem[0];
+    uint64_t value = vkFrame->sem_value[0];
+    if (vkFramesContext->unlock_frame != nullptr) {
+        vkFramesContext->unlock_frame(framesContext, vkFrame);
+    }
+
+    if (semaphore == VK_NULL_HANDLE || value == 0) {
+        return false;
+    }
+
+    static_assert(sizeof(VkSemaphore) <= sizeof(mark->sync), "VkSemaphore must fit in a mark");
+    mark->sync = 0;
+    memcpy(&mark->sync, &semaphore, sizeof(semaphore));
+    mark->value = value;
+    return true;
+}
+
+int PlVkRenderer::waitForDecodeEnd(const DECODE_MARK& mark, uint32_t timeoutMs)
+{
+    VkSemaphore semaphore;
+    memcpy(&semaphore, &mark.sync, sizeof(semaphore));
+
+    VkSemaphoreWaitInfo waitInfo = {};
+    waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    waitInfo.semaphoreCount = 1;
+    waitInfo.pSemaphores = &semaphore;
+    waitInfo.pValues = &mark.value;
+
+    switch (fn_vkWaitSemaphores(m_Vulkan->device, &waitInfo, (uint64_t)timeoutMs * 1000 * 1000)) {
+    case VK_SUCCESS:
+        return 1;
+    case VK_TIMEOUT:
+        return 0;
+    default:
+        return -1;
+    }
 }
 
 bool PlVkRenderer::testRenderFrame(AVFrame *frame)

@@ -36,6 +36,8 @@ public:
     virtual uint64_t captureDecodeBoundary(AVFrame* frame) override;
     virtual bool waitForDecode(AVFrame* frame) override;
     virtual bool canPrepareBeforeDecode() override;
+    virtual bool markDecodeEnd(AVFrame* frame, PDECODE_MARK mark) override;
+    virtual int waitForDecodeEnd(const DECODE_MARK& mark, uint32_t timeoutMs) override;
     virtual bool getPresentFeedback(PPRESENT_FEEDBACK feedback) override;
 
     // For decoders outside FFmpeg (PyroWave): a pool of frames on the decode device
@@ -126,6 +128,11 @@ private:
     HANDLE m_DecodeReadyEvent;
     UINT64 m_GpuReadyFenceValue;
     bool m_GpuReadyEnabled;
+
+    // Timing when the GPU finishes decoding each frame. See markDecodeEnd().
+    Microsoft::WRL::ComPtr<ID3D11Fence> m_DecodeEndFence;
+    HANDLE m_DecodeEndEvent;
+    UINT64 m_DecodeEndFenceValue;
 
     // Reading DXGI frame statistics after each present. See getPresentFeedback().
     Microsoft::WRL::ComPtr<IDXGISwapChainMedia> m_SwapChainMedia;

@@ -652,6 +652,20 @@ uint64_t PyrowaveVkDecoder::captureDecodeBoundary(AVFrame* frame)
     return ((PyrowaveVkSlot*)frame->data[0])->decodedValue;
 }
 
+bool PyrowaveVkDecoder::markDecodeEnd(AVFrame* frame, PDECODE_MARK mark)
+{
+    uint64_t value = ((PyrowaveVkSlot*)frame->data[0])->decodedValue;
+    if (value == 0) {
+        return false;
+    }
+
+    static_assert(sizeof(VkSemaphore) <= sizeof(mark->sync), "VkSemaphore must fit in a mark");
+    mark->sync = 0;
+    memcpy(&mark->sync, &m_State->decodedSemaphore, sizeof(VkSemaphore));
+    mark->value = value;
+    return true;
+}
+
 // Waits on the CPU for PyroWave to finish decoding a frame, so the pacer schedules it
 // from when it can actually be drawn
 bool PyrowaveVkDecoder::waitForDecode(AVFrame* frame)

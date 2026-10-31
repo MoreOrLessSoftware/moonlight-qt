@@ -224,13 +224,14 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 #define CADENCE_PARTIAL_MARGIN_US 0
 #define CADENCE_PARTIAL_MIN_SAMPLES 16
 
-Pacer::Pacer(IFFmpegRenderer* renderer, PVIDEO_STATS videoStats) :
+Pacer::Pacer(IFFmpegRenderer* renderer, DecodeTimer* decodeTimer, PVIDEO_STATS videoStats) :
     m_RenderThread(nullptr),
     m_VsyncThread(nullptr),
     m_DeferredFreeFrame(nullptr),
     m_Stopping(false),
     m_VsyncSource(nullptr),
     m_VsyncRenderer(renderer),
+    m_DecodeTimer(decodeTimer),
     m_MaxVideoFps(0),
     m_DisplayFps(0),
     m_VideoStats(videoStats),
@@ -367,7 +368,7 @@ void Pacer::renderOnMainThread()
         AVFrame* frame = m_RenderQueue.dequeue();
         m_FrameQueueLock.unlock();
 
-        renderFrame(frame);
+        renderFrame(frame, frame->pkt_dts);
     }
     else {
         m_FrameQueueLock.unlock();
@@ -439,7 +440,7 @@ int Pacer::renderThread(void* context)
         AVFrame* frame = me->m_RenderQueue.dequeue();
         me->m_FrameQueueLock.unlock();
 
-        me->renderFrame(frame);
+        me->renderFrame(frame, frame->pkt_dts);
     }
 
     // Notify the renderer that it is being destroyed soon
@@ -734,26 +735,61 @@ void Pacer::signalVsync()
     m_VsyncSignalled.wakeOne();
 }
 
-void Pacer::renderFrame(AVFrame* frame)
+// Draws and presents a frame in one call. handedOverUs is when the decoder handed it over.
+void Pacer::renderFrame(AVFrame* frame, int64_t handedOverUs)
 {
-    // Count time spent in Pacer's queues
-    uint64_t beforeRender = LiGetMicroseconds();
-    m_VideoStats->totalPacerTimeUs += (beforeRender - (uint64_t)frame->pkt_dts);
+    int64_t renderStartUs = (int64_t)LiGetMicroseconds();
 
-    // Render it
     Session::get()->getOverlayManager().updateLatencyTimer();
     m_VsyncRenderer->renderFrame(frame);
 
-    uint64_t presentUs = LiGetMicroseconds();
-    finishFrame(frame, presentUs - beforeRender, presentUs);
+    int64_t presentUs = (int64_t)LiGetMicroseconds();
+    finishFrame(frame, handedOverUs, renderStartUs, renderStartUs, renderStartUs, presentUs);
 }
 
 // Counts a rendered frame, then releases the one before it and trims the render queue.
-// presentUs is when the Present() call that showed it returned.
-void Pacer::finishFrame(AVFrame* frame, uint64_t renderTimeUs, uint64_t presentUs)
+// handedOverUs is when the decoder handed it over. It was drawn from renderStartUs to
+// drawEndUs, and presented by a Present() call from presentStartUs that returned at
+// presentUs. A renderer that draws and presents in one call has all three starts the same.
+void Pacer::finishFrame(AVFrame* frame, int64_t handedOverUs, int64_t renderStartUs, int64_t drawEndUs,
+                        int64_t presentStartUs, int64_t presentUs)
 {
-    m_VideoStats->totalRenderTimeUs += renderTimeUs;
     m_VideoStats->renderedFrames++;
+
+    // The frame's time from its first packet to its present, in four parts that add up
+    // to it, so with the host's latency and the network's they add up to capture to
+    // present:
+    // - Receiving, from its first packet to its last
+    // - Decoding, from its last packet until the decoder had handed it over and, where
+    //   the GPU decodes it, the GPU had finished. A hardware decoder hands frames over
+    //   once their decode is submitted, so the GPU's part can take far longer.
+    // - Rendering, the drawing and Present() call after that. Drawing started ahead of
+    //   the decode spends the time before it waiting on the GPU for the decode.
+    // - Queueing, the rest: waiting in the pacer's queues, and for the time to draw or
+    //   present the frame
+    // A frame the GPU was still decoding when Present() returned counts as decoding
+    // until then, and has no rendering time.
+    if (ML_FRAME_RECEIVE_TIMING(frame) != 0) {
+        int64_t firstPacketUs = ML_FRAME_FIRST_PACKET_US(frame);
+        int64_t lastPacketUs = ML_FRAME_LAST_PACKET_US(frame);
+
+        int64_t decodedUs = handedOverUs;
+        if (m_DecodeTimer != nullptr) {
+            decodedUs = qMax(decodedUs, m_DecodeTimer->completionUs(frame, presentUs));
+        }
+        decodedUs = qBound(lastPacketUs, decodedUs, presentUs);
+
+        auto afterDecodeUs = [decodedUs](int64_t startUs, int64_t endUs) {
+            return qMax<int64_t>(0, endUs - qMax(startUs, decodedUs));
+        };
+        int64_t renderUs = afterDecodeUs(renderStartUs, drawEndUs) + afterDecodeUs(presentStartUs, presentUs);
+
+        m_VideoStats->totalReassemblyTimeUs += (uint64_t)(lastPacketUs - firstPacketUs);
+        m_VideoStats->totalDecodeTimeUs += (uint64_t)(decodedUs - lastPacketUs);
+        m_VideoStats->totalRenderTimeUs += (uint64_t)renderUs;
+        m_VideoStats->totalPacerTimeUs += (uint64_t)(presentUs - decodedUs - renderUs);
+        m_VideoStats->framesWithClientLatency++;
+    }
 
     // Capture to present. A frame without a host latency has no capture time of its own
     // (the host repeated a frame), so it is left out either way.
@@ -1375,8 +1411,6 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
         row->renderStartUs = (int64_t)LiGetMicroseconds();
     }
 
-    uint64_t pacerTimeUs = (uint64_t)qMax<int64_t>(0, row->renderStartUs - frame->pkt_dts);
-
     if (!row->drawnAhead) {
         Session::get()->getOverlayManager().updateLatencyTimer();
     }
@@ -1390,7 +1424,7 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
         waitUntilUs(targetUs - (int64_t)m_RenderCostUs);
 
         row->renderStartUs = (int64_t)LiGetMicroseconds();
-        renderFrame(frame);
+        renderFrame(frame, row->decodedUs);
         row->presentUs = (int64_t)LiGetMicroseconds();
         m_LastPresentUs = row->presentUs;
         row->drawEndUs = row->renderStartUs;
@@ -1409,11 +1443,6 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
     m_VsyncRenderer->presentPreparedFrame();
     row->presentUs = (int64_t)LiGetMicroseconds();
     m_LastPresentUs = row->presentUs;
-
-    // A frame drawn ahead waited in the pacer from when the GPU finished it to Present()
-    if (row->drawnAhead) {
-        pacerTimeUs = (uint64_t)qMax<int64_t>(0, row->presentStartUs - frame->pkt_dts);
-    }
 
     // What the display has done with frames so far, where the renderer reads it back.
     // After the timestamp, so reading it never counts as part of the Present() call.
@@ -1464,8 +1493,7 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
     }
     m_PresentCostUs += (presentCallUs - m_PresentCostUs) / 16;
 
-    m_VideoStats->totalPacerTimeUs += pacerTimeUs;
-    finishFrame(frame, (uint64_t)(drawUs + presentCallUs), (uint64_t)row->presentUs);
+    finishFrame(frame, row->decodedUs, row->renderStartUs, row->drawEndUs, row->presentStartUs, row->presentUs);
 }
 
 // Sleeps until a moment on the LiGetMicroseconds() clock, spinning for the last

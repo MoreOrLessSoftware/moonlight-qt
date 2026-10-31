@@ -36,6 +36,7 @@ public:
     virtual void unmapFrame(const AVFrame* frame) override;
     virtual uint64_t captureDecodeBoundary(AVFrame* frame) override;
     virtual bool waitForDecode(AVFrame* frame) override;
+    virtual bool markDecodeEnd(AVFrame* frame, PDECODE_MARK mark) override;
 
 protected:
     virtual AVFrame* decodePushedFrame() override;

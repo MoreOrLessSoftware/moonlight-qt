@@ -8,6 +8,7 @@
 #include "decoder.h"
 #include "ffmpeg-renderers/renderer.h"
 #include "ffmpeg-renderers/pacer/pacer.h"
+#include "ffmpeg-renderers/pacer/decodetimer.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -130,6 +131,7 @@ private:
     IFFmpegRenderer* m_FrontendRenderer;
     int m_ConsecutiveFailedDecodes;
     Pacer* m_Pacer;
+    DecodeTimer* m_DecodeTimer;
     BandwidthTracker m_BwTracker;
 
     // Everything received on the video socket (FEC, headers, frames later dropped),

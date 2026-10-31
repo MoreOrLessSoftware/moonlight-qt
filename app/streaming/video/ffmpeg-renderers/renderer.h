@@ -166,6 +166,13 @@ private:
     ((frame)->opaque = (void*)(((uintptr_t)(frame)->opaque & ~((uintptr_t)0xFFFF << 16)) | ((uintptr_t)(uint16_t)(latency) << 16)))
 #define ML_FRAME_HOST_LATENCY(frame) ((uint16_t)(((uintptr_t)(frame)->opaque >> 16) & 0xFFFF))
 
+// The end of the GPU work that decodes a frame, for DecodeTimer to wait for. See
+// markDecodeEnd().
+typedef struct _DECODE_MARK {
+    uint64_t sync;  // What to wait on, such as a semaphore, if the renderer has more than one
+    uint64_t value; // The value it reaches when the decode is done
+} DECODE_MARK, *PDECODE_MARK;
+
 // What the display has done with presented frames. See getPresentFeedback().
 typedef struct _PRESENT_FEEDBACK {
     uint32_t presentId;         // Present count after the frame just presented, 0 if unknown
@@ -283,6 +290,22 @@ public:
     // from the thread that renders.
     virtual bool waitForDecode(AVFrame*) {
         return false;
+    }
+
+    // Marks the end of the GPU work that decodes a frame, so the decoding time can run to
+    // when the GPU finishes it rather than to when the decoder hands the frame over. Called
+    // on the decoder thread after captureDecodeBoundary(). Returns false when there is
+    // nothing to wait for: the frame was decoded when it was handed over, or the renderer
+    // can't tell when the GPU finishes it.
+    virtual bool markDecodeEnd(AVFrame*, PDECODE_MARK) {
+        return false;
+    }
+
+    // Waits up to timeoutMs for the GPU to reach a mark markDecodeEnd() made. Returns 1 once
+    // it has, 0 if it hasn't yet, and -1 if waiting failed. A timeout of 0 only checks.
+    // Called on DecodeTimer's thread, and to check on the thread that renders.
+    virtual int waitForDecodeEnd(const DECODE_MARK&, uint32_t) {
+        return -1;
     }
 
     // Whether prepareFrame() can be called on a frame the GPU may still be decoding:
