@@ -224,7 +224,7 @@ static_assert(PACER_MAX_OUTSTANDING_FRAMES == MAX_QUEUED_FRAMES + 2,
 #define CADENCE_PARTIAL_MARGIN_US 0
 #define CADENCE_PARTIAL_MIN_SAMPLES 16
 
-Pacer::Pacer(IFFmpegRenderer* renderer, DecodeTimer* decodeTimer, PVIDEO_STATS videoStats) :
+Pacer::Pacer(IFFmpegRenderer* renderer, GpuTimer* decodeTimer, PVIDEO_STATS videoStats) :
     m_RenderThread(nullptr),
     m_VsyncThread(nullptr),
     m_DeferredFreeFrame(nullptr),
@@ -232,6 +232,7 @@ Pacer::Pacer(IFFmpegRenderer* renderer, DecodeTimer* decodeTimer, PVIDEO_STATS v
     m_VsyncSource(nullptr),
     m_VsyncRenderer(renderer),
     m_DecodeTimer(decodeTimer),
+    m_DrawTimer(new GpuTimer(renderer, "DrawTimer")),
     m_MaxVideoFps(0),
     m_DisplayFps(0),
     m_VideoStats(videoStats),
@@ -332,6 +333,9 @@ Pacer::~Pacer()
         // NB: This must happen on the same thread that calls renderFrame().
         m_VsyncRenderer->cleanupRenderContext();
     }
+
+    // Nothing draws any more
+    delete m_DrawTimer;
 
     // Delete any remaining unconsumed frames
     while (!m_RenderQueue.isEmpty()) {
@@ -756,64 +760,27 @@ void Pacer::finishFrame(AVFrame* frame, int64_t handedOverUs, int64_t renderStar
 {
     m_VideoStats->renderedFrames++;
 
-    // The frame's time from its first packet to its present, in four parts that add up
-    // to it, so with the host's latency and the network's they add up to capture to
-    // present:
-    // - Receiving, from its first packet to its last
-    // - Decoding, from its last packet until the decoder had handed it over and, where
-    //   the GPU decodes it, the GPU had finished. A hardware decoder hands frames over
-    //   once their decode is submitted, so the GPU's part can take far longer.
-    // - Rendering, the drawing and Present() call after that. Drawing started ahead of
-    //   the decode spends the time before it waiting on the GPU for the decode.
-    // - Queueing, the rest: waiting in the pacer's queues, and for the time to draw or
-    //   present the frame
-    // A frame the GPU was still decoding when Present() returned counts as decoding
-    // until then, and has no rendering time.
+    // Its statistics run to when the GPU finished drawing it, which without frame pacing
+    // can be well after Present() returned, so they are counted once that is known. See
+    // countFrameStats().
+    PACER_PENDING_STATS stats = {};
+    GPU_MARK drawMark;
+    stats.drawTicket = m_DrawTimer->track(frame, m_VsyncRenderer->markDrawEnd(&drawMark) ? &drawMark : nullptr);
+    stats.decodeTicket = m_DecodeTimer != nullptr ? m_DecodeTimer->ticketFor(frame) : 0;
+    stats.handedOverUs = handedOverUs;
     if (ML_FRAME_RECEIVE_TIMING(frame) != 0) {
-        int64_t firstPacketUs = ML_FRAME_FIRST_PACKET_US(frame);
-        int64_t lastPacketUs = ML_FRAME_LAST_PACKET_US(frame);
-
-        int64_t decodedUs = handedOverUs;
-        if (m_DecodeTimer != nullptr) {
-            decodedUs = qMax(decodedUs, m_DecodeTimer->completionUs(frame, presentUs));
-        }
-        decodedUs = qBound(lastPacketUs, decodedUs, presentUs);
-
-        auto afterDecodeUs = [decodedUs](int64_t startUs, int64_t endUs) {
-            return qMax<int64_t>(0, endUs - qMax(startUs, decodedUs));
-        };
-        int64_t renderUs = afterDecodeUs(renderStartUs, drawEndUs) + afterDecodeUs(presentStartUs, presentUs);
-
-        m_VideoStats->totalReassemblyTimeUs += (uint64_t)(lastPacketUs - firstPacketUs);
-        m_VideoStats->totalDecodeTimeUs += (uint64_t)(decodedUs - lastPacketUs);
-        m_VideoStats->totalRenderTimeUs += (uint64_t)renderUs;
-        m_VideoStats->totalPacerTimeUs += (uint64_t)(presentUs - decodedUs - renderUs);
-        m_VideoStats->framesWithClientLatency++;
+        stats.firstPacketUs = ML_FRAME_FIRST_PACKET_US(frame);
+        stats.lastPacketUs = ML_FRAME_LAST_PACKET_US(frame);
     }
+    stats.renderStartUs = renderStartUs;
+    stats.drawEndUs = drawEndUs;
+    stats.presentStartUs = presentStartUs;
+    stats.presentUs = presentUs;
+    stats.hostUs = frame->pts;
+    stats.hostLatency = ML_FRAME_HOST_LATENCY(frame);
 
-    // Capture to present. A frame without a host latency has no capture time of its own
-    // (the host repeated a frame), so it is left out either way.
-    uint16_t hostLatency = ML_FRAME_HOST_LATENCY(frame);
-    uint64_t captureUs;
-    if (hostLatency != 0 && frame->pts != 0 && LiGetHostTimeOnLocalClock((uint64_t)frame->pts, &captureUs)) {
-        // With clock sync, measured directly. Outside a second the sync must be wrong.
-        int64_t latencyUs = (int64_t)presentUs - (int64_t)captureUs;
-        if (latencyUs >= 0 && latencyUs < 1000000) {
-            m_VideoStats->totalCaptureToPresentUs += (uint64_t)latencyUs;
-            m_VideoStats->framesWithCaptureToPresent++;
-        }
-    }
-    else if (hostLatency != 0 && ML_FRAME_RECEIVE_TIMING(frame) != 0) {
-        // Without it, less the network transit, which nothing measures per frame. The host
-        // part is on the host's clock and the rest on ours, so each is exact on its own and
-        // they add without needing the clocks to agree.
-        uint64_t hostUs = (uint64_t)hostLatency * 100;
-        uint64_t clientUs = (uint64_t)qMax<int64_t>(0, (int64_t)presentUs - ML_FRAME_FIRST_PACKET_US(frame));
-
-        m_VideoStats->totalCaptureToPresentUs += hostUs + clientUs;
-        m_VideoStats->framesWithCaptureToPresent++;
-        m_VideoStats->framesWithoutNetworkTransit++;
-    }
+    m_PendingStats.enqueue(stats);
+    countPendingStats();
 
     // Wait until after next frame to free this one to ensure the GPU
     // doesn't stall or read garbage if the backing buffer gets returned
@@ -862,6 +829,90 @@ void Pacer::finishFrame(AVFrame* frame, int64_t handedOverUs, int64_t renderStar
     }
 
     m_FrameQueueLock.unlock();
+}
+
+// Counts the frames waiting for their statistics whose GPU times are known, in the order
+// they were presented. Never waits: a frame the GPU hasn't finished, or whose times
+// haven't been noted yet, waits for a later call.
+void Pacer::countPendingStats()
+{
+    while (!m_PendingStats.isEmpty()) {
+        const PACER_PENDING_STATS& stats = m_PendingStats.head();
+
+        int64_t gpuDecodedUs = stats.decodeTicket != 0 ? m_DecodeTimer->noteUs(stats.decodeTicket) : -1;
+        int64_t gpuDrawnUs = stats.drawTicket != 0 ? m_DrawTimer->noteUs(stats.drawTicket) : -1;
+
+        if ((gpuDecodedUs == 0 || gpuDrawnUs == 0) && m_PendingStats.size() <= PACER_MAX_PENDING_STATS) {
+            break;
+        }
+
+        countFrameStats(m_PendingStats.dequeue(), gpuDecodedUs, gpuDrawnUs);
+    }
+}
+
+// Counts a presented frame's statistics. gpuDecodedUs and gpuDrawnUs are when the GPU
+// finished decoding and drawing it, or 0 or less where that isn't known.
+//
+// The frame's time ends when it was both presented and drawn: when Present() returned,
+// or the GPU finished drawing it if that was later. With frame pacing the pacer waits
+// for the drawing before Present(); without it Present() returns as soon as the drawing
+// is submitted, before the GPU has decoded the frame, let alone drawn it.
+void Pacer::countFrameStats(const PACER_PENDING_STATS& stats, int64_t gpuDecodedUs, int64_t gpuDrawnUs)
+{
+    int64_t endUs = qMax(stats.presentUs, gpuDrawnUs);
+
+    // The frame's time from its first packet to its end, in four parts that add up to
+    // it, so with the host's latency and the network's they add up to capture to present:
+    // - Receiving, from its first packet to its last
+    // - Decoding, from its last packet until the decoder had handed it over and, where
+    //   the GPU decodes it, the GPU had finished. A hardware decoder hands frames over
+    //   once their decode is submitted, so the GPU's part can take far longer.
+    // - Rendering, the drawing and Present() call after that, and the GPU finishing the
+    //   drawing after Present() returned. Drawing started ahead of the decode spends the
+    //   time before it waiting on the GPU for the decode.
+    // - Queueing, the rest: waiting in the pacer's queues, and for the time to draw or
+    //   present the frame
+    if (stats.firstPacketUs != 0) {
+        int64_t decodedUs = stats.handedOverUs;
+        if (gpuDecodedUs > 0) {
+            decodedUs = qMax(decodedUs, gpuDecodedUs);
+        }
+        decodedUs = qBound(stats.lastPacketUs, decodedUs, endUs);
+
+        auto afterDecodeUs = [decodedUs](int64_t fromUs, int64_t toUs) {
+            return qMax<int64_t>(0, toUs - qMax(fromUs, decodedUs));
+        };
+        int64_t renderUs = afterDecodeUs(stats.renderStartUs, stats.drawEndUs) + afterDecodeUs(stats.presentStartUs, endUs);
+
+        m_VideoStats->totalReassemblyTimeUs += (uint64_t)(stats.lastPacketUs - stats.firstPacketUs);
+        m_VideoStats->totalDecodeTimeUs += (uint64_t)(decodedUs - stats.lastPacketUs);
+        m_VideoStats->totalRenderTimeUs += (uint64_t)renderUs;
+        m_VideoStats->totalPacerTimeUs += (uint64_t)(endUs - decodedUs - renderUs);
+        m_VideoStats->framesWithClientLatency++;
+    }
+
+    // Capture to present. A frame without a host latency has no capture time of its own
+    // (the host repeated a frame), so it is left out either way.
+    uint64_t captureUs;
+    if (stats.hostLatency != 0 && stats.hostUs != 0 && LiGetHostTimeOnLocalClock((uint64_t)stats.hostUs, &captureUs)) {
+        // With clock sync, measured directly. Outside a second the sync must be wrong.
+        int64_t latencyUs = endUs - (int64_t)captureUs;
+        if (latencyUs >= 0 && latencyUs < 1000000) {
+            m_VideoStats->totalCaptureToPresentUs += (uint64_t)latencyUs;
+            m_VideoStats->framesWithCaptureToPresent++;
+        }
+    }
+    else if (stats.hostLatency != 0 && stats.firstPacketUs != 0) {
+        // Without it, less the network transit, which nothing measures per frame. The host
+        // part is on the host's clock and the rest on ours, so each is exact on its own and
+        // they add without needing the clocks to agree.
+        uint64_t hostUs = (uint64_t)stats.hostLatency * 100;
+        uint64_t clientUs = (uint64_t)qMax<int64_t>(0, endUs - stats.firstPacketUs);
+
+        m_VideoStats->totalCaptureToPresentUs += hostUs + clientUs;
+        m_VideoStats->framesWithCaptureToPresent++;
+        m_VideoStats->framesWithoutNetworkTransit++;
+    }
 }
 
 void Pacer::dropFrameForEnqueue(QQueue<AVFrame*>& queue)
@@ -1015,7 +1066,7 @@ int Pacer::cadenceThread(void* context)
         // taken out.
         if (me->m_DecodeTimer != nullptr) {
             int64_t nowUs = (int64_t)LiGetMicroseconds();
-            int64_t gpuDecodedUs = me->m_DecodeTimer->completionUs(frame, nowUs);
+            int64_t gpuDecodedUs = me->m_DecodeTimer->completionUs(me->m_DecodeTimer->ticketFor(frame), nowUs);
             if (gpuDecodedUs != nowUs) {
                 row.gpuDecodedUs = gpuDecodedUs;
             }

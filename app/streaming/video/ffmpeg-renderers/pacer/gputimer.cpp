@@ -1,21 +1,22 @@
-#include "decodetimer.h"
+#include "gputimer.h"
 
 #include <QMutexLocker>
 
 // How long the thread waits at a time, so it notices when it is stopped
-#define DECODE_TIMER_WAIT_MS 50
+#define GPU_TIMER_WAIT_MS 50
 
 // A mark the GPU hasn't reached in this long never will be, such as after the device
 // was lost. Timing stops rather than wait on it forever.
-#define DECODE_TIMER_GIVE_UP_US 1000000
+#define GPU_TIMER_GIVE_UP_US 1000000
 
-// How long completionUs() waits for the thread to note a decode the GPU has finished.
-// The thread wakes for it within microseconds, unless it is still behind on earlier
-// frames, which the GPU has finished too.
-#define DECODE_TIMER_NOTE_WAIT_US 2000
+// How long completionUs() waits for the thread to note a mark the GPU has reached. The
+// thread wakes for it within microseconds, unless it is still behind on earlier marks,
+// which the GPU has reached too.
+#define GPU_TIMER_NOTE_WAIT_US 2000
 
-DecodeTimer::DecodeTimer(IFFmpegRenderer* renderer)
+GpuTimer::GpuTimer(IFFmpegRenderer* renderer, const char* name)
     : m_Renderer(renderer),
+      m_Name(name),
       m_Thread(nullptr),
       m_NextSeq(1),
       m_NextToWait(1),
@@ -24,7 +25,7 @@ DecodeTimer::DecodeTimer(IFFmpegRenderer* renderer)
 {
 }
 
-DecodeTimer::~DecodeTimer()
+GpuTimer::~GpuTimer()
 {
     m_Lock.lock();
     m_Stopping = true;
@@ -36,11 +37,8 @@ DecodeTimer::~DecodeTimer()
     }
 }
 
-void DecodeTimer::track(AVFrame* frame)
+uint64_t GpuTimer::track(const AVFrame* frame, const GPU_MARK* mark)
 {
-    DECODE_MARK mark = {};
-    bool marked = m_Renderer->markDecodeEnd(frame, &mark);
-
     QMutexLocker locker(&m_Lock);
 
     // The AVFrame may be one an earlier frame was freed from, whose entry must not be
@@ -51,61 +49,76 @@ void DecodeTimer::track(AVFrame* frame)
         }
     }
 
-    if (!marked || m_Failed) {
-        return;
+    if (mark == nullptr || m_Failed) {
+        return 0;
     }
 
-    // Started with the first frame there is something to wait for, so decoders that
-    // never mark one don't get a thread at all
+    // Started with the first mark, so renderers that never make one don't get a thread
     if (m_Thread == nullptr) {
-        m_Thread = SDL_CreateThread(DecodeTimer::threadProc, "DecodeTimer", this);
+        m_Thread = SDL_CreateThread(GpuTimer::threadProc, m_Name, this);
         if (m_Thread == nullptr) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Unable to start the thread that times decodes: %s",
+                        "%s: unable to start its thread: %s",
+                        m_Name,
                         SDL_GetError());
             m_Failed = true;
-            return;
+            return 0;
         }
     }
 
-    m_Entries.push_back({ frame, mark, m_NextSeq++, 0 });
-    if (m_Entries.size() > DECODE_TIMER_MAX_ENTRIES) {
+    uint64_t seq = m_NextSeq++;
+    m_Entries.push_back({ frame, *mark, seq, 0 });
+    if (m_Entries.size() > GPU_TIMER_MAX_ENTRIES) {
         m_Entries.pop_front();
     }
 
     m_EntryAdded.wakeOne();
+    return seq;
 }
 
-int64_t DecodeTimer::completionUs(const AVFrame* frame, int64_t nowUs)
+uint64_t GpuTimer::ticketFor(const AVFrame* frame)
 {
     QMutexLocker locker(&m_Lock);
 
-    if (m_Failed) {
-        return 0;
-    }
-
-    Entry* entry = nullptr;
     for (auto it = m_Entries.rbegin(); it != m_Entries.rend(); ++it) {
         if (it->frame == frame) {
-            entry = &*it;
-            break;
+            return it->seq;
         }
     }
 
-    if (entry == nullptr) {
+    return 0;
+}
+
+int64_t GpuTimer::noteUs(uint64_t ticket)
+{
+    QMutexLocker locker(&m_Lock);
+
+    Entry* entry = findEntry(ticket);
+    if (entry == nullptr || (m_Failed && entry->doneUs == 0)) {
+        return -1;
+    }
+
+    return entry->doneUs;
+}
+
+int64_t GpuTimer::completionUs(uint64_t ticket, int64_t nowUs)
+{
+    QMutexLocker locker(&m_Lock);
+
+    Entry* entry = findEntry(ticket);
+    if (entry == nullptr || m_Failed) {
         return 0;
     }
     else if (entry->doneUs != 0) {
         return entry->doneUs;
     }
 
-    // Not noted yet. Either the GPU is still decoding the frame, or it has just finished
+    // Not noted yet. Either the GPU hasn't reached the mark, or it has just reached it
     // and the thread is about to note when.
-    uint64_t seq = entry->seq;
-    DECODE_MARK mark = entry->mark;
+    GPU_MARK mark = entry->mark;
 
     locker.unlock();
-    int result = m_Renderer->waitForDecodeEnd(mark, 0);
+    int result = m_Renderer->waitForGpuMark(mark, 0);
     locker.relock();
 
     if (result == 0) {
@@ -115,9 +128,9 @@ int64_t DecodeTimer::completionUs(const AVFrame* frame, int64_t nowUs)
         return 0;
     }
 
-    int64_t giveUpUs = (int64_t)LiGetMicroseconds() + DECODE_TIMER_NOTE_WAIT_US;
+    int64_t giveUpUs = (int64_t)LiGetMicroseconds() + GPU_TIMER_NOTE_WAIT_US;
     for (;;) {
-        entry = findEntry(seq);
+        entry = findEntry(ticket);
         if (entry == nullptr || m_Failed) {
             return 0;
         }
@@ -134,9 +147,9 @@ int64_t DecodeTimer::completionUs(const AVFrame* frame, int64_t nowUs)
     }
 }
 
-DecodeTimer::Entry* DecodeTimer::findEntry(uint64_t seq)
+GpuTimer::Entry* GpuTimer::findEntry(uint64_t seq)
 {
-    if (m_Entries.empty() || seq < m_Entries.front().seq || seq > m_Entries.back().seq) {
+    if (seq == 0 || m_Entries.empty() || seq < m_Entries.front().seq || seq > m_Entries.back().seq) {
         return nullptr;
     }
 
@@ -144,9 +157,9 @@ DecodeTimer::Entry* DecodeTimer::findEntry(uint64_t seq)
     return &m_Entries[seq - m_Entries.front().seq];
 }
 
-int DecodeTimer::threadProc(void* context)
+int GpuTimer::threadProc(void* context)
 {
-    DecodeTimer* me = reinterpret_cast<DecodeTimer*>(context);
+    GpuTimer* me = reinterpret_cast<GpuTimer*>(context);
 
     // It notes the time it wakes, so it has to wake promptly
 #if SDL_VERSION_ATLEAST(2, 0, 9)
@@ -159,9 +172,9 @@ int DecodeTimer::threadProc(void* context)
     return 0;
 }
 
-// Waits for each frame's mark in the order the frames were decoded, which is the order
-// the GPU finishes them in
-void DecodeTimer::run()
+// Waits for each mark in the order they were tracked, which is the order the GPU
+// reaches them
+void GpuTimer::run()
 {
     QMutexLocker locker(&m_Lock);
 
@@ -169,7 +182,7 @@ void DecodeTimer::run()
     int64_t waitStartUs = 0;
 
     while (!m_Stopping) {
-        // Frames evicted before their turn are skipped
+        // Marks evicted before their turn are skipped
         if (!m_Entries.empty() && m_NextToWait < m_Entries.front().seq) {
             m_NextToWait = m_Entries.front().seq;
         }
@@ -181,23 +194,24 @@ void DecodeTimer::run()
         }
 
         uint64_t seq = entry->seq;
-        DECODE_MARK mark = entry->mark;
+        GPU_MARK mark = entry->mark;
         if (seq != waitingSeq) {
             waitingSeq = seq;
             waitStartUs = (int64_t)LiGetMicroseconds();
         }
 
         locker.unlock();
-        int result = m_Renderer->waitForDecodeEnd(mark, DECODE_TIMER_WAIT_MS);
+        int result = m_Renderer->waitForGpuMark(mark, GPU_TIMER_WAIT_MS);
         int64_t nowUs = (int64_t)LiGetMicroseconds();
         locker.relock();
 
-        if (result == 0 && nowUs - waitStartUs < DECODE_TIMER_GIVE_UP_US) {
+        if (result == 0 && nowUs - waitStartUs < GPU_TIMER_GIVE_UP_US) {
             continue;
         }
         else if (result != 1) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Timing decodes on the GPU failed (%d); decoding times run to when frames are handed over from now on",
+                        "%s: waiting for the GPU failed (%d); timing runs to the CPU's part from now on",
+                        m_Name,
                         result);
             m_Failed = true;
             m_EntryDone.wakeAll();

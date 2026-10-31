@@ -3,7 +3,7 @@
 #include "../../decoder.h"
 #include "../renderer.h"
 #include "pacertrace.h"
-#include "decodetimer.h"
+#include "gputimer.h"
 
 #include <QQueue>
 #include <QMutex>
@@ -27,6 +27,26 @@
 // when a frame still arriving is cut short
 #define PACER_CADENCE_READY_SAMPLES 64
 
+// Presented frames whose statistics may wait for the GPU to finish them. Past this, the
+// oldest is counted with whatever is known.
+#define PACER_MAX_PENDING_STATS 8
+
+// A presented frame, kept until the GPU has finished it so its statistics can run to
+// then. See finishFrame().
+typedef struct _PACER_PENDING_STATS {
+    uint64_t decodeTicket;      // For the decode timer, 0 if none
+    uint64_t drawTicket;        // For the draw timer, 0 if none
+    int64_t handedOverUs;       // When the decoder handed it over
+    int64_t firstPacketUs;      // When its first packet arrived, 0 if unknown
+    int64_t lastPacketUs;       // When its last packet arrived
+    int64_t renderStartUs;      // When drawing started
+    int64_t drawEndUs;          // When drawing finished on the CPU
+    int64_t presentStartUs;     // When Present() was called
+    int64_t presentUs;          // When Present() returned
+    int64_t hostUs;             // Host capture time (host clock), 0 if none
+    uint16_t hostLatency;       // See ML_FRAME_HOST_LATENCY()
+} PACER_PENDING_STATS;
+
 class IVsyncSource {
 public:
     virtual ~IVsyncSource() {}
@@ -45,7 +65,7 @@ public:
 class Pacer
 {
 public:
-    Pacer(IFFmpegRenderer* renderer, DecodeTimer* decodeTimer, PVIDEO_STATS videoStats);
+    Pacer(IFFmpegRenderer* renderer, GpuTimer* decodeTimer, PVIDEO_STATS videoStats);
 
     ~Pacer();
 
@@ -81,6 +101,10 @@ private:
     void finishFrame(AVFrame* frame, int64_t handedOverUs, int64_t renderStartUs, int64_t drawEndUs,
                      int64_t presentStartUs, int64_t presentUs);
 
+    void countPendingStats();
+
+    void countFrameStats(const PACER_PENDING_STATS& stats, int64_t gpuDecodedUs, int64_t gpuDrawnUs);
+
     void updatePartialDeadline(int64_t hostUs, bool paced);
 
     QQueue<AVFrame*> m_RenderQueue;
@@ -98,7 +122,9 @@ private:
 
     IVsyncSource* m_VsyncSource;
     IFFmpegRenderer* m_VsyncRenderer;
-    DecodeTimer* m_DecodeTimer;
+    GpuTimer* m_DecodeTimer;
+    GpuTimer* m_DrawTimer;
+    QQueue<PACER_PENDING_STATS> m_PendingStats;
     int m_MaxVideoFps;
     int m_DisplayFps;
     PVIDEO_STATS m_VideoStats;

@@ -543,7 +543,7 @@ bool FFmpegVideoDecoder::completeInitialization(const AVCodec* decoder, enum AVP
 
     // Don't bother initializing Pacer if we're not actually going to render
     if (testMode != TestMode::TestFrameOnly) {
-        m_DecodeTimer = new DecodeTimer(m_FrontendRenderer);
+        m_DecodeTimer = new GpuTimer(m_FrontendRenderer, "DecodeTimer");
         m_Pacer = new Pacer(m_FrontendRenderer, m_DecodeTimer, &m_ActiveWndVideoStats);
         if (!m_Pacer->initialize(params,
                                  params->enableFramePacing || (params->enableVsync && (m_FrontendRenderer->getRendererAttributes() & RENDERER_ATTRIBUTE_FORCE_PACING)))) {
@@ -1022,7 +1022,7 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
         char rttString[32];
 
         // The four parts of a frame's time on the client, over the same frames so they
-        // add up to it. See Pacer::finishFrame().
+        // add up to it. See Pacer::countFrameStats().
         double clientFrames = qMax<uint32_t>(1, stats.framesWithClientLatency);
 
         if (stats.lastRtt != 0) {
@@ -1858,7 +1858,7 @@ bool FFmpegVideoDecoder::initializePyrowave(PDECODER_PARAMETERS params)
         return true;
     }
 
-    m_DecodeTimer = new DecodeTimer(m_FrontendRenderer);
+    m_DecodeTimer = new GpuTimer(m_FrontendRenderer, "DecodeTimer");
     m_Pacer = new Pacer(m_FrontendRenderer, m_DecodeTimer, &m_ActiveWndVideoStats);
     if (!m_Pacer->initialize(params,
                              params->enableFramePacing || (params->enableVsync && (m_FrontendRenderer->getRendererAttributes() & RENDERER_ATTRIBUTE_FORCE_PACING)))) {
@@ -2285,9 +2285,10 @@ void FFmpegVideoDecoder::deliverDecodedFrame(AVFrame* frame, const DECODE_UNIT* 
 #endif
 
     // And time the GPU's part of the decode, which a hardware decoder hands the frame
-    // over before finishing. See Pacer::finishFrame().
+    // over before finishing. See Pacer::countFrameStats().
     if (m_DecodeTimer != nullptr) {
-        m_DecodeTimer->track(frame);
+        GPU_MARK decodeMark;
+        m_DecodeTimer->track(frame, m_FrontendRenderer->markDecodeEnd(frame, &decodeMark) ? &decodeMark : nullptr);
     }
 
     // Zero means there is no host capture time for this frame

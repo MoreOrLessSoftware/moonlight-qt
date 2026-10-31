@@ -262,7 +262,7 @@ ffmpeg {
         streaming/video/ffmpeg-renderers/swframemapper.cpp \
         streaming/video/ffmpeg-renderers/pacer/pacer.cpp \
         streaming/video/ffmpeg-renderers/pacer/pacertrace.cpp \
-        streaming/video/ffmpeg-renderers/pacer/decodetimer.cpp
+        streaming/video/ffmpeg-renderers/pacer/gputimer.cpp
 
     HEADERS += \
         streaming/video/ffmpeg.h \
@@ -272,7 +272,7 @@ ffmpeg {
         streaming/video/ffmpeg-renderers/swframemapper.h \
         streaming/video/ffmpeg-renderers/pacer/pacer.h \
         streaming/video/ffmpeg-renderers/pacer/pacertrace.h \
-        streaming/video/ffmpeg-renderers/pacer/decodetimer.h
+        streaming/video/ffmpeg-renderers/pacer/gputimer.h
 }
 libva {
     message(VAAPI renderer selected)

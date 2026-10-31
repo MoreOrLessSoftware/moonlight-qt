@@ -18,6 +18,10 @@ extern "C" {
 #include <vector>
 #include <set>
 
+// The sync of a draw mark, which waits on every semaphore in m_DrawEndSemaphores rather
+// than one semaphore. See waitForGpuMark().
+#define PLVK_MARK_DRAW UINT64_MAX
+
 #ifndef VK_KHR_video_decode_av1
 #define VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME "VK_KHR_video_decode_av1"
 #define VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR ((VkVideoCodecOperationFlagBitsKHR)0x00000004)
@@ -180,6 +184,20 @@ PlVkRenderer::~PlVkRenderer()
 
         for (int i = 0; i < (int)SDL_arraysize(m_Textures); i++) {
             pl_tex_destroy(m_Vulkan->gpu, &m_Textures[i]);
+        }
+
+        // Not while a signal is still pending on them
+        if (!m_DrawEndSemaphores.empty() && m_DrawEndValue != 0) {
+            std::vector<uint64_t> values(m_DrawEndSemaphores.size(), m_DrawEndValue);
+            VkSemaphoreWaitInfo waitInfo = {};
+            waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+            waitInfo.semaphoreCount = (uint32_t)m_DrawEndSemaphores.size();
+            waitInfo.pSemaphores = m_DrawEndSemaphores.data();
+            waitInfo.pValues = values.data();
+            fn_vkWaitSemaphores(m_Vulkan->device, &waitInfo, 500ull * 1000 * 1000);
+        }
+        for (VkSemaphore& semaphore : m_DrawEndSemaphores) {
+            pl_vulkan_sem_destroy(m_Vulkan->gpu, &semaphore);
         }
     }
 
@@ -513,6 +531,9 @@ bool PlVkRenderer::initialize(PDECODER_PARAMETERS params)
     fn_vkGetSemaphoreCounterValue = (PFN_vkGetSemaphoreCounterValue)m_PlVkInstance->get_proc_addr(m_PlVkInstance->instance, "vkGetSemaphoreCounterValue");
     fn_vkWaitSemaphores = (PFN_vkWaitSemaphores)m_PlVkInstance->get_proc_addr(m_PlVkInstance->instance, "vkWaitSemaphores");
     m_DecodeWaitEnabled = fn_vkGetSemaphoreCounterValue != nullptr && fn_vkWaitSemaphores != nullptr;
+
+    // For markDrawEnd()
+    createDrawEndSemaphores();
 
 #ifndef Q_OS_DARWIN
     // With frame pacing, the pacer can follow the host's cadence: it times each present
@@ -1190,6 +1211,8 @@ void PlVkRenderer::renderFrame(AVFrame *frame)
     pl_frame mappedFrame, targetFrame;
     std::vector<pl_tex> texturesToDestroy;
 
+    m_LastDrawEndValue = 0;
+
     // If waitToRender() failed to get the next swapchain frame, skip
     // rendering this frame. It probably means the window is occluded.
     if (!m_HasPendingSwapchainFrame) {
@@ -1217,6 +1240,9 @@ void PlVkRenderer::renderFrame(AVFrame *frame)
         SDL_PushEvent(&event);
         goto UnmapExit;
     }
+
+    // Before swapping buffers, which can wait for an earlier present
+    signalDrawEnd();
 
 #ifndef PLVK_USE_EARLY_RENDER_TO_WAIT
     endRenderTiming();
@@ -1289,6 +1315,7 @@ bool PlVkRenderer::prepareFrame(AVFrame* frame)
     }
 
     m_HasPreparedFrame = false;
+    m_LastDrawEndValue = 0;
 
     if (pl_gpu_is_failed(m_Vulkan->gpu)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -1327,7 +1354,8 @@ bool PlVkRenderer::prepareFrame(AVFrame* frame)
         return true;
     }
 
-    pl_gpu_flush(m_Vulkan->gpu);
+    // Flushes the drawing and marks its end, then waits for it
+    signalDrawEnd();
     pl_gpu_finish(m_Vulkan->gpu);
 
     for (pl_tex& texture : texturesToDestroy) {
@@ -1435,9 +1463,9 @@ bool PlVkRenderer::waitForDecode(AVFrame* frame)
     return true;
 }
 
-// The same semaphore and value as captureDecodeBoundary(), for DecodeTimer, and for as
+// The same semaphore and value as captureDecodeBoundary(), for GpuTimer, and for as
 // long as waiting works even where frame pacing has stopped waiting for decodes
-bool PlVkRenderer::markDecodeEnd(AVFrame* frame, PDECODE_MARK mark)
+bool PlVkRenderer::markDecodeEnd(AVFrame* frame, PGPU_MARK mark)
 {
     if (fn_vkGetSemaphoreCounterValue == nullptr || fn_vkWaitSemaphores == nullptr) {
         return false;
@@ -1475,7 +1503,104 @@ bool PlVkRenderer::markDecodeEnd(AVFrame* frame, PDECODE_MARK mark)
     return true;
 }
 
-int PlVkRenderer::waitForDecodeEnd(const DECODE_MARK& mark, uint32_t timeoutMs)
+// Makes a timeline semaphore for each of libplacebo's graphics queues, for markDrawEnd()
+void PlVkRenderer::createDrawEndSemaphores()
+{
+    fn_vkGetDeviceQueue = (PFN_vkGetDeviceQueue)m_PlVkInstance->get_proc_addr(m_PlVkInstance->instance, "vkGetDeviceQueue");
+    fn_vkQueueSubmit = (PFN_vkQueueSubmit)m_PlVkInstance->get_proc_addr(m_PlVkInstance->instance, "vkQueueSubmit");
+    if (fn_vkGetDeviceQueue == nullptr || fn_vkQueueSubmit == nullptr || fn_vkWaitSemaphores == nullptr) {
+        return;
+    }
+
+    for (int i = 0; i < m_Vulkan->queue_graphics.count; i++) {
+        VkQueue queue = VK_NULL_HANDLE;
+        fn_vkGetDeviceQueue(m_Vulkan->device, m_Vulkan->queue_graphics.index, i, &queue);
+
+        pl_vulkan_sem_params semParams = {};
+        semParams.type = VK_SEMAPHORE_TYPE_TIMELINE;
+        semParams.initial_value = 0;
+        VkSemaphore semaphore = pl_vulkan_sem_create(m_Vulkan->gpu, &semParams);
+
+        if (queue == VK_NULL_HANDLE || semaphore == VK_NULL_HANDLE) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Unable to set up timing drawing on the GPU");
+            pl_vulkan_sem_destroy(m_Vulkan->gpu, &semaphore);
+            for (VkSemaphore& created : m_DrawEndSemaphores) {
+                pl_vulkan_sem_destroy(m_Vulkan->gpu, &created);
+            }
+            m_DrawEndSemaphores.clear();
+            m_DrawEndQueues.clear();
+            return;
+        }
+
+        m_DrawEndQueues.push_back(queue);
+        m_DrawEndSemaphores.push_back(semaphore);
+    }
+
+    m_DrawEndEnabled = !m_DrawEndSemaphores.empty();
+}
+
+// Flushes what libplacebo has drawn to the GPU, then marks its end for markDrawEnd().
+//
+// libplacebo submits its own commands, so the mark is an empty submission to each of
+// its graphics queues that signals the queue's semaphore. A semaphore signalled by a
+// submission waits for everything submitted to the queue before it, so it is reached
+// once the GPU has finished the drawing on that queue.
+void PlVkRenderer::signalDrawEnd()
+{
+    m_LastDrawEndValue = 0;
+
+    pl_gpu_flush(m_Vulkan->gpu);
+
+    if (!m_DrawEndEnabled) {
+        return;
+    }
+
+    uint64_t value = m_DrawEndValue + 1;
+    for (size_t i = 0; i < m_DrawEndQueues.size(); i++) {
+        VkTimelineSemaphoreSubmitInfo timelineInfo = {};
+        timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+        timelineInfo.signalSemaphoreValueCount = 1;
+        timelineInfo.pSignalSemaphoreValues = &value;
+
+        VkSubmitInfo submitInfo = {};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.pNext = &timelineInfo;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &m_DrawEndSemaphores[i];
+
+        m_Vulkan->lock_queue(m_Vulkan, m_Vulkan->queue_graphics.index, (uint32_t)i);
+        VkResult result = fn_vkQueueSubmit(m_DrawEndQueues[i], 1, &submitInfo, VK_NULL_HANDLE);
+        m_Vulkan->unlock_queue(m_Vulkan, m_Vulkan->queue_graphics.index, (uint32_t)i);
+
+        if (result != VK_SUCCESS) {
+            // Signals already submitted still complete, so the destructor can wait for
+            // them, but the value isn't used for marks
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Marking the end of drawing on the GPU failed (%d); drawing isn't timed from now on",
+                        (int)result);
+            m_DrawEndEnabled = false;
+            return;
+        }
+    }
+
+    m_DrawEndValue = value;
+    m_LastDrawEndValue = value;
+}
+
+bool PlVkRenderer::markDrawEnd(PGPU_MARK mark)
+{
+    if (m_LastDrawEndValue == 0) {
+        return false;
+    }
+
+    mark->sync = PLVK_MARK_DRAW;
+    mark->value = m_LastDrawEndValue;
+    m_LastDrawEndValue = 0;
+    return true;
+}
+
+int PlVkRenderer::waitForGpuMark(const GPU_MARK& mark, uint32_t timeoutMs)
 {
     VkSemaphore semaphore;
     memcpy(&semaphore, &mark.sync, sizeof(semaphore));
@@ -1485,6 +1610,15 @@ int PlVkRenderer::waitForDecodeEnd(const DECODE_MARK& mark, uint32_t timeoutMs)
     waitInfo.semaphoreCount = 1;
     waitInfo.pSemaphores = &semaphore;
     waitInfo.pValues = &mark.value;
+
+    // A draw mark is reached once every graphics queue's semaphore is
+    std::vector<uint64_t> drawValues;
+    if (mark.sync == PLVK_MARK_DRAW) {
+        drawValues.assign(m_DrawEndSemaphores.size(), mark.value);
+        waitInfo.semaphoreCount = (uint32_t)m_DrawEndSemaphores.size();
+        waitInfo.pSemaphores = m_DrawEndSemaphores.data();
+        waitInfo.pValues = drawValues.data();
+    }
 
     switch (fn_vkWaitSemaphores(m_Vulkan->device, &waitInfo, (uint64_t)timeoutMs * 1000 * 1000)) {
     case VK_SUCCESS:

@@ -652,7 +652,7 @@ uint64_t PyrowaveVkDecoder::captureDecodeBoundary(AVFrame* frame)
     return ((PyrowaveVkSlot*)frame->data[0])->decodedValue;
 }
 
-bool PyrowaveVkDecoder::markDecodeEnd(AVFrame* frame, PDECODE_MARK mark)
+bool PyrowaveVkDecoder::markDecodeEnd(AVFrame* frame, PGPU_MARK mark)
 {
     uint64_t value = ((PyrowaveVkSlot*)frame->data[0])->decodedValue;
     if (value == 0) {

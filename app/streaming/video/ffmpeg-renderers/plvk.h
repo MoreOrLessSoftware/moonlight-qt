@@ -56,7 +56,7 @@ public:
 
     // See IFFmpegRenderer. The mark's sync is a timeline semaphore on the renderer's
     // device, which the renderer waits on.
-    virtual bool markDecodeEnd(AVFrame* frame, PDECODE_MARK mark) = 0;
+    virtual bool markDecodeEnd(AVFrame* frame, PGPU_MARK mark) = 0;
 };
 
 class PlVkRenderer : public IFFmpegRenderer {
@@ -74,8 +74,9 @@ public:
     virtual void presentPreparedFrame() override;
     virtual uint64_t captureDecodeBoundary(AVFrame* frame) override;
     virtual bool waitForDecode(AVFrame* frame) override;
-    virtual bool markDecodeEnd(AVFrame* frame, PDECODE_MARK mark) override;
-    virtual int waitForDecodeEnd(const DECODE_MARK& mark, uint32_t timeoutMs) override;
+    virtual bool markDecodeEnd(AVFrame* frame, PGPU_MARK mark) override;
+    virtual bool markDrawEnd(PGPU_MARK mark) override;
+    virtual int waitForGpuMark(const GPU_MARK& mark, uint32_t timeoutMs) override;
     virtual void notifyOverlayUpdated(Overlay::OverlayType) override;
     virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO) override;
     virtual int getRendererAttributes() override;
@@ -169,6 +170,17 @@ private:
     // Whether waitForDecode() still waits. Cleared if a wait ever fails.
     bool m_DecodeWaitEnabled = false;
 
+    // Timing when the GPU finishes drawing each frame: a timeline semaphore for each
+    // graphics queue, all signalled with the same value after each frame's drawing. See
+    // markDrawEnd(). Empty where this isn't available.
+    void createDrawEndSemaphores();
+    void signalDrawEnd();
+    std::vector<VkQueue> m_DrawEndQueues;
+    std::vector<VkSemaphore> m_DrawEndSemaphores;
+    uint64_t m_DrawEndValue = 0;
+    uint64_t m_LastDrawEndValue = 0;
+    bool m_DrawEndEnabled = false;
+
     // See prepareForExternalFrames() and setFrameSource()
     bool m_ExternalFrames = false;
     IPlVkFrameSource* m_FrameSource = nullptr;
@@ -210,4 +222,6 @@ private:
     PFN_vkEnumerateDeviceExtensionProperties fn_vkEnumerateDeviceExtensionProperties = nullptr;
     PFN_vkGetSemaphoreCounterValue fn_vkGetSemaphoreCounterValue = nullptr;
     PFN_vkWaitSemaphores fn_vkWaitSemaphores = nullptr;
+    PFN_vkGetDeviceQueue fn_vkGetDeviceQueue = nullptr;
+    PFN_vkQueueSubmit fn_vkQueueSubmit = nullptr;
 };

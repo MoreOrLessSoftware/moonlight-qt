@@ -76,6 +76,9 @@ D3D11VARenderer::D3D11VARenderer(int decoderSelectionPass, bool amfDecoder)
       m_GpuReadyEnabled(false),
       m_DecodeEndEvent(nullptr),
       m_DecodeEndFenceValue(0),
+      m_DrawEndEvent(nullptr),
+      m_DrawEndFenceValue(0),
+      m_LastDrawEndValue(0),
       m_QpcFrequency{},
       m_FrameStatsEnabled(false),
       m_FrameStatsFailureLogged(false),
@@ -146,6 +149,11 @@ D3D11VARenderer::~D3D11VARenderer()
     m_DecodeEndFence.Reset();
     if (m_DecodeEndEvent != nullptr) {
         CloseHandle(m_DecodeEndEvent);
+    }
+
+    m_DrawEndFence.Reset();
+    if (m_DrawEndEvent != nullptr) {
+        CloseHandle(m_DrawEndEvent);
     }
 
     m_RenderTargetView.Reset();
@@ -742,9 +750,10 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
         }
     }
 
-    // A fence on the decode device marks where each frame's decode ends, so the decoding
-    // time can run to when the GPU finishes it. See markDecodeEnd(). It needs a monitored
-    // fence, which can signal an event when the GPU gets to it.
+    // Fences on the decode device and the render device mark where each frame's decode
+    // and drawing end, so their times can run to when the GPU finishes them. See
+    // markDecodeEnd() and markDrawEnd(). They need monitored fences, which can signal an
+    // event when the GPU gets to them.
     if (m_FenceType == SupportedFenceType::Monitored) {
         hr = m_DecodeDevice->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_DecodeEndFence));
         if (SUCCEEDED(hr)) {
@@ -756,6 +765,18 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
                         "Unable to create a fence to time decodes on the GPU: %x",
                         hr);
             m_DecodeEndFence.Reset();
+        }
+
+        hr = m_RenderDevice->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_DrawEndFence));
+        if (SUCCEEDED(hr)) {
+            m_DrawEndEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        }
+
+        if (FAILED(hr) || m_DrawEndEvent == nullptr) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Unable to create a fence to time drawing on the GPU: %x",
+                        hr);
+            m_DrawEndFence.Reset();
         }
     }
 
@@ -1037,7 +1058,14 @@ bool D3D11VARenderer::prepareFrame(AVFrame* frame)
         m_LastColorTrc = frame->color_trc;
     }
 
-    // Mark the end of this frame's GPU work, so we can tell when it is done
+    // Mark the end of this frame's GPU work for timing it (see markDrawEnd()). Submitted
+    // with the drawing below, so ahead of Present().
+    m_LastDrawEndValue = 0;
+    if (m_DrawEndFence != nullptr && SUCCEEDED(m_RenderDeviceContext->Signal(m_DrawEndFence.Get(), m_DrawEndFenceValue + 1))) {
+        m_LastDrawEndValue = ++m_DrawEndFenceValue;
+    }
+
+    // And for waiting for it, so we can tell when it is done
     UINT64 gpuReadyValue = 0;
     if (m_GpuReadyEnabled) {
         gpuReadyValue = ++m_GpuReadyFenceValue;
@@ -2043,11 +2071,15 @@ bool D3D11VARenderer::canPrepareBeforeDecode()
     return m_GpuReadyEnabled;
 }
 
+// Which fence a mark is on. See waitForGpuMark().
+#define D3D11VA_MARK_DECODE 0
+#define D3D11VA_MARK_DRAW 1
+
 // Signals the decode-end fence after everything on the decode context so far, which is
 // this frame's decode, and AMF's copy or PyroWave's packing into it where there is one.
 // Unlike captureDecodeBoundary(), with one device too, and whether or not frame pacing
 // waits for decodes.
-bool D3D11VARenderer::markDecodeEnd(AVFrame*, PDECODE_MARK mark)
+bool D3D11VARenderer::markDecodeEnd(AVFrame*, PGPU_MARK mark)
 {
     if (m_DecodeEndFence == nullptr) {
         return false;
@@ -2068,29 +2100,46 @@ bool D3D11VARenderer::markDecodeEnd(AVFrame*, PDECODE_MARK mark)
         return false;
     }
 
-    mark->sync = 0;
+    mark->sync = D3D11VA_MARK_DECODE;
     mark->value = value;
     return true;
 }
 
-int D3D11VARenderer::waitForDecodeEnd(const DECODE_MARK& mark, uint32_t timeoutMs)
+// The fence prepareFrame() signalled after the frame it last drew
+bool D3D11VARenderer::markDrawEnd(PGPU_MARK mark)
 {
-    if (m_DecodeEndFence->GetCompletedValue() >= mark.value) {
+    if (m_LastDrawEndValue == 0) {
+        return false;
+    }
+
+    mark->sync = D3D11VA_MARK_DRAW;
+    mark->value = m_LastDrawEndValue;
+    m_LastDrawEndValue = 0;
+    return true;
+}
+
+int D3D11VARenderer::waitForGpuMark(const GPU_MARK& mark, uint32_t timeoutMs)
+{
+    // Each kind of mark has its own fence, and its own event for its own GpuTimer's thread
+    ID3D11Fence* fence = mark.sync == D3D11VA_MARK_DRAW ? m_DrawEndFence.Get() : m_DecodeEndFence.Get();
+    HANDLE event = mark.sync == D3D11VA_MARK_DRAW ? m_DrawEndEvent : m_DecodeEndEvent;
+
+    if (fence->GetCompletedValue() >= mark.value) {
         return 1;
     }
     else if (timeoutMs == 0) {
-        // Only DecodeTimer's thread waits on the event
+        // Only GpuTimer's thread waits on the event
         return 0;
     }
 
-    if (FAILED(m_DecodeEndFence->SetEventOnCompletion(mark.value, m_DecodeEndEvent))) {
+    if (FAILED(fence->SetEventOnCompletion(mark.value, event))) {
         return -1;
     }
 
-    switch (WaitForSingleObject(m_DecodeEndEvent, timeoutMs)) {
+    switch (WaitForSingleObject(event, timeoutMs)) {
     case WAIT_OBJECT_0:
         // The event may have been set for a value an earlier wait timed out on
-        return m_DecodeEndFence->GetCompletedValue() >= mark.value ? 1 : 0;
+        return fence->GetCompletedValue() >= mark.value ? 1 : 0;
     case WAIT_TIMEOUT:
         return 0;
     default:
