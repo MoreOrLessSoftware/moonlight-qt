@@ -1007,6 +1007,23 @@ int Pacer::cadenceThread(void* context)
             arriveNow();
         }
 
+        // When the GPU finished decoding the frame, and how long a frame drawn ahead
+        // then waited in the queue behind the frame before it. Drawing ahead starts as
+        // the frame is taken, so that wait made its arrival as much later, and the delay
+        // must not learn from it (see scheduleFrame()). Where it isn't known when the GPU
+        // finished, the frame may still have been decoding while it queued, so nothing is
+        // taken out.
+        if (me->m_DecodeTimer != nullptr) {
+            int64_t nowUs = (int64_t)LiGetMicroseconds();
+            int64_t gpuDecodedUs = me->m_DecodeTimer->completionUs(frame, nowUs);
+            if (gpuDecodedUs != nowUs) {
+                row.gpuDecodedUs = gpuDecodedUs;
+            }
+        }
+        if (row.drawnAhead && row.gpuDecodedUs != 0) {
+            row.queuedUs = qMax<int64_t>(0, row.dequeueUs - qMax(row.decodedUs, row.gpuDecodedUs));
+        }
+
         int64_t targetUs = me->scheduleFrame(frame, &row);
 
         // A frame held up in the display's queue is cleared by skipping one. See
@@ -1063,6 +1080,19 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
     int64_t hostUs = frame->pts;
     int64_t arrivalUs = frame->pkt_dts;
 
+    // When the frame would have arrived had it not waited in the queue behind the frame
+    // before it, which is what the delay, the time frames take to get ready and host
+    // timestamp steps are judged from. Its schedule still can't be earlier than its
+    // arrival.
+    //
+    // With the arrival itself, a frame that waited took the wait into the delay, which
+    // held the next frame as long, so it waited too. With the pacing thread busy for
+    // nearly a whole frame interval with each frame, the queue then never emptied: one
+    // session at 120 FPS started with a backlog that was still draining when the cadence
+    // was learned, and every frame after waited 8.6 ms in the queue, 8 ms more capture to
+    // present than a session that learned it without one.
+    int64_t readyUs = arrivalUs - row->queuedUs;
+
     row->frame = m_FrameIndex++;
     row->hostUs = hostUs;
     row->arrivalUs = arrivalUs;
@@ -1093,8 +1123,8 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
     m_DrawLeadUs += m_DrawMarginUs;
 
     // How long frames take from their last packet to being ready to draw
-    if (row->lastPacketUs != 0 && arrivalUs >= row->lastPacketUs) {
-        m_ReadyCostsUs[m_NextReadyCost] = (uint32_t)qMin<int64_t>(arrivalUs - row->lastPacketUs, UINT32_MAX);
+    if (row->lastPacketUs != 0 && readyUs >= row->lastPacketUs) {
+        m_ReadyCostsUs[m_NextReadyCost] = (uint32_t)qMin<int64_t>(readyUs - row->lastPacketUs, UINT32_MAX);
         m_NextReadyCost = (m_NextReadyCost + 1) % PACER_CADENCE_READY_SAMPLES;
         m_ReadyCostCount = qMin(m_ReadyCostCount + 1, PACER_CADENCE_READY_SAMPLES);
     }
@@ -1215,20 +1245,20 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
 
     if (m_HostStepsEnabled && m_LearnFramesLeft == 0 && m_TransitCount > 0 && m_MaxVideoFps > 0) {
         double streamIntervalUs = 1000000.0 / m_MaxVideoFps;
-        double latenessUs = arrivalUs - (m_SmoothedUs + m_DelayUs);
-        int64_t arrivalIntervalUs = m_LastArrivalUs != 0 ? arrivalUs - m_LastArrivalUs : 0;
+        double latenessUs = readyUs - (m_SmoothedUs + m_DelayUs);
+        int64_t arrivalIntervalUs = m_LastArrivalUs != 0 ? readyUs - m_LastArrivalUs : 0;
 
         if (!m_HostStepActive && hostIntervalUs > 0 &&
                 arrivalIntervalUs - hostIntervalUs > streamIntervalUs &&
                 latenessUs > streamIntervalUs / 2) {
             m_HostStepActive = true;
-            m_HostStepStartUs = arrivalUs;
+            m_HostStepStartUs = readyUs;
             m_HostStepLatenessUs = latenessUs;
         }
 
         if (m_HostStepActive) {
             if (latenessUs < m_HostStepLatenessUs / 2 ||
-                    arrivalUs - m_HostStepStartUs > CADENCE_HOST_STEP_MAX_US) {
+                    readyUs - m_HostStepStartUs > CADENCE_HOST_STEP_MAX_US) {
                 // Back in line with its stamps, or the offset has lasted long
                 // enough to be the timeline now
                 m_HostStepActive = false;
@@ -1242,7 +1272,7 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
         }
     }
 
-    m_LastArrivalUs = arrivalUs;
+    m_LastArrivalUs = readyUs;
 
     if (!hostStep) {
         // The first arrivals of a timeline are dropped from the delay once they have
@@ -1258,7 +1288,7 @@ int64_t Pacer::scheduleFrame(AVFrame* frame, PPACER_TRACE_ROW row)
 
         // How late this frame arrived relative to its smoothed host time, and how long
         // frames have to wait for nearly all of the recent ones to have arrived
-        m_TransitUs[m_NextTransit] = arrivalUs - (int64_t)m_SmoothedUs;
+        m_TransitUs[m_NextTransit] = readyUs - (int64_t)m_SmoothedUs;
         m_NextTransit = (m_NextTransit + 1) % PACER_CADENCE_TRANSIT_SAMPLES;
         m_TransitCount = qMin(m_TransitCount + 1, PACER_CADENCE_TRANSIT_SAMPLES);
 

@@ -201,12 +201,17 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "#   the decode (ML_PACING_DRAW_AHEAD=0 turns this off). arrival_us is then when the GPU had finished\n"
                     << "#   both, so decode_wait_us includes the drawing and draw_us the rest of the decode, and only the\n"
                     << "#   Present() call is timed.\n"
+                    << "# gpu_decoded_us: when the GPU finished decoding the frame, 0 if unknown. queued_us: how long a\n"
+                    << "#   frame drawn ahead waited in the queue after it was decoded, behind the frame before it. Its\n"
+                    << "#   drawing started that much late, so its arrival_us is that much late, and the delay learns from\n"
+                    << "#   arrival_us - queued_us.\n"
                     << "frame,host_us,arrival_us,smoothed_us,delay_us,target_us,render_start_us,present_us,"
                        "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,draw_us,present_call_us,"
                        "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step,"
                        "dequeue_us,draw_due_us,present_id,displayed_id,displayed_us,presentation_mode,queued_presents,"
                        "display_latency_us,drained_before,tear_guard,displayed_refresh,sync_refresh,"
-                       "first_packet_us,last_packet_us,decoded_us,receive_us,decode_us,decode_wait_us,partial,partial_pct,drawn_ahead\n";
+                       "first_packet_us,last_packet_us,decoded_us,receive_us,decode_us,decode_wait_us,partial,partial_pct,drawn_ahead,"
+                       "gpu_decoded_us,queued_us\n";
 
     trace->m_Thread = SDL_CreateThread(PacerTrace::writerThread, "PacerTrace", trace);
     if (trace->m_Thread == nullptr) {
@@ -404,6 +409,9 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row, const PACER_TRACE_ROW* nex
         if (decodeWaitUs >= 0) {
             m_DecodeWait.add(decodeWaitUs);
         }
+        if (row.drawnAhead) {
+            m_Queued.add(row.queuedUs);
+        }
         m_PresentCall.add(presentCallUs);
 
         if (lateUs > 1000) {
@@ -535,7 +543,9 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row, const PACER_TRACE_ROW* nex
              << decodeWaitUs << ','
              << (int)row.partial << ','
              << (row.partial != 0 ? (int)row.partialPercent : 100) << ','
-             << (int)row.drawnAhead << '\n';
+             << (int)row.drawnAhead << ','
+             << row.gpuDecodedUs << ','
+             << row.queuedUs << '\n';
 
     m_Previous = row;
     m_HavePrevious = true;
@@ -565,6 +575,7 @@ void PacerTrace::writeFooter()
              << "# decoder, last packet to handed over: " << m_Decode.describe() << "\n"
              << "# waiting for the GPU to finish decoding: " << m_DecodeWait.describe() << "\n"
              << "# drawn ahead, the drawing waiting on the GPU for the decode: " << m_DrawnAheadFrames << " of " << m_Rows << "\n"
+             << "# drawn ahead, waiting in the queue after being decoded: " << m_Queued.describe() << "\n"
              << "# hold arrival to present: " << m_Hold.describe() << "\n"
              << "# drawing: " << m_Draw.describe() << "\n"
              << "# Present() call: " << m_PresentCall.describe() << "\n"
