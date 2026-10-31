@@ -3,11 +3,21 @@
 
 #include <Limelight.h>
 
+#include <QDateTime>
+#include <QDir>
+
+// Latency test CSVs kept next to the log. Older ones are removed.
+#define LATENCY_TEST_FILES_KEPT 20
+
 using namespace Overlay;
 
 OverlayManager::OverlayManager() :
     m_LatencyMarkerLit(false),
     m_LatencyMarkerFlipUs(0),
+    m_LatencyMarkerFlips(0),
+    m_LatencyMarkerDrawnFlipUs(0),
+    m_LatencyMarkerDrawnTestPress(0),
+    m_LatencyMarkerFile(nullptr),
     m_LatencyTestDone(0),
     m_LatencyTestTotal(0),
     m_Renderer(nullptr),
@@ -39,6 +49,8 @@ OverlayManager::OverlayManager() :
 
 OverlayManager::~OverlayManager()
 {
+    delete m_LatencyMarkerFile;
+
     for (int i = 0; i < OverlayType::OverlayMax; i++) {
         if (m_Overlays[i].surface != nullptr) {
             SDL_FreeSurface(m_Overlays[i].surface);
@@ -115,6 +127,9 @@ void OverlayManager::setOverlayState(OverlayType type, bool enabled)
         if (type == OverlayType::OverlayLatencyMarker) {
             m_LatencyMarkerLit = false;
             m_LatencyMarkerFlipUs = 0;
+            m_LatencyMarkerFlips = 0;
+            m_LatencyMarkerDrawnFlipUs = 0;
+            m_LatencyMarkerDrawnTestPress = 0;
         }
 
         notifyOverlayUpdated(type);
@@ -137,13 +152,86 @@ void OverlayManager::setOverlayColor(OverlayType type, SDL_Color color)
     setOverlayTextUpdated(type);
 }
 
-void OverlayManager::flipLatencyMarker()
+void OverlayManager::flipLatencyMarker(int testPress)
 {
     if (m_Overlays[OverlayType::OverlayLatencyMarker].enabled) {
-        m_LatencyMarkerFlipUs = LiGetMicroseconds();
+        uint64_t flipUs = LiGetMicroseconds();
+        m_LatencyMarkerFlipUs = flipUs;
         m_LatencyMarkerLit = !m_LatencyMarkerLit;
         notifyOverlayUpdated(OverlayType::OverlayLatencyMarker);
+
+        // The renderer has the new marker now, so frames drawn from here on show it
+        m_LatencyMarkerDrawnFlipUs = flipUs;
+        m_LatencyMarkerDrawnTestPress = testPress;
+        m_LatencyMarkerFlips++;
     }
+}
+
+void OverlayManager::startLatencyTestLog()
+{
+    // The test's first press opens the new file
+    QMutexLocker locker(&m_LatencyMarkerFileLock);
+    delete m_LatencyMarkerFile;
+    m_LatencyMarkerFile = nullptr;
+}
+
+void OverlayManager::logLatencyTestPress(int testPress, uint64_t flipUs, double presentMs, double drawMs)
+{
+    QMutexLocker locker(&m_LatencyMarkerFileLock);
+
+    if (m_LatencyMarkerFile == nullptr) {
+        QDir logDir(Path::getLogDir());
+        m_LatencyMarkerFile = new QFile(logDir.filePath(QString("Moonlight-latency-test-%1.csv").arg(QDateTime::currentSecsSinceEpoch())));
+        if (!m_LatencyMarkerFile->open(QIODevice::WriteOnly | QIODevice::Text)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Unable to write the latency test's presses to %s",
+                        qPrintable(m_LatencyMarkerFile->fileName()));
+            return;
+        }
+
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Writing the latency test's presses to %s",
+                    qPrintable(m_LatencyMarkerFile->fileName()));
+
+        // Sunshine's tools/latency_test/analyze_video.py reads these (--marker-log)
+        m_LatencyMarkerFile->write("# Moonlight latency test presses. press_s: when the key was pressed, on Moonlight's clock. "
+                                   "present_ms, draw_ms: how long after it the first frame showing the latency marker's flip "
+                                   "was presented, and started drawing.\n"
+                                   "press,press_s,present_ms,draw_ms\n");
+
+        QStringList oldFiles = logDir.entryList(QStringList("Moonlight-latency-test-*.csv"), QDir::Files, QDir::SortFlag::Time);
+        for (int i = LATENCY_TEST_FILES_KEPT; i < oldFiles.size(); i++) {
+            QFile(logDir.filePath(oldFiles.at(i))).remove();
+        }
+    }
+
+    if (!m_LatencyMarkerFile->isOpen()) {
+        return;
+    }
+
+    // Flushed every line, so a test can be analysed while Moonlight is still running.
+    // A press comes every few hundred milliseconds at most.
+    m_LatencyMarkerFile->write(QString("%1,%2,%3,%4\n")
+                                   .arg(testPress)
+                                   .arg((double)flipUs / 1000000.0, 0, 'f', 6)
+                                   .arg(presentMs, 0, 'f', 3)
+                                   .arg(drawMs, 0, 'f', 3)
+                                   .toUtf8());
+    m_LatencyMarkerFile->flush();
+}
+
+uint32_t OverlayManager::getLatencyMarkerFlip(uint64_t* flipUs, int* testPress)
+{
+    if (!m_Overlays[OverlayType::OverlayLatencyMarker].enabled) {
+        *flipUs = 0;
+        *testPress = 0;
+        return 0;
+    }
+
+    uint32_t flips = m_LatencyMarkerFlips;
+    *flipUs = m_LatencyMarkerDrawnFlipUs;
+    *testPress = m_LatencyMarkerDrawnTestPress;
+    return flips;
 }
 
 void OverlayManager::updateLatencyTimer()

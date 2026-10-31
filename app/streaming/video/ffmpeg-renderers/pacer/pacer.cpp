@@ -296,7 +296,11 @@ Pacer::Pacer(IFFmpegRenderer* renderer, GpuTimer* decodeTimer, PVIDEO_STATS vide
     m_FrameIndex(0),
     m_DroppedSinceRow(0),
     m_DrainedSinceRow(0),
-    m_EvictedFrames(0)
+    m_EvictedFrames(0),
+    m_DrawnMarkerFlip(0),
+    m_DrawnMarkerFlipUs(0),
+    m_DrawnMarkerTestPress(0),
+    m_LoggedMarkerFlip(0)
 {
 
 }
@@ -744,7 +748,7 @@ void Pacer::renderFrame(AVFrame* frame, int64_t handedOverUs)
 {
     int64_t renderStartUs = (int64_t)LiGetMicroseconds();
 
-    Session::get()->getOverlayManager().updateLatencyTimer();
+    updateOverlaysForDraw();
     m_VsyncRenderer->renderFrame(frame);
 
     int64_t presentUs = (int64_t)LiGetMicroseconds();
@@ -778,6 +782,9 @@ void Pacer::finishFrame(AVFrame* frame, int64_t handedOverUs, int64_t renderStar
     stats.presentUs = presentUs;
     stats.hostUs = frame->pts;
     stats.hostLatency = ML_FRAME_HOST_LATENCY(frame);
+    stats.markerFlip = m_DrawnMarkerFlip;
+    stats.markerFlipUs = m_DrawnMarkerFlipUs;
+    stats.markerTestPress = m_DrawnMarkerTestPress;
 
     m_PendingStats.enqueue(stats);
     countPendingStats();
@@ -829,6 +836,14 @@ void Pacer::finishFrame(AVFrame* frame, int64_t handedOverUs, int64_t renderStar
     }
 
     m_FrameQueueLock.unlock();
+}
+
+// Updates the latency timer just before a frame is drawn, and notes which flip of the
+// latency marker the frame shows
+void Pacer::updateOverlaysForDraw()
+{
+    Session::get()->getOverlayManager().updateLatencyTimer();
+    m_DrawnMarkerFlip = Session::get()->getOverlayManager().getLatencyMarkerFlip(&m_DrawnMarkerFlipUs, &m_DrawnMarkerTestPress);
 }
 
 // Counts the frames waiting for their statistics whose GPU times are known, in the order
@@ -913,6 +928,27 @@ void Pacer::countFrameStats(const PACER_PENDING_STATS& stats, int64_t gpuDecoded
         m_VideoStats->framesWithCaptureToPresent++;
         m_VideoStats->framesWithoutNetworkTransit++;
     }
+
+    // The first frame showing each flip of the latency marker made by an automatic latency
+    // test's press. A camera times the host's response to the press against the marker, but
+    // the marker only reaches the screen with the next frame drawn, so it starts late by
+    // this much. Adding it to the camera's figure gives the time from the key press to the
+    // host's response being presented. Sunshine's tools/latency_test/analyze_video.py reads
+    // these, from the log or the test's own CSV; it matches them to the presses it filmed by
+    // the gaps between them.
+    if (stats.markerTestPress != 0 && stats.markerFlip != m_LoggedMarkerFlip) {
+        double presentMs = (double)(endUs - (int64_t)stats.markerFlipUs) / 1000.0;
+        double drawMs = (double)(stats.renderStartUs - (int64_t)stats.markerFlipUs) / 1000.0;
+
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Latency test: press %d at %.3f s presented %.2f ms after the key press (drawing started at %.2f ms)",
+                    stats.markerTestPress,
+                    (double)stats.markerFlipUs / 1000000.0,
+                    presentMs,
+                    drawMs);
+        Session::get()->getOverlayManager().logLatencyTestPress(stats.markerTestPress, stats.markerFlipUs, presentMs, drawMs);
+    }
+    m_LoggedMarkerFlip = stats.markerFlip;
 }
 
 void Pacer::dropFrameForEnqueue(QQueue<AVFrame*>& queue)
@@ -1042,7 +1078,7 @@ int Pacer::cadenceThread(void* context)
             row.renderStartUs = (int64_t)LiGetMicroseconds();
             row.drawDueUs = row.renderStartUs;
 
-            Session::get()->getOverlayManager().updateLatencyTimer();
+            me->updateOverlaysForDraw();
             if (me->m_VsyncRenderer->prepareFrame(frame)) {
                 row.drawnAhead = 1;
                 row.drawEndUs = (int64_t)LiGetMicroseconds();
@@ -1493,7 +1529,7 @@ void Pacer::presentAt(AVFrame* frame, int64_t targetUs, PPACER_TRACE_ROW row)
     }
 
     if (!row->drawnAhead) {
-        Session::get()->getOverlayManager().updateLatencyTimer();
+        updateOverlaysForDraw();
     }
 
     if (row->drawnAhead) {

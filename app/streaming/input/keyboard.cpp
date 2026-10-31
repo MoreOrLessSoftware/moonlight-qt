@@ -246,6 +246,7 @@ void SdlInputHandler::toggleLatencyTest()
                 LATENCY_TEST_PRESSES);
     m_LatencyTestPressesDone = 0;
     m_LatencyTestKeyDown = false;
+    Session::get()->getOverlayManager().startLatencyTestLog();
     SDL_AtomicSet(&m_LatencyTestRunning, 1);
     Session::get()->getOverlayManager().setLatencyTestProgress(0, LATENCY_TEST_PRESSES);
     m_LatencyTestTimer = SDL_AddTimer(LATENCY_TEST_START_DELAY_MS, latencyTestTimerCallback, this);
@@ -273,9 +274,10 @@ Uint32 SdlInputHandler::latencyTestTimerCallback(Uint32, void* param)
         return 0;
     }
 
-    // Same order as a real key press: send, then flip the marker
+    // Same order as a real key press: send, then flip the marker. Only the test's own
+    // presses are logged, numbered as the timer shows them.
     LiSendKeyboardEvent2(0x8000 | VK_F24, KEY_ACTION_DOWN, 0, 0);
-    Session::get()->getOverlayManager().flipLatencyMarker();
+    Session::get()->getOverlayManager().flipLatencyMarker(me->m_LatencyTestPressesDone + 1);
     me->m_LatencyTestKeyDown = true;
     me->m_LatencyTestPressesDone++;
     Session::get()->getOverlayManager().setLatencyTestProgress(me->m_LatencyTestPressesDone, LATENCY_TEST_PRESSES);

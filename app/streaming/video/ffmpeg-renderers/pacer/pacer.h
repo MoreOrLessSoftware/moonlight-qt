@@ -45,6 +45,9 @@ typedef struct _PACER_PENDING_STATS {
     int64_t presentUs;          // When Present() returned
     int64_t hostUs;             // Host capture time (host clock), 0 if none
     uint16_t hostLatency;       // See ML_FRAME_HOST_LATENCY()
+    uint32_t markerFlip;        // The latency marker flip it shows, 0 if the marker is off
+    uint64_t markerFlipUs;      // When that flip happened
+    int markerTestPress;        // The latency test press that made that flip, 0 if none
 } PACER_PENDING_STATS;
 
 class IVsyncSource {
@@ -100,6 +103,8 @@ private:
 
     void finishFrame(AVFrame* frame, int64_t handedOverUs, int64_t renderStartUs, int64_t drawEndUs,
                      int64_t presentStartUs, int64_t presentUs);
+
+    void updateOverlaysForDraw();
 
     void countPendingStats();
 
@@ -203,4 +208,11 @@ private:
     uint32_t m_DroppedSinceRow;
     uint32_t m_DrainedSinceRow;
     uint32_t m_EvictedFrames;
+
+    // The latency marker flip in the frame being drawn, and the latest one logged. See
+    // countFrameStats().
+    uint32_t m_DrawnMarkerFlip;
+    uint64_t m_DrawnMarkerFlipUs;
+    int m_DrawnMarkerTestPress;
+    uint32_t m_LoggedMarkerFlip;
 };
