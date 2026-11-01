@@ -1006,6 +1006,14 @@ int Pacer::cadenceThread(void* context)
         row.partial = (uint8_t)ML_FRAME_PARTIAL_KIND(frame);
         row.partialPercent = (uint8_t)ML_FRAME_PARTIAL_PERCENT(frame);
 
+        // The frame's capture on our clock, as the statistics' capture to present uses it
+        // (see countFrameStats()), so a trace can be lined up with the host's own times
+        uint64_t captureLocalUs;
+        if (ML_FRAME_HOST_LATENCY(frame) != 0 && frame->pts != 0 &&
+                LiGetHostTimeOnLocalClock((uint64_t)frame->pts, &captureLocalUs)) {
+            row.captureLocalUs = (int64_t)captureLocalUs;
+        }
+
         // Moves the frame's arrival to now. The packet times are kept relative to the
         // arrival, so they move with it.
         auto arriveNow = [frame]() {

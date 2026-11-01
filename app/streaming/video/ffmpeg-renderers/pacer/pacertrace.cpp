@@ -205,13 +205,17 @@ PacerTrace* PacerTrace::startIfRequested(int displayHz, int streamFps, const QSt
                     << "#   frame drawn ahead waited in the queue after it was decoded, behind the frame before it. Its\n"
                     << "#   drawing started that much late, so its arrival_us is that much late, and the delay learns from\n"
                     << "#   arrival_us - queued_us.\n"
+                    << "# capture_local_us: when the host captured the frame, on our clock through the clock sync, 0 where\n"
+                    << "#   the host doesn't answer clock sync or repeated the frame. capture_to_present_us = present_us -\n"
+                    << "#   capture_local_us: the statistics' capture to present for the frame, which runs to when the GPU\n"
+                    << "#   finished drawing where that was after Present() returned (only without frame pacing). -1 where unknown.\n"
                     << "frame,host_us,arrival_us,smoothed_us,delay_us,target_us,render_start_us,present_us,"
                        "host_interval_us,present_interval_us,spacing_error_us,late_us,hold_us,draw_us,present_call_us,"
                        "source_interval_us,tear,tear_line_pct,queue_depth,dropped_before,learning,host_step,"
                        "dequeue_us,draw_due_us,present_id,displayed_id,displayed_us,presentation_mode,queued_presents,"
                        "display_latency_us,drained_before,tear_guard,displayed_refresh,sync_refresh,"
                        "first_packet_us,last_packet_us,decoded_us,receive_us,decode_us,decode_wait_us,partial,partial_pct,drawn_ahead,"
-                       "gpu_decoded_us,queued_us\n";
+                       "gpu_decoded_us,queued_us,capture_local_us,capture_to_present_us\n";
 
     trace->m_Thread = SDL_CreateThread(PacerTrace::writerThread, "PacerTrace", trace);
     if (trace->m_Thread == nullptr) {
@@ -545,7 +549,9 @@ void PacerTrace::writeRow(const PACER_TRACE_ROW& row, const PACER_TRACE_ROW* nex
              << (row.partial != 0 ? (int)row.partialPercent : 100) << ','
              << (int)row.drawnAhead << ','
              << row.gpuDecodedUs << ','
-             << row.queuedUs << '\n';
+             << row.queuedUs << ','
+             << row.captureLocalUs << ','
+             << (row.captureLocalUs != 0 ? row.presentUs - row.captureLocalUs : -1) << '\n';
 
     m_Previous = row;
     m_HavePrevious = true;

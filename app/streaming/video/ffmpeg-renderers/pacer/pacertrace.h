@@ -16,6 +16,7 @@
 typedef struct _PACER_TRACE_ROW {
     uint64_t frame;             // Sequence number, counting frames the pacer dropped
     int64_t hostUs;             // Host capture time (host clock)
+    int64_t captureLocalUs;     // Host capture time on our clock, from clock sync, 0 if unknown
     int64_t arrivalUs;          // When the frame could be drawn: decoded, and done on the GPU where that is waited for
     int64_t firstPacketUs;      // When its first packet arrived, 0 if unknown
     int64_t lastPacketUs;       // When its last packet arrived and it went to the decoder, 0 if unknown
