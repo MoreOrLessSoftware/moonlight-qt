@@ -1,25 +1,9 @@
 #include "overlaymanager.h"
 #include "path.h"
 
-#include <Limelight.h>
-
-#include <QDateTime>
-#include <QDir>
-
-// Latency test CSVs kept next to the log. Older ones are removed.
-#define LATENCY_TEST_FILES_KEPT 20
-
 using namespace Overlay;
 
 OverlayManager::OverlayManager() :
-    m_LatencyMarkerLit(false),
-    m_LatencyMarkerFlipUs(0),
-    m_LatencyMarkerFlips(0),
-    m_LatencyMarkerDrawnFlipUs(0),
-    m_LatencyMarkerDrawnTestPress(0),
-    m_LatencyMarkerFile(nullptr),
-    m_LatencyTestDone(0),
-    m_LatencyTestTotal(0),
     m_Renderer(nullptr),
     m_FontData(Path::readDataFile("ModeSeven.ttf"))
 {
@@ -30,9 +14,6 @@ OverlayManager::OverlayManager() :
 
     m_Overlays[OverlayType::OverlayStatusUpdate].color = {0xCC, 0x00, 0x00, 0xFF};
     m_Overlays[OverlayType::OverlayStatusUpdate].fontSize = 36;
-
-    m_Overlays[OverlayType::OverlayLatencyTimer].color = {0xFF, 0xFF, 0xFF, 0xFF};
-    m_Overlays[OverlayType::OverlayLatencyTimer].fontSize = 48;
 
     // While TTF will usually not be initialized here, it is valid for that not to
     // be the case, since Session destruction is deferred and could overlap with
@@ -49,8 +30,6 @@ OverlayManager::OverlayManager() :
 
 OverlayManager::~OverlayManager()
 {
-    delete m_LatencyMarkerFile;
-
     for (int i = 0; i < OverlayType::OverlayMax; i++) {
         if (m_Overlays[i].surface != nullptr) {
             SDL_FreeSurface(m_Overlays[i].surface);
@@ -123,21 +102,7 @@ void OverlayManager::setOverlayState(OverlayType type, bool enabled)
             m_Overlays[type].text[0] = 0;
         }
 
-        // The latency marker starts black, like the latency-test app's trigger patch
-        if (type == OverlayType::OverlayLatencyMarker) {
-            m_LatencyMarkerLit = false;
-            m_LatencyMarkerFlipUs = 0;
-            m_LatencyMarkerFlips = 0;
-            m_LatencyMarkerDrawnFlipUs = 0;
-            m_LatencyMarkerDrawnTestPress = 0;
-        }
-
         notifyOverlayUpdated(type);
-
-        // The timer comes and goes with the marker
-        if (type == OverlayType::OverlayLatencyMarker) {
-            setOverlayState(OverlayType::OverlayLatencyTimer, enabled);
-        }
     }
 }
 
@@ -152,153 +117,6 @@ void OverlayManager::setOverlayColor(OverlayType type, SDL_Color color)
     setOverlayTextUpdated(type);
 }
 
-void OverlayManager::flipLatencyMarker(int testPress)
-{
-    if (m_Overlays[OverlayType::OverlayLatencyMarker].enabled) {
-        uint64_t flipUs = LiGetMicroseconds();
-        m_LatencyMarkerFlipUs = flipUs;
-        m_LatencyMarkerLit = !m_LatencyMarkerLit;
-        notifyOverlayUpdated(OverlayType::OverlayLatencyMarker);
-
-        // The renderer has the new marker now, so frames drawn from here on show it
-        m_LatencyMarkerDrawnFlipUs = flipUs;
-        m_LatencyMarkerDrawnTestPress = testPress;
-        m_LatencyMarkerFlips++;
-    }
-}
-
-void OverlayManager::startLatencyTestLog()
-{
-    // The test's first press opens the new file
-    QMutexLocker locker(&m_LatencyMarkerFileLock);
-    delete m_LatencyMarkerFile;
-    m_LatencyMarkerFile = nullptr;
-}
-
-void OverlayManager::logLatencyTestPress(int testPress, uint64_t flipUs, double presentMs, double drawMs)
-{
-    QMutexLocker locker(&m_LatencyMarkerFileLock);
-
-    if (m_LatencyMarkerFile == nullptr) {
-        QDir logDir(Path::getLogDir());
-        m_LatencyMarkerFile = new QFile(logDir.filePath(QString("Moonlight-latency-test-%1.csv").arg(QDateTime::currentSecsSinceEpoch())));
-        if (!m_LatencyMarkerFile->open(QIODevice::WriteOnly | QIODevice::Text)) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Unable to write the latency test's presses to %s",
-                        qPrintable(m_LatencyMarkerFile->fileName()));
-            return;
-        }
-
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Writing the latency test's presses to %s",
-                    qPrintable(m_LatencyMarkerFile->fileName()));
-
-        // Sunshine's tools/latency_test/analyze_video.py reads these (--marker-log)
-        m_LatencyMarkerFile->write("# Moonlight latency test presses. press_s: when the key was pressed, on Moonlight's clock. "
-                                   "present_ms, draw_ms: how long after it the first frame showing the latency marker's flip "
-                                   "was presented, and started drawing.\n"
-                                   "press,press_s,present_ms,draw_ms\n");
-
-        QStringList oldFiles = logDir.entryList(QStringList("Moonlight-latency-test-*.csv"), QDir::Files, QDir::SortFlag::Time);
-        for (int i = LATENCY_TEST_FILES_KEPT; i < oldFiles.size(); i++) {
-            QFile(logDir.filePath(oldFiles.at(i))).remove();
-        }
-    }
-
-    if (!m_LatencyMarkerFile->isOpen()) {
-        return;
-    }
-
-    // Flushed every line, so a test can be analysed while Moonlight is still running.
-    // A press comes every few hundred milliseconds at most.
-    m_LatencyMarkerFile->write(QString("%1,%2,%3,%4\n")
-                                   .arg(testPress)
-                                   .arg((double)flipUs / 1000000.0, 0, 'f', 6)
-                                   .arg(presentMs, 0, 'f', 3)
-                                   .arg(drawMs, 0, 'f', 3)
-                                   .toUtf8());
-    m_LatencyMarkerFile->flush();
-}
-
-uint32_t OverlayManager::getLatencyMarkerFlip(uint64_t* flipUs, int* testPress)
-{
-    if (!m_Overlays[OverlayType::OverlayLatencyMarker].enabled) {
-        *flipUs = 0;
-        *testPress = 0;
-        return 0;
-    }
-
-    uint32_t flips = m_LatencyMarkerFlips;
-    *flipUs = m_LatencyMarkerDrawnFlipUs;
-    *testPress = m_LatencyMarkerDrawnTestPress;
-    return flips;
-}
-
-void OverlayManager::updateLatencyTimer()
-{
-    if (!m_Overlays[OverlayType::OverlayLatencyTimer].enabled) {
-        return;
-    }
-
-    char text[32];
-    uint64_t flipUs = m_LatencyMarkerFlipUs;
-    if (flipUs == 0) {
-        SDL_strlcpy(text, "----.- ms", sizeof(text));
-    }
-    else {
-        double sinceMs = (double)(LiGetMicroseconds() - flipUs) / 1000.0;
-        SDL_snprintf(text, sizeof(text), "%6.1f ms", SDL_min(sinceMs, 9999.9));
-    }
-
-    int total = m_LatencyTestTotal;
-    if (total > 0) {
-        size_t length = SDL_strlen(text);
-        SDL_snprintf(text + length, sizeof(text) - length, "  %d/%d", (int)m_LatencyTestDone, total);
-    }
-
-    // Only redraw the text when the number shown changes
-    if (SDL_strcmp(text, m_Overlays[OverlayType::OverlayLatencyTimer].text) != 0) {
-        updateOverlayText(OverlayType::OverlayLatencyTimer, text);
-    }
-}
-
-void OverlayManager::setLatencyTestProgress(int done, int total)
-{
-    m_LatencyTestDone = done;
-    m_LatencyTestTotal = total;
-}
-
-SDL_Point OverlayManager::getLatencyTimerPosition(int displayWidth, int displayHeight)
-{
-    SDL_Rect marker = getLatencyMarkerRect(displayWidth, displayHeight);
-
-    SDL_Point point;
-    point.x = marker.x;
-    point.y = marker.y + marker.h + marker.h / 8;
-    return point;
-}
-
-SDL_Rect OverlayManager::getLatencyMarkerRect(int displayWidth, int displayHeight)
-{
-    // Same sizing as compute_layout() in Sunshine's tools/latency_test/pattern.h: cells are an
-    // eighth of the short side, on a 64 px grid (16 px on small screens), and the trigger patch
-    // is two cells square, centered on the grid.
-    int rawCell = SDL_min(displayWidth, displayHeight) / 8;
-    int grid = rawCell >= 64 ? 64 : 16;
-    int cellAlign = SDL_max(grid, 32);
-    int cell = SDL_max(rawCell - rawCell % cellAlign, 32);
-
-    int x = displayWidth / 4 - cell;
-    int y = displayHeight / 2 - cell;
-
-    SDL_Rect rect;
-    rect.x = SDL_max(x - x % grid, 0);
-    rect.y = SDL_max(y - y % grid, 0);
-    rect.w = 2 * cell;
-    rect.h = 2 * cell;
-    return rect;
-}
-
 void OverlayManager::setOverlayRenderer(IOverlayRenderer* renderer)
 {
     m_Renderer = renderer;
@@ -307,26 +125,6 @@ void OverlayManager::setOverlayRenderer(IOverlayRenderer* renderer)
 void OverlayManager::notifyOverlayUpdated(OverlayType type)
 {
     if (m_Renderer == nullptr) {
-        return;
-    }
-
-    // The latency marker is a solid square, not text. Renderers stretch it to
-    // getLatencyMarkerRect(), so a small surface is enough.
-    if (type == OverlayType::OverlayLatencyMarker) {
-        SDL_Surface* newSurface = nullptr;
-        if (m_Overlays[type].enabled) {
-            newSurface = SDL_CreateRGBSurfaceWithFormat(0, 8, 8, 32, SDL_PIXELFORMAT_ARGB8888);
-            if (newSurface != nullptr) {
-                Uint8 level = m_LatencyMarkerLit ? 0xFF : 0x00;
-                SDL_FillRect(newSurface, nullptr, SDL_MapRGBA(newSurface->format, level, level, level, 0xFF));
-            }
-        }
-
-        SDL_Surface* oldSurface = (SDL_Surface*)SDL_AtomicSetPtr((void**)&m_Overlays[type].surface, newSurface);
-        m_Renderer->notifyOverlayUpdated(type);
-        if (oldSurface != nullptr) {
-            SDL_FreeSurface(oldSurface);
-        }
         return;
     }
 
@@ -352,29 +150,16 @@ void OverlayManager::notifyOverlayUpdated(OverlayType type)
         }
     }
 
-    SDL_Surface* newSurface = nullptr;
-    if (m_Overlays[type].enabled) {
-        // The _Wrapped variant is required for line breaks to work
-        newSurface = TTF_RenderText_Blended_Wrapped(m_Overlays[type].font,
-                                                    m_Overlays[type].text,
-                                                    m_Overlays[type].color,
-                                                    1024);
-
-        // The latency timer sits on the noisy latency-test pattern, so give it an opaque
-        // black background to keep it readable on camera
-        if (newSurface != nullptr && type == OverlayType::OverlayLatencyTimer) {
-            SDL_Surface* backed = SDL_CreateRGBSurfaceWithFormat(0, newSurface->w, newSurface->h, 32, SDL_PIXELFORMAT_ARGB8888);
-            if (backed != nullptr) {
-                SDL_FillRect(backed, nullptr, SDL_MapRGBA(backed->format, 0, 0, 0, 0xFF));
-                SDL_BlitSurface(newSurface, nullptr, backed, nullptr);
-                SDL_FreeSurface(newSurface);
-                newSurface = backed;
-            }
-        }
-    }
-
     // Exchange the old surface with the new one
-    SDL_Surface* oldSurface = (SDL_Surface*)SDL_AtomicSetPtr((void**)&m_Overlays[type].surface, newSurface);
+    SDL_Surface* oldSurface = (SDL_Surface*)SDL_AtomicSetPtr(
+        (void**)&m_Overlays[type].surface,
+        m_Overlays[type].enabled ?
+            // The _Wrapped variant is required for line breaks to work
+            TTF_RenderText_Blended_Wrapped(m_Overlays[type].font,
+                                           m_Overlays[type].text,
+                                           m_Overlays[type].color,
+                                           1024)
+            : nullptr);
 
     // Notify the renderer
     m_Renderer->notifyOverlayUpdated(type);
