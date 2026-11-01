@@ -2027,6 +2027,23 @@ Flickable {
                     ToolTip.visible: hovered
                     ToolTip.text: qsTr("Allows Moonlight to capture gamepad inputs even if it's not the current window in focus")
                 }
+
+                CheckBox {
+                    id: gameInputGamepadsCheck
+                    width: parent.width
+                    text: qsTr("Use GameInput for Xbox controllers")
+                    font.pointSize: 12
+                    visible: Qt.platform.os === "windows"
+                    checked: StreamingPreferences.gameInputGamepads
+                    onCheckedChanged: {
+                        StreamingPreferences.gameInputGamepads = checked
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Reads Xbox controllers through GameInput for lower input latency, Guide/Share buttons and impulse trigger rumble. Requires the GameInput runtime; falls back to the standard gamepad support when it is unavailable.")
+                }
             }
         }
 

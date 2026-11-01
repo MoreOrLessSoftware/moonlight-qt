@@ -2129,7 +2129,10 @@ void Session::exec()
                                                     (DualSenseOutputReport *)event.user.data2);
                 break;
             default:
-                SDL_assert(false);
+                // GameInput gamepad events (device arrival/removal, combos) on Windows
+                if (!m_InputHandler->handleUserEvent(event.user)) {
+                    SDL_assert(false);
+                }
             }
             break;
 

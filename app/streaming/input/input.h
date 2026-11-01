@@ -5,10 +5,19 @@
 
 #include "SDL_compat.h"
 
+#include <memory>
+
+#ifdef HAVE_GAMEINPUT
+class GameInputGamepads;
+#endif
+
 struct GamepadState {
     SDL_GameController* controller;
     SDL_JoystickID jsId;
     short index;
+
+    // Non-null when this slot is driven by GameInput instead of SDL (IGameInputDevice*)
+    void* gameInputDevice;
 
 #if !SDL_VERSION_ATLEAST(2, 0, 9)
     SDL_Haptic* haptic;
@@ -128,6 +137,10 @@ public:
 
     void setAdaptiveTriggers(uint16_t controllerNumber, DualSenseOutputReport *report);
 
+    // Handles input-related SDL user events (GameInput device arrival/removal and actions).
+    // Returns false if the event code is not an input event.
+    bool handleUserEvent(const SDL_UserEvent& event);
+
     void handleTouchFingerEvent(SDL_TouchFingerEvent* event);
 
     int getAttachedGamepadMask();
@@ -156,6 +169,11 @@ public:
     QString getUnmappedGamepads();
 
 private:
+#ifdef HAVE_GAMEINPUT
+    // Shares the gamepad slots, mask and gamepad helpers below
+    friend class GameInputGamepads;
+#endif
+
     enum KeyCombo {
         KeyComboQuit,
         KeyComboUngrabInput,
@@ -252,4 +270,9 @@ private:
     int m_NumFingersDown;
 
     static const int k_ButtonMap[];
+
+#ifdef HAVE_GAMEINPUT
+    // Xbox controllers via GameInput (Windows), when enabled and available
+    std::unique_ptr<GameInputGamepads> m_GameInput;
+#endif
 };

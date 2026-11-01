@@ -7,6 +7,10 @@
 
 #include <QtMath>
 
+#ifdef HAVE_GAMEINPUT
+#include "gameinput.h"
+#endif
+
 // How long the Start button must be pressed to toggle mouse emulation
 #define MOUSE_EMULATION_LONG_PRESS_TIME 750
 
@@ -515,6 +519,16 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
         char guidStr[33];
         uint32_t hapticCaps;
 
+#ifdef HAVE_GAMEINPUT
+        // Microsoft Xbox controllers are handled by GameInput when it is active
+        if (m_GameInput && GameInputGamepads::claimsSdlDevice(event->which)) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Leaving Xbox controller at index %d to GameInput",
+                        event->which);
+            return;
+        }
+#endif
+
         controller = SDL_GameControllerOpen(event->which);
         if (controller == NULL) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -546,7 +560,7 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
 
         for (; i < MAX_GAMEPADS; i++) {
             SDL_assert(m_GamepadState[i].controller != controller);
-            if (m_GamepadState[i].controller == NULL) {
+            if (m_GamepadState[i].controller == NULL && m_GamepadState[i].gameInputDevice == NULL) {
                 // Found an empty slot
                 break;
             }
@@ -847,6 +861,12 @@ void SdlInputHandler::rumble(unsigned short controllerNumber, unsigned short low
         return;
     }
 
+#ifdef HAVE_GAMEINPUT
+    if (m_GameInput && m_GameInput->rumble(controllerNumber, lowFreqMotor, highFreqMotor)) {
+        return;
+    }
+#endif
+
 #if SDL_VERSION_ATLEAST(2, 0, 9)
     if (m_GamepadState[controllerNumber].controller != nullptr) {
         SDL_GameControllerRumble(m_GamepadState[controllerNumber].controller, lowFreqMotor, highFreqMotor, 30000);
@@ -904,6 +924,12 @@ void SdlInputHandler::rumbleTriggers(uint16_t controllerNumber, uint16_t leftTri
     if (controllerNumber >= MAX_GAMEPADS) {
         return;
     }
+
+#ifdef HAVE_GAMEINPUT
+    if (m_GameInput && m_GameInput->rumbleTriggers(controllerNumber, leftTrigger, rightTrigger)) {
+        return;
+    }
+#endif
 
 #if SDL_VERSION_ATLEAST(2, 0, 14)
     if (m_GamepadState[controllerNumber].controller != nullptr) {
@@ -975,6 +1001,18 @@ void SdlInputHandler::setAdaptiveTriggers(uint16_t controllerNumber, DualSenseOu
 #endif
 
     SDL_free(report);
+}
+
+bool SdlInputHandler::handleUserEvent(const SDL_UserEvent& event)
+{
+#ifdef HAVE_GAMEINPUT
+    if (m_GameInput && m_GameInput->handleUserEvent(event)) {
+        return true;
+    }
+#else
+    (void)event;
+#endif
+    return false;
 }
 
 QString SdlInputHandler::getUnmappedGamepads()

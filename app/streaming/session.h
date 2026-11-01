@@ -98,6 +98,7 @@ class Session : public QObject
     Q_OBJECT
 
     friend class SdlInputHandler;
+    friend class GameInputGamepads;
     friend class DeferredSessionCleanupTask;
     friend class AsyncConnectionStartThread;
 

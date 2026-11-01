@@ -9,6 +9,10 @@
 #include <QDir>
 #include <QGuiApplication>
 
+#ifdef HAVE_GAMEINPUT
+#include "gameinput.h"
+#endif
+
 SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, int streamHeight)
     : m_MultiController(prefs.multiController),
       m_GamepadMouse(prefs.gamepadMouse),
@@ -171,6 +175,17 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES, streamIgnoreDevices.toUtf8());
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT, streamIgnoreDevicesExcept.toUtf8());
 
+#ifdef HAVE_GAMEINPUT
+    // Xbox controllers go through GameInput when enabled; SDL skips them on arrival.
+    // This must exist before SDL starts reporting controllers below.
+    if (prefs.gameInputGamepads) {
+        m_GameInput = std::make_unique<GameInputGamepads>(*this, prefs.backgroundGamepad, prefs.swapFaceButtons);
+        if (!m_GameInput->isAvailable()) {
+            m_GameInput.reset();
+        }
+    }
+#endif
+
     // We must initialize joystick explicitly before gamecontroller in order
     // to ensure we receive gamecontroller attach events for gamepads where
     // SDL doesn't have a built-in mapping. By starting joystick first, we
@@ -223,6 +238,11 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
 
 SdlInputHandler::~SdlInputHandler()
 {
+#ifdef HAVE_GAMEINPUT
+    // Stop GameInput callbacks before tearing down the shared gamepad slots
+    m_GameInput.reset();
+#endif
+
     for (int i = 0; i < MAX_GAMEPADS; i++) {
         if (m_GamepadState[i].mouseEmulationTimer != 0) {
             Session::get()->notifyMouseEmulationMode(false);
@@ -288,6 +308,14 @@ void SdlInputHandler::notifyFocusLost()
     // Raise all keys that are currently pressed. If we don't do this, certain keys
     // used in shortcuts that cause focus loss (such as Alt+Tab) may get stuck down.
     raiseAllKeys();
+
+#ifdef HAVE_GAMEINPUT
+    // GameInput stops delivering readings without focus, so release GameInput gamepads too
+    // (SDL recenters its own gamepads when background events are disabled)
+    if (m_GameInput) {
+        m_GameInput->notifyFocusLost();
+    }
+#endif
 }
 
 void SdlInputHandler::notifyFocusGained()

@@ -422,6 +422,18 @@ win32 {
     HEADERS += streaming/video/ffmpeg-renderers/dxutil.h
 }
 win32:!winrt {
+    message(GameInput gamepad support selected)
+
+    # GameInput v4 (vendored MIT header + loader; the runtime is the GameInput redistributable)
+    DEFINES += HAVE_GAMEINPUT
+    SOURCES += \
+        streaming/input/gameinput.cpp \
+        streaming/input/gameinput/GameInputLoader.cpp
+    HEADERS += \
+        streaming/input/gameinput.h \
+        streaming/input/gameinput/GameInput.h
+}
+win32:!winrt {
     message(DXVA2 and D3D11VA renderers selected)
 
     SOURCES += \
