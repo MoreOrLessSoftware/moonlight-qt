@@ -58,14 +58,24 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         raiseAllKeys();
         break;
 
-    case KeyComboToggleStatsOverlay:
+    case KeyComboToggleStatsOverlay: {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Detected stats toggle combo");
 
-        // Toggle the stats overlay
-        Session::get()->getOverlayManager().setOverlayState(Overlay::OverlayDebug,
-                                                            !Session::get()->getOverlayManager().isOverlayEnabled(Overlay::OverlayDebug));
+        // Cycle the stats overlay: off -> on -> latency measurement mode -> off
+        Overlay::OverlayManager& overlays = Session::get()->getOverlayManager();
+        if (!overlays.isOverlayEnabled(Overlay::OverlayDebug)) {
+            overlays.setOverlayState(Overlay::OverlayDebug, true);
+        }
+        else if (!overlays.isOverlayLatencyMeasurementEnabled(Overlay::OverlayDebug)) {
+            overlays.setOverlayLatencyMeasurement(Overlay::OverlayDebug, true);
+        }
+        else {
+            // Disabling also leaves latency measurement mode
+            overlays.setOverlayState(Overlay::OverlayDebug, false);
+        }
         break;
+    }
 
     case KeyComboToggleMouseMode:
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,

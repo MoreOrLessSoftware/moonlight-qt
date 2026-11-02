@@ -1136,9 +1136,12 @@ bool PlVkRenderer::drawFrame(AVFrame* frame, pl_frame* mappedFrame, pl_frame* ta
                 overlayParts[i].dst.y0 = SDL_max(0, targetFrame->crop.y1 - overlayParts[i].src.y1);
             }
             else if (i == Overlay::OverlayDebug) {
-                // Top left
+                // Top left, or a third of the way down the left edge in latency measurement mode
                 overlayParts[i].dst.x0 = 0;
                 overlayParts[i].dst.y0 = 0;
+                if (Session::get()->getOverlayManager().isOverlayLatencyMeasurementEnabled(Overlay::OverlayDebug)) {
+                    overlayParts[i].dst.y0 = SDL_max(0, (targetFrame->crop.y1 - overlayParts[i].src.y1) / 3);
+                }
             }
             overlayParts[i].dst.x1 = overlayParts[i].dst.x0 + overlayParts[i].src.x1;
             overlayParts[i].dst.y1 = overlayParts[i].dst.y0 + overlayParts[i].src.y1;

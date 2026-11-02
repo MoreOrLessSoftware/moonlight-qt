@@ -100,9 +100,25 @@ void OverlayManager::setOverlayState(OverlayType type, bool enabled)
         if (!enabled) {
             // Set the text to empty string on disable
             m_Overlays[type].text[0] = 0;
+
+            // Latency measurement mode goes with it, so the next enable starts without it
+            m_Overlays[type].latencyMeasurement = false;
         }
 
         notifyOverlayUpdated(type);
+    }
+}
+
+bool OverlayManager::isOverlayLatencyMeasurementEnabled(OverlayType type)
+{
+    return m_Overlays[type].latencyMeasurement;
+}
+
+void OverlayManager::setOverlayLatencyMeasurement(OverlayType type, bool enabled)
+{
+    if (m_Overlays[type].latencyMeasurement != enabled) {
+        m_Overlays[type].latencyMeasurement = enabled;
+        setOverlayTextUpdated(type);
     }
 }
 

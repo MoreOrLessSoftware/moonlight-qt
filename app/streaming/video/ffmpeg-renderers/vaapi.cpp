@@ -859,6 +859,12 @@ VAAPIRenderer::renderFrame(AVFrame* frame)
                 overlayRect.y += windowHeight;
             }
 
+            // The stats overlay sits a third of the way down the left edge in latency measurement mode
+            if (type == Overlay::OverlayDebug &&
+                    Session::get()->getOverlayManager().isOverlayLatencyMeasurementEnabled(Overlay::OverlayDebug)) {
+                overlayRect.y = (windowHeight - overlayRect.h) / 3;
+            }
+
             status = vaAssociateSubpicture(vaDeviceContext->display,
                                            m_OverlaySubpicture[type],
                                            &surface,

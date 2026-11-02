@@ -664,9 +664,10 @@ void DXVA2Renderer::notifyOverlayUpdated(Overlay::OverlayType type)
         renderRect.y = m_DisplayHeight - newSurface->h;
     }
     else if (type == Overlay::OverlayDebug) {
-        // Top left
+        // Top left, or a third of the way down the left edge in latency measurement mode
         renderRect.x = 0;
-        renderRect.y = 0;
+        renderRect.y = Session::get()->getOverlayManager().isOverlayLatencyMeasurementEnabled(type) ?
+                           (m_DisplayHeight - newSurface->h) / 3 : 0;
     }
 
     renderRect.w = newSurface->w;

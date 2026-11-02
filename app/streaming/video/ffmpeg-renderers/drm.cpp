@@ -1569,9 +1569,10 @@ void DrmRenderer::notifyOverlayUpdated(Overlay::OverlayType type)
             overlayRect.y = m_OutputRect.h - newSurface->h;
         }
         else if (type == Overlay::OverlayDebug) {
-            // Top left
+            // Top left, or a third of the way down the left edge in latency measurement mode
             overlayRect.x = 0;
-            overlayRect.y = 0;
+            overlayRect.y = Session::get()->getOverlayManager().isOverlayLatencyMeasurementEnabled(type) ?
+                                (m_OutputRect.h - newSurface->h) / 3 : 0;
         }
 
         overlayRect.w = newSurface->w;

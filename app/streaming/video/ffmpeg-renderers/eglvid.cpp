@@ -210,9 +210,10 @@ void EGLRenderer::renderOverlay(Overlay::OverlayType type, int viewportWidth, in
             overlayRect.y = 0;
         }
         else if (type == Overlay::OverlayDebug) {
-            // Top left
+            // Top left, or a third of the way down the left edge in latency measurement mode
             overlayRect.x = 0;
-            overlayRect.y = viewportHeight - newSurface->h;
+            overlayRect.y = Session::get()->getOverlayManager().isOverlayLatencyMeasurementEnabled(type) ?
+                                (viewportHeight - newSurface->h) * 2 / 3 : viewportHeight - newSurface->h;
         } else {
             SDL_assert(false);
         }

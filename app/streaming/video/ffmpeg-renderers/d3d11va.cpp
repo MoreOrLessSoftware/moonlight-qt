@@ -1616,9 +1616,10 @@ bool D3D11VARenderer::createOverlayVertexBuffer(Overlay::OverlayType type, int w
         renderRect.y = 0;
     }
     else if (type == Overlay::OverlayDebug) {
-        // Top left
+        // Top left, or a third of the way down the left edge in latency measurement mode
         renderRect.x = 0;
-        renderRect.y = m_DisplayHeight - height;
+        renderRect.y = Session::get()->getOverlayManager().isOverlayLatencyMeasurementEnabled(type) ?
+                           (m_DisplayHeight - height) * 2 / 3 : m_DisplayHeight - height;
     }
 
     renderRect.w = width;

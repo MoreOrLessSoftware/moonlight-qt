@@ -33,6 +33,8 @@ public:
     int getOverlayMaxTextLength();
     void setOverlayTextUpdated(OverlayType type);
     void setOverlayState(OverlayType type, bool enabled);
+    bool isOverlayLatencyMeasurementEnabled(OverlayType type);
+    void setOverlayLatencyMeasurement(OverlayType type, bool enabled);
     SDL_Color getOverlayColor(OverlayType type);
     void setOverlayColor(OverlayType type, SDL_Color color);
     int getOverlayFontSize(OverlayType type);
@@ -45,6 +47,7 @@ private:
 
     struct {
         bool enabled;
+        bool latencyMeasurement;
         int fontSize;
         SDL_Color color;
         char text[1024];

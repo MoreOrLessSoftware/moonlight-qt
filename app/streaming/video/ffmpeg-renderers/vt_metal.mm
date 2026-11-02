@@ -534,9 +534,11 @@ public:
                     renderRect.y = 0;
                 }
                 else if (i == Overlay::OverlayDebug) {
-                    // Top left
+                    // Top left, or a third of the way down the left edge in latency measurement mode
                     renderRect.x = 0;
-                    renderRect.y = m_LastDrawableHeight - overlayTexture.height;
+                    renderRect.y = Session::get()->getOverlayManager().isOverlayLatencyMeasurementEnabled(Overlay::OverlayDebug) ?
+                                       (m_LastDrawableHeight - overlayTexture.height) * 2 / 3 :
+                                       m_LastDrawableHeight - overlayTexture.height;
                 }
 
                 renderRect.w = overlayTexture.width;

@@ -242,9 +242,14 @@ void SdlRenderer::renderOverlay(Overlay::OverlayType type)
                 m_OverlayRects[type].y = viewportRect.h - newSurface->h;
             }
             else if (type == Overlay::OverlayDebug) {
-                // Top left
+                // Top left, or a third of the way down the left edge in latency measurement mode
                 m_OverlayRects[type].x = 0;
                 m_OverlayRects[type].y = 0;
+                if (Session::get()->getOverlayManager().isOverlayLatencyMeasurementEnabled(type)) {
+                    SDL_Rect viewportRect;
+                    SDL_RenderGetViewport(m_Renderer, &viewportRect);
+                    m_OverlayRects[type].y = (viewportRect.h - newSurface->h) / 3;
+                }
             }
 
             m_OverlayRects[type].w = newSurface->w;

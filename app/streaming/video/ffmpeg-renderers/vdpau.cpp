@@ -443,9 +443,10 @@ void VDPAURenderer::notifyOverlayUpdated(Overlay::OverlayType type)
             overlayRect.y0 = m_DisplayHeight - newSurface->h;
         }
         else if (type == Overlay::OverlayDebug) {
-            // Top left
+            // Top left, or a third of the way down the left edge in latency measurement mode
             overlayRect.x0 = 0;
-            overlayRect.y0 = 0;
+            overlayRect.y0 = Session::get()->getOverlayManager().isOverlayLatencyMeasurementEnabled(type) ?
+                                 (m_DisplayHeight - newSurface->h) / 3 : 0;
         }
 
         overlayRect.x1 = overlayRect.x0 + newSurface->w;
