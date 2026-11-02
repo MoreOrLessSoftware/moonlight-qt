@@ -821,6 +821,7 @@ void FFmpegVideoDecoder::addVideoStats(VIDEO_STATS& src, VIDEO_STATS& dst)
     dst.totalPacerTimeUs += src.totalPacerTimeUs;
     dst.totalRenderTimeUs += src.totalRenderTimeUs;
     dst.framesWithClientLatency += src.framesWithClientLatency;
+    dst.framesReceivedAfterHost += src.framesReceivedAfterHost;
 
     if (dst.minHostProcessingLatency == 0) {
         dst.minHostProcessingLatency = src.minHostProcessingLatency;
@@ -1042,14 +1043,17 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
                        length - offset,
                        "Network drop/jitter: %.2f%% / %.2f%%\n"
                        "Network latency: %s\n"
-                       "Frame receive time: %.2f ms\n"
+                       "Frame receive time: %.2f ms%s\n"
                        "Decoding time: %.2f ms\n"
                        "Frame queue/render: %.2f / %.2f ms\n",
                        (float)stats.networkDroppedFrames / stats.totalFrames * 100,
                        (float)stats.pacerDroppedFrames / stats.decodedFrames * 100,
                        rttString,
-                       // First packet to last, so how long a frame takes to arrive in full
+                       // From the host's finish to the last packet, or first packet to last
+                       // without clock sync. See Pacer::countFrameStats().
                        (double)(stats.totalReassemblyTimeUs / 1000.0) / clientFrames,
+                       // Named for what most of the frames were measured from
+                       stats.framesReceivedAfterHost * 2 > stats.framesWithClientLatency ? " (after host)" : "",
                        (double)(stats.totalDecodeTimeUs / 1000.0) / clientFrames,
                        (double)(stats.totalPacerTimeUs / 1000.0) / clientFrames,
                        (double)(stats.totalRenderTimeUs / 1000.0) / clientFrames);

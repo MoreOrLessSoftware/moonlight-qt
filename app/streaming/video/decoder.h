@@ -26,6 +26,7 @@ typedef struct _VIDEO_STATS {
     uint64_t totalPacerTimeUs;                 // high-res (1us)
     uint64_t totalRenderTimeUs;                // high-res (1us)
     uint32_t framesWithClientLatency;          // presented frames those were measured for
+    uint32_t framesReceivedAfterHost;          // those of them received from the host's finish, not the first packet
     uint64_t totalCaptureToPresentUs;          // high-res with clock sync, else host latency + first packet to present
     uint32_t framesWithCaptureToPresent;
     uint32_t framesWithoutNetworkTransit;      // those of them measured without clock sync

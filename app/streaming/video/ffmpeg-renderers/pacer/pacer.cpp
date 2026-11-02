@@ -859,9 +859,22 @@ void Pacer::countFrameStats(const PACER_PENDING_STATS& stats, int64_t gpuDecoded
 {
     int64_t endUs = qMax(stats.presentUs, gpuDrawnUs);
 
-    // The frame's time from its first packet to its end, in four parts that add up to
-    // it, so with the host's latency and the network's they add up to capture to present:
-    // - Receiving, from its first packet to its last
+    // The frame's capture on our clock, through the clock sync. A frame without a host
+    // latency has no capture time of its own (the host repeated a frame), and one more than
+    // a second before its end means the sync must be wrong.
+    uint64_t captureUs = 0;
+    bool haveCapture = stats.hostLatency != 0 && stats.hostUs != 0 &&
+                       LiGetHostTimeOnLocalClock((uint64_t)stats.hostUs, &captureUs) &&
+                       endUs - (int64_t)captureUs >= 0 && endUs - (int64_t)captureUs < 1000000;
+
+    // The frame's time on the client, in four parts. With the host's latency they add up to
+    // capture to present:
+    // - Receiving, from when the host was done with the frame to its last packet, so the
+    //   one-way network transit and the time on the wire after the host finished. The
+    //   host's latency runs to when the whole frame was encoded, and a host that sends a
+    //   frame in parts while it encodes has sent most of it by then, so that sending is
+    //   counted once, in the host's latency. Where the host's finish can't be put on our
+    //   clock (no clock sync), from the frame's first packet to its last instead.
     // - Decoding, from its last packet until the decoder had handed it over and, where
     //   the GPU decodes it, the GPU had finished. A hardware decoder hands frames over
     //   once their decode is submitted, so the GPU's part can take far longer.
@@ -882,23 +895,26 @@ void Pacer::countFrameStats(const PACER_PENDING_STATS& stats, int64_t gpuDecoded
         };
         int64_t renderUs = afterDecodeUs(stats.renderStartUs, stats.drawEndUs) + afterDecodeUs(stats.presentStartUs, endUs);
 
-        m_VideoStats->totalReassemblyTimeUs += (uint64_t)(stats.lastPacketUs - stats.firstPacketUs);
+        // For a frame sent in parts the host's latency is an estimate, which can put its
+        // finish after the last packet. Nothing was left to receive then.
+        int64_t receiveFromUs = haveCapture ? (int64_t)captureUs + (int64_t)stats.hostLatency * 100 : stats.firstPacketUs;
+        int64_t receiveUs = qMax<int64_t>(0, stats.lastPacketUs - receiveFromUs);
+
+        m_VideoStats->totalReassemblyTimeUs += (uint64_t)receiveUs;
         m_VideoStats->totalDecodeTimeUs += (uint64_t)(decodedUs - stats.lastPacketUs);
         m_VideoStats->totalRenderTimeUs += (uint64_t)renderUs;
         m_VideoStats->totalPacerTimeUs += (uint64_t)(endUs - decodedUs - renderUs);
         m_VideoStats->framesWithClientLatency++;
+        if (haveCapture) {
+            m_VideoStats->framesReceivedAfterHost++;
+        }
     }
 
-    // Capture to present. A frame without a host latency has no capture time of its own
-    // (the host repeated a frame), so it is left out either way.
-    uint64_t captureUs;
-    if (stats.hostLatency != 0 && stats.hostUs != 0 && LiGetHostTimeOnLocalClock((uint64_t)stats.hostUs, &captureUs)) {
-        // With clock sync, measured directly. Outside a second the sync must be wrong.
-        int64_t latencyUs = endUs - (int64_t)captureUs;
-        if (latencyUs >= 0 && latencyUs < 1000000) {
-            m_VideoStats->totalCaptureToPresentUs += (uint64_t)latencyUs;
-            m_VideoStats->framesWithCaptureToPresent++;
-        }
+    // Capture to present. A frame without a host latency is left out either way.
+    if (haveCapture) {
+        // With clock sync, measured directly
+        m_VideoStats->totalCaptureToPresentUs += (uint64_t)(endUs - (int64_t)captureUs);
+        m_VideoStats->framesWithCaptureToPresent++;
     }
     else if (stats.hostLatency != 0 && stats.firstPacketUs != 0) {
         // Without it, less the network transit, which nothing measures per frame. The host
