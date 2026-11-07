@@ -161,6 +161,7 @@ private:
 
     // Data buffers in the queued DU are not valid
     QQueue<DECODE_UNIT> m_FrameInfoQueue;
+    bool takeFrameInfo(AVFrame* frame, PDECODE_UNIT du);
 
     // ML_DECODE_CALL_LOG=1 logs every 5 s how long the decoder thread spends in each of
     // FFmpeg's calls, to find where the time between a frame's last packet and its

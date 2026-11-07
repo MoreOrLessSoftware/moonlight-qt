@@ -2475,14 +2475,11 @@ void FFmpegVideoDecoder::decoderThreadProc()
 
                 if (err == 0) {
                     SDL_assert(m_FrameInfoQueue.size() == m_FramesIn - m_FramesOut);
-                    m_FramesOut++;
 
                     // Data buffers in the DU are not valid here!
                     DECODE_UNIT du;
-                    bool haveDu = !m_FrameInfoQueue.isEmpty();
-                    if (haveDu) {
-                        du = m_FrameInfoQueue.dequeue();
-                    }
+                    bool haveDu = takeFrameInfo(frame, &du);
+                    m_FramesOut++;
 
                     deliverDecodedFrame(frame, haveDu ? &du : nullptr);
                 }
@@ -2539,6 +2536,45 @@ void FFmpegVideoDecoder::decoderThreadProc()
             }
         }
     }
+}
+
+// Finds the DU of a frame the decoder handed over, by the frame number its packet
+// carried as the pts. A decoder can drop a frame without an error, as FFmpeg's AV1
+// decoder does with a frame whose tiles never all arrived. Taking DUs in order would
+// then pair every later frame with the DU before its own, which puts a frame interval
+// on the decode time and capture to present statistics, and leaves the decoder thread
+// polling for input as if a frame were still to come. The DUs of dropped frames are
+// discarded here, and a key frame is requested, as the frames after one reference it.
+// Decoders that don't carry the pts through fall back to taking DUs in order.
+bool FFmpegVideoDecoder::takeFrameInfo(AVFrame* frame, PDECODE_UNIT du)
+{
+    if (m_FrameInfoQueue.isEmpty()) {
+        return false;
+    }
+
+    int skipped = 0;
+    if (frame->pts != AV_NOPTS_VALUE) {
+        for (int i = 0; i < m_FrameInfoQueue.size(); i++) {
+            if (m_FrameInfoQueue.at(i).frameNumber == frame->pts) {
+                skipped = i;
+                break;
+            }
+        }
+    }
+
+    if (skipped > 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Decoder dropped %d frame(s) without an error, from frame %d; requesting a key frame",
+                    skipped,
+                    m_FrameInfoQueue.head().frameNumber);
+
+        m_FrameInfoQueue.erase(m_FrameInfoQueue.begin(), m_FrameInfoQueue.begin() + skipped);
+        m_FramesOut += skipped;
+        LiRequestIdrFrame();
+    }
+
+    *du = m_FrameInfoQueue.dequeue();
+    return true;
 }
 
 void FFmpegVideoDecoder::recordReceivedFrame(PDECODE_UNIT du)
@@ -2711,6 +2747,10 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
     else {
         m_Pkt->flags = 0;
     }
+
+    // The decoder carries this through to the frame, which matches the frame to its
+    // DU in m_FrameInfoQueue even when the decoder drops a frame. See takeFrameInfo().
+    m_Pkt->pts = du->frameNumber;
 
     int64_t sendStartUs = m_DecodeCallLog ? (int64_t)LiGetMicroseconds() : 0;
     err = avcodec_send_packet(m_VideoDecoderCtx, m_Pkt);
