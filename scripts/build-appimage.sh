@@ -62,20 +62,20 @@ popd
 # PyroWave is loaded at runtime, so linuxdeploy can't find it on its own and is given it
 # with --library. It lands in usr/lib, where the moonlight binary's RUNPATH lets dlopen()
 # find it. It's staged under its soname first, since the build's file is a symlink to
-# libpyrowave-shared.so.0.x.y. Set PYROWAVE_LIBRARY to the libpyrowave-shared.so.0 to
+# libpyrowave-shared.so.1.x.y. Set PYROWAVE_LIBRARY to the libpyrowave-shared.so.1 to
 # package, or keep a pyrowave build next to this repo (../pyrowave/build). Without it
 # the AppImage just doesn't offer PyroWave.
 PYROWAVE_ARGS=()
 if [ -z "$PYROWAVE_LIBRARY" ]; then
-  PYROWAVE_LIBRARY=$SOURCE_ROOT/../pyrowave/build/libpyrowave-shared.so.0
+  PYROWAVE_LIBRARY=$SOURCE_ROOT/../pyrowave/build/libpyrowave-shared.so.1
 fi
 if [ -f "$PYROWAVE_LIBRARY" ]; then
   echo Packaging PyroWave library from $PYROWAVE_LIBRARY
   PYROWAVE_STAGING=$BUILD_ROOT/pyrowave-staging
   rm -rf $PYROWAVE_STAGING
   mkdir -p $PYROWAVE_STAGING
-  cp -L "$PYROWAVE_LIBRARY" $PYROWAVE_STAGING/libpyrowave-shared.so.0 || fail "Unable to stage the PyroWave library!"
-  PYROWAVE_ARGS=(--library=$PYROWAVE_STAGING/libpyrowave-shared.so.0)
+  cp -L "$PYROWAVE_LIBRARY" $PYROWAVE_STAGING/libpyrowave-shared.so.1 || fail "Unable to stage the PyroWave library!"
+  PYROWAVE_ARGS=(--library=$PYROWAVE_STAGING/libpyrowave-shared.so.1)
 else
   echo "WARNING: PyroWave library not found at $PYROWAVE_LIBRARY, packaging without PyroWave"
 fi

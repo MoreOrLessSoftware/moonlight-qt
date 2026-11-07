@@ -25,10 +25,10 @@
 static void* openPyrowaveLibrary()
 {
     // Kept loaded for the life of the process
-    HMODULE dll = LoadLibraryExW(L"libpyrowave-shared-0.dll", nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    HMODULE dll = LoadLibraryExW(L"libpyrowave-shared-1.dll", nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (dll == nullptr) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "PyroWave: libpyrowave-shared-0.dll not found, the codec is unavailable");
+                    "PyroWave: libpyrowave-shared-1.dll not found, the codec is unavailable");
     }
     return (void*)dll;
 }
@@ -57,11 +57,11 @@ static void* openPyrowaveLibrary()
 
     QByteArray appDir = QDir(QCoreApplication::applicationDirPath()).absolutePath().toLocal8Bit();
     const QByteArray candidates[] = {
-        "libpyrowave-shared.so.0",
+        "libpyrowave-shared.so.1",
         "libpyrowave-shared.so",
-        appDir + "/libpyrowave-shared.so.0",
+        appDir + "/libpyrowave-shared.so.1",
         appDir + "/libpyrowave-shared.so",
-        appDir + "/../lib/libpyrowave-shared.so.0",
+        appDir + "/../lib/libpyrowave-shared.so.1",
     };
 
     // Kept loaded for the life of the process
@@ -73,7 +73,7 @@ static void* openPyrowaveLibrary()
     }
 
     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "PyroWave: libpyrowave-shared.so.0 not found, the codec is unavailable");
+                "PyroWave: libpyrowave-shared.so.1 not found, the codec is unavailable");
     return nullptr;
 }
 
@@ -107,7 +107,7 @@ const PyrowaveApi* loadPyrowaveApi()
         };
 
         resolve(api.getApiVersion, "pyrowave_get_api_version");
-        resolve(api.createDeviceByCompat2, "pyrowave_create_device_by_compat2");
+        resolve(api.createDeviceByCompat, "pyrowave_create_device_by_compat");
         resolve(api.deviceDestroy, "pyrowave_device_destroy");
         resolve(api.syncObjectCreate, "pyrowave_sync_object_create");
         resolve(api.syncObjectGetSemaphore, "pyrowave_sync_object_get_semaphore");
@@ -137,12 +137,12 @@ const PyrowaveApi* loadPyrowaveApi()
         api.deviceGetVkDeviceHandles = reinterpret_cast<decltype(api.deviceGetVkDeviceHandles)>(
                     lookUpPyrowaveSymbol(library, "pyrowave_device_get_vk_device_handles"));
 
-        // The API and ABI can change between minor versions until 1.0
+        // The API and ABI are stable within a major version, and minor versions only add to them
         uint32_t major, minor, patch;
         api.getApiVersion(&major, &minor, &patch);
-        if (major != PYROWAVE_API_VERSION_MAJOR || minor != PYROWAVE_API_VERSION_MINOR) {
+        if (major != PYROWAVE_API_VERSION_MAJOR || minor < PYROWAVE_API_VERSION_MINOR) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "PyroWave: library version %u.%u.%u doesn't match the %u.%u API Moonlight was built with",
+                         "PyroWave: library version %u.%u.%u isn't compatible with the %u.%u API Moonlight was built with",
                          major, minor, patch,
                          PYROWAVE_API_VERSION_MAJOR, PYROWAVE_API_VERSION_MINOR);
             return;

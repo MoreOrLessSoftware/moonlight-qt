@@ -367,7 +367,7 @@ libplacebo {
     }
 
     # PyroWave decodes into frames for the Vulkan renderer. The library is loaded at
-    # runtime (libpyrowave-shared.so.0), so it isn't needed to build.
+    # runtime (libpyrowave-shared.so.1), so it isn't needed to build.
     linux {
         message(PyroWave support enabled)
 
@@ -456,6 +456,23 @@ win32:!winrt {
 
     # PyroWave decodes into frames for the D3D11 renderer
     DEFINES += HAVE_PYROWAVE
+
+    # The library is loaded at runtime from Moonlight's directory, so copy it next to the
+    # built exe for running from Qt Creator. Like build-arch.bat, it's taken from PYROWAVE_DLL
+    # or a pyrowave build next to this repo. Only x64 is built for now.
+    contains(QT_ARCH, x86_64) {
+        PYROWAVE_DLL = $$(PYROWAVE_DLL)
+        isEmpty(PYROWAVE_DLL): PYROWAVE_DLL = $$PWD/../../pyrowave/output/bin/libpyrowave-shared-1.dll
+        exists($$PYROWAVE_DLL) {
+            CONFIG(debug, debug|release): PYROWAVE_DEST = $$OUT_PWD/debug
+            else: PYROWAVE_DEST = $$OUT_PWD/release
+            !isEmpty(QMAKE_POST_LINK): QMAKE_POST_LINK += $$escape_expand(\\n\\t)
+            QMAKE_POST_LINK += $$QMAKE_COPY $$shell_quote($$shell_path($$PYROWAVE_DLL)) \
+                               $$shell_quote($$shell_path($$PYROWAVE_DEST/libpyrowave-shared-1.dll))
+        } else {
+            message(PyroWave library not found at $$PYROWAVE_DLL, so it is not copied next to Moonlight)
+        }
+    }
 }
 macx {
     message(VideoToolbox renderer selected)

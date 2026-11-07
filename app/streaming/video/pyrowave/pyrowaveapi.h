@@ -18,7 +18,7 @@ typedef VkQueueGlobalPriorityKHR VkQueueGlobalPriority;
 struct PyrowaveApi
 {
     decltype(&::pyrowave_get_api_version) getApiVersion;
-    decltype(&::pyrowave_create_device_by_compat2) createDeviceByCompat2;
+    decltype(&::pyrowave_create_device_by_compat) createDeviceByCompat;
     decltype(&::pyrowave_device_destroy) deviceDestroy;
     decltype(&::pyrowave_device_get_vk_device_handles) deviceGetVkDeviceHandles; // May be null
     decltype(&::pyrowave_sync_object_create) syncObjectCreate;

@@ -250,9 +250,9 @@ bool PyrowaveVkDecoder::createPyrowaveDevice()
     // that's retried at the normal priority.
     pyrowave_result result = PYROWAVE_ERROR_GENERIC;
     for (VkQueueGlobalPriority priority : { VK_QUEUE_GLOBAL_PRIORITY_HIGH, VK_QUEUE_GLOBAL_PRIORITY_MEDIUM }) {
-        result = m_Api->createDeviceByCompat2(props.properties.vendorID, props.properties.deviceID,
-                                              &deviceUuid, &driverUuid, nullptr,
-                                              priority, &m_Handles->device);
+        result = m_Api->createDeviceByCompat(props.properties.vendorID, props.properties.deviceID,
+                                             &deviceUuid, &driverUuid, nullptr,
+                                             priority, &m_Handles->device);
         if (result == PYROWAVE_SUCCESS) {
             return true;
         }

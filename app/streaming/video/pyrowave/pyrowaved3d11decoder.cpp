@@ -295,9 +295,9 @@ bool PyrowaveD3D11Decoder::initialize(D3D11VARenderer* renderer, PDECODER_PARAME
 
     // High priority puts PyroWave on an async compute queue. Without the privilege for
     // it, the driver gives a lower one.
-    pyrowave_result result = m_Api->createDeviceByCompat2(0, 0, nullptr, nullptr, &luid,
-                                                          VK_QUEUE_GLOBAL_PRIORITY_HIGH,
-                                                          &m_Handles->device);
+    pyrowave_result result = m_Api->createDeviceByCompat(0, 0, nullptr, nullptr, &luid,
+                                                         VK_QUEUE_GLOBAL_PRIORITY_HIGH,
+                                                         &m_Handles->device);
     if (result != PYROWAVE_SUCCESS) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                      "PyroWave: couldn't create a Vulkan device for %S (%d). A Vulkan 1.3 driver is required.",

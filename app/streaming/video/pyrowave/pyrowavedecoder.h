@@ -22,7 +22,7 @@ class PyrowaveStageTimer;
 // the renderer can draw: PyrowaveD3D11Decoder for the D3D11 renderer on Windows, and
 // PyrowaveVkDecoder for the Vulkan renderer elsewhere.
 //
-// The library (libpyrowave-shared-0.dll, libpyrowave-shared.so.0) is loaded at runtime,
+// The library (libpyrowave-shared-1.dll, libpyrowave-shared.so.1) is loaded at runtime,
 // so nothing links against it and the codec is simply unavailable without it.
 class PyrowaveDecoder
 {
