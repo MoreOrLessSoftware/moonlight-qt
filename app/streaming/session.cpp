@@ -2049,6 +2049,9 @@ void Session::exec()
     m_OverlayManager.setOverlayColor(Overlay::OverlayDebug, k_OverlayColors[overlayColor]);
     m_OverlayManager.setOverlayState(Overlay::OverlayDebug, m_Preferences->showPerformanceOverlay);
 
+    // Network jitter tolerance only applies with frame pacing
+    m_OverlayMenu.setShowJitterTolerance(m_Preferences->enableVsync && m_Preferences->framePacing);
+
     // Switch to async logging mode when we enter the SDL loop
     StreamUtils::enterAsyncLoggingMode();
 
@@ -2153,6 +2156,10 @@ void Session::exec()
                 break;
             case SDL_WINDOWEVENT_LEAVE:
                 m_InputHandler->notifyMouseLeave();
+                break;
+            case SDL_WINDOWEVENT_SIZE_CHANGED:
+                // Drawn again for the new size, whether or not the renderer is recreated
+                m_OverlayMenu.refresh();
                 break;
             }
 
@@ -2336,6 +2343,26 @@ void Session::exec()
 
             // After a window resize, we need to reset the pointer lock region
             m_InputHandler->updatePointerRegionLock();
+
+            // The new renderer has the menu's last image (OverlayManager::setOverlayRenderer()),
+            // but the window may have changed size, and the renderer may not draw the menu
+            m_OverlayMenu.refresh();
+
+            // ML_OVERLAY_MENU_TEST opens the menu with the first renderer, then makes the moves
+            // it lists (U, D, L and R), for checking how the menu is drawn
+            if (m_OverlayMenuTestPending) {
+                m_OverlayMenuTestPending = false;
+                if (m_OverlayMenu.open(m_Window)) {
+                    for (char move : qgetenv("ML_OVERLAY_MENU_TEST").toUpper()) {
+                        switch (move) {
+                        case 'U': m_OverlayMenu.navigate(OverlayMenu::DirectionUp); break;
+                        case 'D': m_OverlayMenu.navigate(OverlayMenu::DirectionDown); break;
+                        case 'L': m_OverlayMenu.navigate(OverlayMenu::DirectionLeft); break;
+                        case 'R': m_OverlayMenu.navigate(OverlayMenu::DirectionRight); break;
+                        }
+                    }
+                }
+            }
 
             SDL_UnlockMutex(m_DecoderLock);
             break;

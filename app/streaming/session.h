@@ -10,6 +10,7 @@
 #include "video/decoder.h"
 #include "audio/renderers/renderer.h"
 #include "video/overlaymanager.h"
+#include "overlaymenu.h"
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -291,6 +292,9 @@ private:
     Uint32 m_DropAudioEndTime;
 
     Overlay::OverlayManager m_OverlayManager;
+    OverlayMenu m_OverlayMenu { m_OverlayManager };
+    // ML_OVERLAY_MENU_TEST opens the menu once the first renderer is up (see exec())
+    bool m_OverlayMenuTestPending = qEnvironmentVariableIsSet("ML_OVERLAY_MENU_TEST");
 
     static CONNECTION_LISTENER_CALLBACKS k_ConnCallbacks;
     static Session* s_ActiveSession;

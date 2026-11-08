@@ -1610,8 +1610,8 @@ bool D3D11VARenderer::createOverlayVertexBuffer(Overlay::OverlayType type, int w
 {
     SDL_FRect renderRect = {};
 
-    if (type == Overlay::OverlayStatusUpdate) {
-        // Bottom Left
+    if (type == Overlay::OverlayStatusUpdate || type == Overlay::OverlayMenu) {
+        // Bottom Left. The menu's image includes its margin from the edges.
         renderRect.x = 0;
         renderRect.y = 0;
     }

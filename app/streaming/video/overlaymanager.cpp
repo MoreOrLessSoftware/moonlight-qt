@@ -34,6 +34,9 @@ OverlayManager::~OverlayManager()
         if (m_Overlays[i].surface != nullptr) {
             SDL_FreeSurface(m_Overlays[i].surface);
         }
+        if (m_Overlays[i].image != nullptr) {
+            SDL_FreeSurface(m_Overlays[i].image);
+        }
         if (m_Overlays[i].font != nullptr) {
             TTF_CloseFont(m_Overlays[i].font);
         }
@@ -133,14 +136,67 @@ void OverlayManager::setOverlayColor(OverlayType type, SDL_Color color)
     setOverlayTextUpdated(type);
 }
 
+void OverlayManager::updateOverlayImage(OverlayType type, SDL_Surface* image)
+{
+    SDL_assert(isImageOverlay(type));
+
+    if (m_Overlays[type].image != nullptr) {
+        SDL_FreeSurface(m_Overlays[type].image);
+    }
+    m_Overlays[type].image = image;
+
+    if (m_Overlays[type].enabled) {
+        notifyOverlayUpdated(type);
+    }
+}
+
+bool OverlayManager::isOverlaySupported(OverlayType type)
+{
+    return m_Renderer != nullptr && m_Renderer->isOverlaySupported(type);
+}
+
 void OverlayManager::setOverlayRenderer(IOverlayRenderer* renderer)
 {
     m_Renderer = renderer;
+
+    // A new renderer (as after a full-screen toggle) starts without any overlays. A text
+    // overlay is drawn again with its next update, but an image overlay may not get one.
+    if (m_Renderer != nullptr) {
+        for (int i = 0; i < OverlayType::OverlayMax; i++) {
+            if (isImageOverlay((OverlayType)i) && m_Overlays[i].enabled) {
+                notifyOverlayUpdated((OverlayType)i);
+            }
+        }
+    }
+}
+
+bool OverlayManager::isImageOverlay(OverlayType type)
+{
+    return type == OverlayMenu;
 }
 
 void OverlayManager::notifyOverlayUpdated(OverlayType type)
 {
     if (m_Renderer == nullptr) {
+        return;
+    }
+
+    if (isImageOverlay(type)) {
+        if (!m_Renderer->isOverlaySupported(type)) {
+            return;
+        }
+
+        // The renderer frees the surface it takes, so it's handed a copy of the image
+        SDL_Surface* oldSurface = (SDL_Surface*)SDL_AtomicSetPtr(
+            (void**)&m_Overlays[type].surface,
+            m_Overlays[type].enabled && m_Overlays[type].image != nullptr ?
+                SDL_DuplicateSurface(m_Overlays[type].image) : nullptr);
+
+        m_Renderer->notifyOverlayUpdated(type);
+
+        if (oldSurface != nullptr) {
+            SDL_FreeSurface(oldSurface);
+        }
         return;
     }
 
