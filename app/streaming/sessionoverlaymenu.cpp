@@ -19,7 +19,7 @@ static QString defaultGroupIcon(const QString& kind)
     if (kind == "app") {
         return "videogame_asset";
     }
-    else if (kind == "exe") {
+    else if (kind == "program") {
         return "web_asset";
     }
     else if (kind == "plugin") {
