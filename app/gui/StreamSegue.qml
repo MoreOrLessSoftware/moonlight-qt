@@ -3,6 +3,7 @@ import QtQuick.Controls 2.2
 import QtQuick.Window 2.2
 
 import SdlGamepadKeyNavigation 1.0
+import StreamingPreferences 1.0
 import Session 1.0
 import SystemProperties 1.0
 
@@ -142,6 +143,27 @@ Item {
         }
     }
 
+    // How to open the in-stream menu, with the gamepad buttons set to open it when there's a
+    // gamepad
+    function streamHint() {
+        var hasGamepad = SdlGamepadKeyNavigation.getConnectedGamepads() > 0
+
+        var trigger = ""
+        switch (StreamingPreferences.overlayMenuTrigger) {
+        case StreamingPreferences.OMT_SELECT: trigger = qsTr("Select"); break
+        case StreamingPreferences.OMT_START: trigger = qsTr("Start"); break
+        case StreamingPreferences.OMT_GUIDE: trigger = qsTr("Guide"); break
+        case StreamingPreferences.OMT_LB_RB: trigger = qsTr("LB+RB"); break
+        }
+
+        if (hasGamepad && trigger !== "") {
+            var seconds = (StreamingPreferences.overlayMenuHoldMs / 1000).toLocaleString(Qt.locale(), 'f', 1)
+            return qsTr("Hold %1 for %2 seconds or press %3 to open the in-stream menu").arg(trigger).arg(seconds).arg(qsTr("Ctrl+Alt+Shift+O"))
+        }
+
+        return qsTr("Press %1 to open the in-stream menu").arg(qsTr("Ctrl+Alt+Shift+O"))
+    }
+
     Loader {
         id: streamLoader
         active: false
@@ -152,8 +174,7 @@ Item {
             // in the hintText control itself to synchronize
             // with Session.exec() which requires no concurrent
             // gamepad usage.
-            hintText.text = qsTr("Tip:") + " " + qsTr("Press %1 to disconnect your session").arg(SdlGamepadKeyNavigation.getConnectedGamepads() > 0 ?
-                                                  qsTr("Start+Select+L1+R1") : qsTr("Ctrl+Alt+Shift+Q"))
+            hintText.text = qsTr("Tip:") + " " + streamHint()
 
             // Stop GUI gamepad usage now
             SdlGamepadKeyNavigation.disable()
