@@ -278,8 +278,14 @@ Item {
                 spacing: 10
 
                 Button {
+                    id: recordButton
                     text: recorder.recording ? qsTr("Stop Recording") : qsTr("Record")
                     highlighted: recorder.recording
+
+                    // Not taken from a click, which would stop the recording (see keyCatcher).
+                    // Pressed another way (like by a screen reader), it can still have it.
+                    focusPolicy: Qt.NoFocus
+
                     onClicked: {
                         if (recorder.recording) {
                             recorder.stop()
@@ -362,11 +368,24 @@ Item {
                 ]
             }
 
-            // Takes the keys while recording, where the system's hook doesn't
+            // Takes the keys while recording, where the system's hook doesn't. It has the focus
+            // while recording, so clicking any other control (which takes the focus) stops it.
             Item {
                 id: keyCatcher
                 width: 0
                 height: 0
+
+                // Except to the Record button, whose click decides (it would otherwise stop
+                // the recording, then start it again)
+                onActiveFocusChanged: {
+                    if (!activeFocus) {
+                        Qt.callLater(function() {
+                            if (!keyCatcher.activeFocus && !recordButton.activeFocus) {
+                                recorder.stop()
+                            }
+                        })
+                    }
+                }
 
                 Keys.onPressed: function(event) {
                     if (recorder.recording) {
@@ -394,6 +413,11 @@ Item {
         standardButtons: Dialog.Cancel
         width: Math.min(commandsPage.width - 40, 760)
         height: Math.min(commandsPage.height - 40, 640)
+
+        onAboutToShow: {
+            // Its keys are for searching
+            recorder.stop()
+        }
 
         onOpened: {
             importError = ""
