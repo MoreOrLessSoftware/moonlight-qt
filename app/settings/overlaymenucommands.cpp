@@ -1,6 +1,11 @@
 #include "overlaymenucommands.h"
+#include "materialsymbols.h"
+#include "path.h"
 
 #include <QCoreApplication>
+#include <QFileInfo>
+#include <QPainter>
+#include <QSvgRenderer>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -101,6 +106,78 @@ QString OverlayMenuCommand::keyName(int vk)
     }
 }
 
+QString OverlayMenuCommand::iconImagePath(const QString& icon, bool* keepsColors)
+{
+    QString file;
+    bool keep = false;
+    if (icon.startsWith("image:")) {
+        file = icon.mid(6);
+    }
+    else if (icon.startsWith("image-color:")) {
+        file = icon.mid(12);
+        keep = true;
+    }
+
+    // Only ever a file in the icons' folder
+    file = QFileInfo(file).fileName();
+    if (file.isEmpty()) {
+        return QString();
+    }
+
+    if (keepsColors != nullptr) {
+        *keepsColors = keep;
+    }
+    return Path::getOverlayMenuIconDir() + "/" + file;
+}
+
+QImage OverlayMenuCommand::renderIcon(const QString& icon, int size, const QColor& color)
+{
+    QImage image(qMax(1, size), qMax(1, size), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+
+    QPainter painter(&image);
+    painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform);
+
+    bool keepsColors;
+    QString path = iconImagePath(icon, &keepsColors);
+    if (!path.isEmpty()) {
+        // Fitted to the square, keeping its shape
+        if (path.endsWith(".svg", Qt::CaseInsensitive)) {
+            QSvgRenderer renderer(path);
+            if (renderer.isValid()) {
+                QSizeF fitted = QSizeF(renderer.defaultSize()).scaled(image.size(), Qt::KeepAspectRatio);
+                renderer.render(&painter, QRectF(QPointF((size - fitted.width()) / 2, (size - fitted.height()) / 2), fitted));
+            }
+        }
+        else {
+            QImage source(path);
+            if (!source.isNull()) {
+                source = source.scaled(image.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                painter.drawImage(QPointF((size - source.width()) / 2.0, (size - source.height()) / 2.0), source);
+            }
+        }
+
+        // Its shape in the menu's color, like the other icons
+        if (!keepsColors) {
+            painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+            painter.fillRect(image.rect(), color);
+        }
+    }
+    else {
+        QString glyph = MaterialSymbols::glyph(icon.startsWith("material:") ? icon.mid(9) : icon);
+        if (!glyph.isEmpty() && !MaterialSymbols::family().isEmpty()) {
+            QFont font(MaterialSymbols::family());
+            font.setPixelSize(qMax(1, size));
+            painter.setFont(font);
+            painter.setPen(color);
+            painter.drawText(image.rect(), Qt::AlignCenter, glyph);
+        }
+    }
+
+    painter.end();
+    return image;
+}
+
 QVector<OverlayMenuCommand> OverlayMenuCommand::fromJson(const QByteArray& json)
 {
     QVector<OverlayMenuCommand> commands;
@@ -172,6 +249,11 @@ QVector<OverlayMenuCommand> OverlayMenuCommand::load()
         return fromJson(qgetenv("ML_OVERLAY_MENU_COMMANDS"));
     }
 
+    return loadSaved();
+}
+
+QVector<OverlayMenuCommand> OverlayMenuCommand::loadSaved()
+{
     QSettings settings;
     return fromJson(settings.value(SER_OVERLAYMENUCOMMANDS).toByteArray());
 }

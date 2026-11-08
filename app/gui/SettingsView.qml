@@ -2163,6 +2163,17 @@ Flickable {
                         StreamingPreferences.overlayMenuHoldMs = model.get(currentIndex).val
                     }
                 }
+
+                Button {
+                    id: overlayMenuCommandsButton
+                    text: qsTr("Custom Commands…")
+                    onClicked: stackView.push("qrc:/gui/OverlayMenuCommandsView.qml")
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Commands along the bottom of the in-stream menu that press keys on the host")
+                }
             }
         }
 

@@ -186,6 +186,9 @@ SOURCES += \
     settings/mappingfetcher.cpp \
     settings/streamingpreferences.cpp \
     settings/overlaymenucommands.cpp \
+    materialsymbols.cpp \
+    gui/overlaymenucommandmodel.cpp \
+    gui/keyrecorder.cpp \
     streaming/input/abstouch.cpp \
     streaming/input/gamepad.cpp \
     streaming/input/input.cpp \
@@ -231,6 +234,9 @@ HEADERS += \
     cli/startstream.h \
     settings/streamingpreferences.h \
     settings/overlaymenucommands.h \
+    materialsymbols.h \
+    gui/overlaymenucommandmodel.h \
+    gui/keyrecorder.h \
     streaming/input/input.h \
     streaming/session.h \
     streaming/audio/renderers/renderer.h \

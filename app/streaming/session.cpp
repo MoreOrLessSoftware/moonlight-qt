@@ -2069,8 +2069,7 @@ void Session::exec()
 
         QVector<QPair<QString, QString>> commands;
         for (const OverlayMenuCommand& command : std::as_const(m_OverlayMenuCommands)) {
-            QString icon = command.icon.startsWith("material:") ? command.icon.mid(9) : QString();
-            commands.append({ icon, command.label() });
+            commands.append({ command.icon, command.label() });
         }
         m_OverlayMenu.setCustomCommands(commands);
     }

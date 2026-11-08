@@ -10,6 +10,7 @@ QString Path::s_CacheDir;
 QString Path::s_LogDir;
 QString Path::s_BoxArtCacheDir;
 QString Path::s_QmlCacheDir;
+QString Path::s_OverlayMenuIconDir;
 
 QString Path::getLogDir()
 {
@@ -27,6 +28,12 @@ QString Path::getQmlCacheDir()
 {
     Q_ASSERT(!s_QmlCacheDir.isEmpty());
     return s_QmlCacheDir;
+}
+
+QString Path::getOverlayMenuIconDir()
+{
+    Q_ASSERT(!s_OverlayMenuIconDir.isEmpty());
+    return s_OverlayMenuIconDir;
 }
 
 QByteArray Path::readDataFile(QString fileName)
@@ -108,6 +115,7 @@ void Path::initialize(bool portable)
         s_LogDir = QDir::currentPath();
         s_BoxArtCacheDir = QDir::currentPath() + "/boxart";
         s_QmlCacheDir = QDir::currentPath() + "/qmlcache";
+        s_OverlayMenuIconDir = QDir::currentPath() + "/overlaymenuicons";
 
         // In order for the If-Modified-Since logic to work in MappingFetcher,
         // the cache directory must be different than the current directory.
@@ -124,5 +132,6 @@ void Path::initialize(bool portable)
         s_CacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
         s_BoxArtCacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/boxart";
         s_QmlCacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/qmlcache";
+        s_OverlayMenuIconDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/overlaymenuicons";
     }
 }

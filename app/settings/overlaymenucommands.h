@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QColor>
+#include <QImage>
 #include <QString>
 #include <QVector>
 
@@ -16,7 +18,9 @@ struct OverlayMenuCommand
     };
 
     QString name;
-    // "material:<name>" for a Material Symbols icon, or empty for none
+    // "material:<name>" for a Material Symbols icon, "image:<file>" for an image imported into
+    // Path::getOverlayMenuIconDir() and drawn in the menu's colours, "image-color:<file>" for
+    // one drawn in its own, or empty for none
     QString icon;
     // Chords pressed one after another. Each is Windows virtual key codes, pressed in order and
     // released in reverse (so modifiers go first).
@@ -30,9 +34,19 @@ struct OverlayMenuCommand
     static QString describeKeys(const QVector<QVector<int>>& steps);
     static QString keyName(int vk);
 
+    // An image icon's file, and whether it keeps its own colours. Empty for any other icon.
+    static QString iconImagePath(const QString& icon, bool* keepsColors = nullptr);
+
+    // Draws an icon (as above, or a bare Material Symbols name) in a square of the given size,
+    // in the given color unless it's an image that keeps its own. Transparent if it can't be
+    // drawn. Main thread.
+    static QImage renderIcon(const QString& icon, int size, const QColor& color);
+
     // The saved commands. ML_OVERLAY_MENU_COMMANDS (in the saved format, JSON) replaces them
     // for testing.
     static QVector<OverlayMenuCommand> load();
+    // The saved commands only, for editing them
+    static QVector<OverlayMenuCommand> loadSaved();
     static void save(const QVector<OverlayMenuCommand>& commands);
 
     static QVector<OverlayMenuCommand> fromJson(const QByteArray& json);

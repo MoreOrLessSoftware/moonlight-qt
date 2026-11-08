@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QHash>
+#include <QImage>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -61,7 +63,7 @@ public:
     // next time the menu opens.
     void setShowGamepadButtons(bool show);
 
-    // The custom commands along the row, as Material Symbols icon names (or empty) and labels.
+    // The custom commands along the row, as icons (see OverlayMenuCommand::icon) and labels.
     // Takes effect the next time the menu opens.
     void setCustomCommands(const QVector<QPair<QString, QString>>& commands);
 
@@ -100,7 +102,7 @@ public:
 private:
     struct Item {
         int action;
-        // A Material Symbols icon name, or empty for none
+        // A Material Symbols icon name, another icon (see OverlayMenuCommand::icon), or empty
         QString icon;
         QString label;
         // A longer label it may change to, whose width is kept for it so the menu doesn't move
@@ -133,6 +135,9 @@ private:
     int m_OptionChecked;
 
     QVector<QPair<QString, QString>> m_CustomCommands;
+
+    // Icons as drawn, by icon, size and color. Cleared as the menu opens.
+    QHash<QString, QImage> m_IconCache;
 
     QVector<Item> m_Column;
     QVector<Item> m_Row;

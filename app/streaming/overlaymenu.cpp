@@ -1,8 +1,7 @@
 #include "overlaymenu.h"
-#include "path.h"
+#include "settings/overlaymenucommands.h"
 
 #include <QCoreApplication>
-#include <QFontDatabase>
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QHash>
@@ -25,63 +24,6 @@
 // A window this many pixels tall draws the menu at a scale of 1. Taller windows scale it up,
 // so it takes the same share of the screen at any resolution.
 #define MENU_REFERENCE_HEIGHT 720.0
-
-namespace {
-
-struct MaterialSymbols
-{
-    QString family;
-    QHash<QString, uint> codepoints;
-};
-
-// The Material Symbols font, registered with Qt on first use, and its icon names
-const MaterialSymbols& materialSymbols()
-{
-    static MaterialSymbols symbols = [] {
-        MaterialSymbols s;
-
-        int id = QFontDatabase::addApplicationFontFromData(Path::readDataFile("MaterialSymbolsOutlined.ttf"));
-        if (id >= 0 && !QFontDatabase::applicationFontFamilies(id).isEmpty()) {
-            s.family = QFontDatabase::applicationFontFamilies(id).first();
-        }
-        else {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Unable to load the Material Symbols font; the overlay menu will have no icons");
-        }
-
-        // Each line is "<name> <hex codepoint>"
-        const QList<QByteArray> lines = Path::readDataFile("MaterialSymbolsOutlined.codepoints").split('\n');
-        for (const QByteArray& line : lines) {
-            QList<QByteArray> fields = line.trimmed().split(' ');
-            if (fields.size() == 2) {
-                bool ok;
-                uint codepoint = fields[1].toUInt(&ok, 16);
-                if (ok) {
-                    s.codepoints.insert(QString::fromLatin1(fields[0]), codepoint);
-                }
-            }
-        }
-
-        return s;
-    }();
-
-    return symbols;
-}
-
-// The text that draws an icon in the Material Symbols font, or empty for an unknown icon
-QString iconText(const QString& name)
-{
-    uint codepoint = materialSymbols().codepoints.value(name, 0);
-    if (codepoint == 0) {
-        return QString();
-    }
-
-    // Some of the icons are outside the Basic Multilingual Plane
-    char32_t ucs4 = codepoint;
-    return QString::fromUcs4(&ucs4, 1);
-}
-
-}
 
 OverlayMenu::OverlayMenu(Overlay::OverlayManager& overlays) :
     m_Overlays(overlays),
@@ -137,6 +79,7 @@ bool OverlayMenu::open(SDL_Window* window)
     }
 
     m_Window = window;
+    m_IconCache.clear();
     m_OptionsAction = ActionNone;
     m_QuitConfirmation = false;
     buildItems();
@@ -540,13 +483,14 @@ void OverlayMenu::drawButton(QPainter& painter, const QRectF& rect, const Item& 
     painter.setPen(contentColor);
 
     if (!item.icon.isEmpty()) {
-        QString glyph = iconText(item.icon);
-        if (!glyph.isEmpty() && !materialSymbols().family.isEmpty()) {
-            QFont iconFont(materialSymbols().family);
-            iconFont.setPixelSize(qMax(1, qRound(iconSize)));
-            painter.setFont(iconFont);
-            painter.drawText(QRectF(x, contentRect.top(), iconSize, iconSize), Qt::AlignCenter, glyph);
+        // Drawn once for each size and color, since an image icon is read from its file
+        int iconPixels = qMax(1, qRound(iconSize));
+        QString key = QString("%1|%2|%3").arg(item.icon).arg(iconPixels).arg(contentColor.rgba());
+        auto cached = m_IconCache.find(key);
+        if (cached == m_IconCache.end()) {
+            cached = m_IconCache.insert(key, OverlayMenuCommand::renderIcon(item.icon, iconPixels, contentColor));
         }
+        painter.drawImage(QRectF(x, contentRect.top(), iconSize, iconSize), cached.value());
 
         x += iconSize;
         if (!item.label.isEmpty()) {
