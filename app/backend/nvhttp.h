@@ -134,6 +134,15 @@ public:
     getXmlStringFromHex(QString xml,
                         QString tagName);
 
+    // Makes an HTTPS request without throwing, for responses whose body matters even with an
+    // error status (like Sunshine's JSON answers). Returns the HTTP status, or 0 if no
+    // response came, and the body in body.
+    int
+    requestHttps(QString command,
+                 QString arguments,
+                 int timeoutMs,
+                 QByteArray& body);
+
     QString
     openConnectionToString(QUrl baseUrl,
                            QString command,

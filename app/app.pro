@@ -209,6 +209,7 @@ SOURCES += \
     streaming/video/overlaymanager.cpp \
     streaming/overlaymenu.cpp \
     streaming/sessionoverlaymenu.cpp \
+    streaming/hostcommands.cpp \
     backend/systemproperties.cpp \
     wm.cpp
 
@@ -252,6 +253,7 @@ HEADERS += \
     gui/sdlgamepadkeynavigation.h \
     streaming/video/overlaymanager.h \
     streaming/overlaymenu.h \
+    streaming/hostcommands.h \
     backend/systemproperties.h
 
 # Skip the check for a newer upstream release, such as in a custom fork

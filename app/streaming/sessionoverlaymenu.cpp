@@ -10,6 +10,24 @@
 // How long Quit Session waits to be pressed again
 #define OVERLAY_MENU_QUIT_CONFIRM_MS 3000
 
+// How long a message (like why a host command failed) shows on its button
+#define OVERLAY_MENU_MESSAGE_MS 4000
+
+// A host group's button without an icon of its own, by where the group comes from
+static QString defaultGroupIcon(const QString& kind)
+{
+    if (kind == "app") {
+        return "videogame_asset";
+    }
+    else if (kind == "exe") {
+        return "web_asset";
+    }
+    else if (kind == "plugin") {
+        return "extension";
+    }
+    return "folder";
+}
+
 // Network jitter tolerance's choices, as in the settings
 static const int k_JitterTolerancePercentiles[] = { 90, 97, 99 };
 
@@ -27,6 +45,9 @@ void Session::openOverlayMenu(int slot)
 
     m_OverlayMenuSlot = slot;
     m_InputHandler->notifyOverlayMenuOpened();
+
+    // The host's commands can depend on what's running there now
+    fetchHostCommands();
 
     // The pointer is shown for clicking the menu's buttons, and captured again as it closes
     m_OverlayMenuPressedButton = false;
@@ -96,7 +117,7 @@ void Session::handleOverlayMenuInput(int buttons, int slot)
             continue;
         }
 
-        bool mainButtons = m_OverlayMenu.getOptionsAction() == OverlayMenu::ActionNone;
+        bool mainButtons = m_OverlayMenu.isOnMainButtons();
 
         switch (button) {
         case UP_FLAG:
@@ -261,7 +282,24 @@ void Session::activateOverlayMenuAction(int action)
         break;
 
     default:
-        if (action >= OverlayMenu::ActionOptionBase) {
+        if (action >= OverlayMenu::ActionGroupCommandBase) {
+            int group = m_OverlayMenu.getGroup();
+            int index = action - OverlayMenu::ActionGroupCommandBase;
+            if (group >= 0 && group < m_HostCommands.groups.size() &&
+                    index < m_HostCommands.groups[group].commands.size()) {
+                runHostCommand(m_HostCommands.groups[group].commands[index], action);
+            }
+        }
+        else if (action >= OverlayMenu::ActionHostGroupBase) {
+            m_OverlayMenu.showGroup(action - OverlayMenu::ActionHostGroupBase);
+        }
+        else if (action >= OverlayMenu::ActionHostCommandBase) {
+            int index = action - OverlayMenu::ActionHostCommandBase;
+            if (index < m_HostCommands.commands.size()) {
+                runHostCommand(m_HostCommands.commands[index], action);
+            }
+        }
+        else if (action >= OverlayMenu::ActionOptionBase) {
             pickOverlayMenuOption(action - OverlayMenu::ActionOptionBase);
         }
         else if (action >= OverlayMenu::ActionCustomBase &&
@@ -323,6 +361,111 @@ void Session::finishOverlayMenuCommand(const SDL_UserEvent& event)
     default:
         break;
     }
+}
+
+void Session::fetchHostCommands()
+{
+    if (!m_HostCommandsSupported || m_HostCommandsFetching) {
+        return;
+    }
+
+    m_HostCommandsFetching = true;
+    HostCommandsClient::fetch(m_HostCommandsTarget, m_OverlayMenuCommandToken);
+}
+
+void Session::handleHostCommandsFetched(const SDL_UserEvent& event)
+{
+    QScopedPointer<HostCommandsFetchResult> result((HostCommandsFetchResult*)event.data1);
+    if ((int)(intptr_t)event.data2 != m_OverlayMenuCommandToken) {
+        return;
+    }
+
+    m_HostCommandsFetching = false;
+    if (result->unsupported) {
+        m_HostCommandsSupported = false;
+        m_HostCommands = {};
+    }
+    else if (result->ok) {
+        m_HostCommands = result->commands;
+    }
+    else {
+        // A failed request keeps what the menu has
+        return;
+    }
+
+    QVector<QPair<QString, QString>> commands;
+    for (const HostCommand& command : std::as_const(m_HostCommands.commands)) {
+        commands.append({ command.icon, command.label });
+    }
+
+    QVector<OverlayMenu::HostGroup> groups;
+    for (const HostCommandGroup& group : std::as_const(m_HostCommands.groups)) {
+        OverlayMenu::HostGroup item;
+        item.icon = group.icon.isEmpty() ? defaultGroupIcon(group.kind) : group.icon;
+        item.label = group.label;
+        for (const HostCommand& command : group.commands) {
+            item.commands.append({ command.icon, command.label });
+        }
+        groups.append(item);
+    }
+
+    m_OverlayMenu.setHostCommands(commands, groups);
+}
+
+void Session::runHostCommand(const HostCommand& command, int action)
+{
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Running the host's command: %s",
+                qPrintable(command.label));
+
+    // The menu stays open until the host answers, so a failure can show on the button
+    m_HostCommandRunningId = command.id;
+    m_HostCommandRunningAction = action;
+    m_HostCommandRunningCloses = command.closeMenu;
+    HostCommandsClient::run(m_HostCommandsTarget, command.id, m_OverlayMenuCommandToken);
+}
+
+void Session::handleHostCommandRan(const SDL_UserEvent& event)
+{
+    QScopedPointer<HostCommandRunResult> result((HostCommandRunResult*)event.data1);
+    if ((int)(intptr_t)event.data2 != m_OverlayMenuCommandToken || result->id != m_HostCommandRunningId) {
+        return;
+    }
+
+    m_HostCommandRunningId.clear();
+    if (result->ok) {
+        if (m_HostCommandRunningCloses) {
+            closeOverlayMenu();
+        }
+    }
+    else {
+        showOverlayMenuMessage(m_HostCommandRunningAction, result->message);
+    }
+}
+
+void Session::showOverlayMenuMessage(int action, const QString& message)
+{
+    if (!m_OverlayMenu.isOpen()) {
+        return;
+    }
+
+    m_OverlayMenu.setMessage(action, message);
+
+    struct Timeout {
+        int message;
+        int action;
+    };
+    SDL_AddTimer(OVERLAY_MENU_MESSAGE_MS, [](Uint32, void* param) -> Uint32 {
+        auto timeout = (Timeout*)param;
+        SDL_Event event = {};
+        event.type = SDL_USEREVENT;
+        event.user.code = SDL_CODE_OVERLAY_MENU_MESSAGE_TIMEOUT;
+        event.user.data1 = (void*)(intptr_t)timeout->message;
+        event.user.data2 = (void*)(intptr_t)timeout->action;
+        SDL_PushEvent(&event);
+        delete timeout;
+        return 0;
+    }, new Timeout { ++m_OverlayMenuMessages, action });
 }
 
 void Session::pickOverlayMenuOption(int option)

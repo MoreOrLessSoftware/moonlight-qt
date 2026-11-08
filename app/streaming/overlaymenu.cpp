@@ -34,10 +34,13 @@ OverlayMenu::OverlayMenu(Overlay::OverlayManager& overlays) :
     m_QuitConfirmation(false),
     m_OptionsAction(ActionNone),
     m_OptionChecked(-1),
+    m_Group(-1),
+    m_MessageAction(ActionNone),
     m_Region(RegionColumn),
     m_ColumnIndex(0),
     m_RowIndex(0),
-    m_RowScroll(0)
+    m_RowScroll(0),
+    m_ColumnScroll(0)
 {
 }
 
@@ -66,6 +69,78 @@ void OverlayMenu::setShowJitterTolerance(bool show)
     m_ShowJitterTolerance = show;
 }
 
+void OverlayMenu::setHostCommands(const QVector<QPair<QString, QString>>& commands, const QVector<HostGroup>& groups)
+{
+    m_HostCommands = commands;
+    m_HostGroups = groups;
+
+    if (!m_Open) {
+        return;
+    }
+
+    // A group that's gone takes its page with it
+    if (m_Group >= m_HostGroups.size()) {
+        m_Group = -1;
+        m_ColumnScroll = 0;
+    }
+
+    // The same button stays selected where it's still there
+    int selected = selectedAction();
+    Region region = m_Region;
+    buildItems();
+
+    const QVector<Item>& items = region == RegionColumn ? m_Column : m_Row;
+    int index = -1;
+    for (int i = 0; i < items.size(); i++) {
+        if (items[i].action == selected) {
+            index = i;
+            break;
+        }
+    }
+    if (region == RegionColumn) {
+        setColumnIndex(index >= 0 ? index : qBound(0, m_ColumnIndex, (int)m_Column.size() - 1));
+    }
+    else {
+        setRowIndex(index >= 0 ? index : qBound(0, m_RowIndex, (int)m_Row.size() - 1));
+    }
+    draw();
+}
+
+void OverlayMenu::showGroup(int group)
+{
+    if (!m_Open || group < 0 || group >= m_HostGroups.size()) {
+        return;
+    }
+
+    m_Group = group;
+    m_OptionsAction = ActionNone;
+    m_QuitConfirmation = false;
+    m_MessageAction = ActionNone;
+    buildItems();
+
+    m_Region = RegionColumn;
+    m_ColumnIndex = 0;
+    m_RowIndex = 0;
+    m_RowScroll = 0;
+    m_ColumnScroll = 0;
+    draw();
+}
+
+void OverlayMenu::setMessage(int action, const QString& message)
+{
+    if (!m_Open) {
+        return;
+    }
+    if (message.isEmpty() && m_MessageAction != action) {
+        return;
+    }
+
+    m_MessageAction = message.isEmpty() ? ActionNone : action;
+    m_Message = message;
+    buildItems();
+    draw();
+}
+
 bool OverlayMenu::open(SDL_Window* window)
 {
     if (m_Open) {
@@ -81,6 +156,8 @@ bool OverlayMenu::open(SDL_Window* window)
     m_Window = window;
     m_IconCache.clear();
     m_OptionsAction = ActionNone;
+    m_Group = -1;
+    m_MessageAction = ActionNone;
     m_QuitConfirmation = false;
     buildItems();
 
@@ -89,6 +166,7 @@ bool OverlayMenu::open(SDL_Window* window)
     m_ColumnIndex = m_Column.size() - 1;
     m_RowIndex = 0;
     m_RowScroll = 0;
+    m_ColumnScroll = 0;
 
     m_Open = true;
 
@@ -128,6 +206,8 @@ void OverlayMenu::showOptions(int action, const QStringList& labels, int checked
     m_OptionsAction = action;
     m_OptionLabels = labels;
     m_OptionChecked = checked;
+    m_Group = -1;
+    m_MessageAction = ActionNone;
     m_QuitConfirmation = false;
     buildItems();
 
@@ -135,6 +215,7 @@ void OverlayMenu::showOptions(int action, const QStringList& labels, int checked
     m_ColumnIndex = qBound(0, checked, (int)m_Column.size() - 1);
     m_RowIndex = 0;
     m_RowScroll = 0;
+    m_ColumnScroll = 0;
     draw();
 }
 
@@ -144,21 +225,30 @@ void OverlayMenu::showMainButtons()
         return;
     }
 
-    // Back on the button the options were for
-    int action = m_OptionsAction;
+    // Back on the button the options or group were for
+    int action = m_Group >= 0 ? ActionHostGroupBase + m_Group : m_OptionsAction;
     m_OptionsAction = ActionNone;
+    m_Group = -1;
+    m_MessageAction = ActionNone;
     buildItems();
 
     m_Region = RegionColumn;
     m_ColumnIndex = m_Column.size() - 1;
+    m_RowIndex = 0;
+    m_RowScroll = 0;
+    m_ColumnScroll = 0;
     for (int i = 0; i < m_Column.size(); i++) {
         if (m_Column[i].action == action) {
             m_ColumnIndex = i;
             break;
         }
     }
-    m_RowIndex = 0;
-    m_RowScroll = 0;
+    for (int i = 0; i < m_Row.size(); i++) {
+        if (m_Row[i].action == action) {
+            setRowIndex(i);
+            break;
+        }
+    }
     draw();
 }
 
@@ -205,6 +295,18 @@ void OverlayMenu::buildItems()
                               m_OptionLabels[i] });
         }
         m_Row.append({ ActionBack, "arrow_back", QCoreApplication::translate("OverlayMenu", "Back (B)") });
+        applyMessage();
+        return;
+    }
+
+    if (m_Group >= 0 && m_Group < m_HostGroups.size()) {
+        // The group's commands, and Back
+        const HostGroup& group = m_HostGroups[m_Group];
+        for (int i = 0; i < group.commands.size() && i < 1000; i++) {
+            m_Column.append({ ActionGroupCommandBase + i, group.commands[i].first, group.commands[i].second });
+        }
+        m_Row.append({ ActionBack, "arrow_back", QCoreApplication::translate("OverlayMenu", "Back (B)") });
+        applyMessage();
         return;
     }
 
@@ -226,11 +328,34 @@ void OverlayMenu::buildItems()
                       QCoreApplication::translate("OverlayMenu", "Press Again to Quit") });
     m_Column.append({ ActionDisconnect, "desktop_access_disabled", QCoreApplication::translate("OverlayMenu", "Disconnect") });
 
-    // The row, left to right: custom commands, then Close
+    // The row, left to right: custom commands, the host's commands, the host's groups, then
+    // Close
     for (int i = 0; i < m_CustomCommands.size() && ActionCustomBase + i < ActionOptionBase; i++) {
         m_Row.append({ ActionCustomBase + i, m_CustomCommands[i].first, m_CustomCommands[i].second });
     }
+    for (int i = 0; i < m_HostCommands.size() && i < 1000; i++) {
+        m_Row.append({ ActionHostCommandBase + i, m_HostCommands[i].first, m_HostCommands[i].second });
+    }
+    for (int i = 0; i < m_HostGroups.size() && i < 1000; i++) {
+        m_Row.append({ ActionHostGroupBase + i, m_HostGroups[i].icon, m_HostGroups[i].label });
+    }
     m_Row.append({ ActionClose, QString(), QCoreApplication::translate("OverlayMenu", "Close (B)") });
+    applyMessage();
+}
+
+void OverlayMenu::applyMessage()
+{
+    if (m_MessageAction == ActionNone) {
+        return;
+    }
+
+    for (QVector<Item>* items : { &m_Column, &m_Row }) {
+        for (Item& item : *items) {
+            if (item.action == m_MessageAction) {
+                item.label = m_Message;
+            }
+        }
+    }
 }
 
 void OverlayMenu::navigate(Direction direction)
@@ -239,9 +364,10 @@ void OverlayMenu::navigate(Direction direction)
         return;
     }
 
-    // Moving on from Quit Session takes back its question
-    if (m_QuitConfirmation) {
+    // Moving on from Quit Session takes back its question, and a message goes
+    if (m_QuitConfirmation || m_MessageAction != ActionNone) {
         m_QuitConfirmation = false;
+        m_MessageAction = ActionNone;
         buildItems();
     }
 
@@ -251,7 +377,7 @@ void OverlayMenu::navigate(Direction direction)
         if (m_Region == RegionColumn) {
             setColumnIndex((m_ColumnIndex - 1 + m_Column.size()) % m_Column.size());
         }
-        else if (m_OptionsAction == ActionNone) {
+        else if (isOnMainButtons()) {
             // Up from the row goes to the button above Disconnect
             setColumnIndex(m_Column.size() >= 2 ? m_Column.size() - 2 : 0);
         }
@@ -333,9 +459,10 @@ bool OverlayMenu::selectAt(int x, int y)
         bool selected = m_Region == target.region &&
                 (target.region == RegionColumn ? m_ColumnIndex : m_RowIndex) == target.index;
         if (!selected) {
-            // Moving on from Quit Session takes back its question
-            if (m_QuitConfirmation) {
+            // Moving on from Quit Session takes back its question, and a message goes
+            if (m_QuitConfirmation || m_MessageAction != ActionNone) {
                 m_QuitConfirmation = false;
+                m_MessageAction = ActionNone;
                 buildItems();
             }
 
@@ -394,7 +521,7 @@ void OverlayMenu::draw()
 
     // Like the Android client, a column of full size buttons that won't fit the window's
     // height is made compact, with half the vertical padding and spacing. Beyond that, the
-    // whole menu is scaled down to fit, where Android scrolls the column.
+    // column scrolls, as on Android.
     int count = m_Column.size();
     auto columnHeight = [count](qreal scale, bool compact) {
         qreal padding = compact ? MENU_PADDING / 2.0 : MENU_PADDING;
@@ -402,14 +529,8 @@ void OverlayMenu::draw()
         return scale * (count * (MENU_ICON_SIZE + 2 * padding) + (count - 1) * spacing);
     };
 
-    qreal scale = windowHeight / MENU_REFERENCE_HEIGHT;
-    bool compact = false;
-    if (columnHeight(scale, false) + 2 * MENU_MARGIN * scale > windowHeight) {
-        compact = true;
-        if (columnHeight(scale, true) + 2 * MENU_MARGIN * scale > windowHeight) {
-            scale = windowHeight / (columnHeight(1, true) + 2 * MENU_MARGIN);
-        }
-    }
+    const qreal scale = windowHeight / MENU_REFERENCE_HEIGHT;
+    const bool compact = columnHeight(scale, false) + 2 * MENU_MARGIN * scale > windowHeight;
 
     const qreal verticalPadding = scale * (compact ? MENU_PADDING / 2.0 : MENU_PADDING);
     const qreal columnSpacing = scale * (compact ? MENU_SPACING / 2.0 : MENU_SPACING);
@@ -440,6 +561,17 @@ void OverlayMenu::draw()
     }
     qreal columnTotalHeight = count * buttonHeight + (count - 1) * columnSpacing;
 
+    // The part of the column that fits, at least one button
+    const qreal columnVisible = qMin(columnTotalHeight, qMax(buttonHeight, windowHeight - 2 * margin));
+    if (m_Region == RegionColumn && m_ColumnIndex < count) {
+        // Moved just far enough to show the selected button. With no scroll, the column's
+        // bottom is at the bottom of the visible part.
+        const qreal top = columnVisible - columnTotalHeight + m_ColumnIndex * (buttonHeight + columnSpacing);
+        m_ColumnScroll = qMax(m_ColumnScroll, -top);
+        m_ColumnScroll = qMin(m_ColumnScroll, columnVisible - (top + buttonHeight));
+    }
+    m_ColumnScroll = qBound((qreal)0, m_ColumnScroll, columnTotalHeight - columnVisible);
+
     // The row starts right of the column, and scrolls where it's wider than the window
     QVector<qreal> rowX, rowWidths;
     qreal rowTotal = 0;
@@ -464,7 +596,7 @@ void OverlayMenu::draw()
     // The image covers the menu and its margins, and is drawn at the bottom left corner of
     // the window
     int imageWidth = qMin(windowWidth, qCeil(rowLeft + rowVisible + margin));
-    int imageHeight = qMin(windowHeight, qCeil(columnTotalHeight + 2 * margin));
+    int imageHeight = qMin(windowHeight, qCeil(columnVisible + 2 * margin));
 
     QImage image(imageWidth, imageHeight, QImage::Format_ARGB32_Premultiplied);
     image.fill(Qt::transparent);
@@ -474,7 +606,8 @@ void OverlayMenu::draw()
 
         const qreal bottom = imageHeight - margin;
 
-        qreal y = bottom - columnTotalHeight;
+        painter.setClipRect(QRectF(0, bottom - columnVisible, rowLeft, columnVisible));
+        qreal y = bottom - columnTotalHeight + m_ColumnScroll;
         for (int i = 0; i < m_Column.size(); i++) {
             drawButton(painter, QRectF(margin, y, columnWidth, buttonHeight), m_Column[i],
                        m_Region == RegionColumn && i == m_ColumnIndex, scale, verticalPadding);
@@ -496,9 +629,14 @@ void OverlayMenu::draw()
         const qreal top = windowHeight - imageHeight;
         const qreal bottom = imageHeight - margin;
 
-        qreal y = bottom - columnTotalHeight;
+        // Only the part of a column button scrolled into view
+        const QRectF columnArea(0, top + bottom - columnVisible, rowLeft, columnVisible);
+        qreal y = bottom - columnTotalHeight + m_ColumnScroll;
         for (int i = 0; i < m_Column.size(); i++) {
-            m_HitTargets.append({ RegionColumn, i, QRectF(margin, top + y, columnWidth, buttonHeight) });
+            QRectF rect = QRectF(margin, top + y, columnWidth, buttonHeight) & columnArea;
+            if (!rect.isEmpty()) {
+                m_HitTargets.append({ RegionColumn, i, rect });
+            }
             y += buttonHeight + columnSpacing;
         }
 

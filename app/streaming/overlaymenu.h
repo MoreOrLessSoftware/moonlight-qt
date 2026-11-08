@@ -41,6 +41,19 @@ public:
         ActionCustomBase = 100,
         // Option n of the options showing is ActionOptionBase + n
         ActionOptionBase = 200,
+        // The host's command n is ActionHostCommandBase + n, the button of the host's group n
+        // is ActionHostGroupBase + n, and command n of the group showing is
+        // ActionGroupCommandBase + n
+        ActionHostCommandBase = 1000,
+        ActionHostGroupBase = 2000,
+        ActionGroupCommandBase = 3000,
+    };
+
+    // A group of the host's commands: its button, and the commands on its page
+    struct HostGroup {
+        QString icon;
+        QString label;
+        QVector<QPair<QString, QString>> commands;
     };
 
     enum Direction {
@@ -71,6 +84,11 @@ public:
     // next time the menu opens.
     void setShowJitterTolerance(bool show);
 
+    // The host's commands, along the row after the custom commands, and its groups, as
+    // buttons after those that open a page of their commands. An open menu shows them at once,
+    // keeping the selected button where it can.
+    void setHostCommands(const QVector<QPair<QString, QString>>& commands, const QVector<HostGroup>& groups);
+
     bool isOpen() const { return m_Open; }
 
     // Opens with Disconnect selected, as on Android. Does nothing (returning false) if the
@@ -96,6 +114,19 @@ public:
     // The main button whose options are showing, or ActionNone
     int getOptionsAction() const { return m_OptionsAction; }
 
+    // Shows a host group's commands in place of the main buttons, with the first selected.
+    // Back returns to the main buttons.
+    void showGroup(int group);
+    // The host group whose commands are showing, or -1
+    int getGroup() const { return m_Group; }
+
+    // Whether the main buttons are showing (not options or a group's commands)
+    bool isOnMainButtons() const { return m_OptionsAction == ActionNone && m_Group < 0; }
+
+    // Shows a short message in place of a button's label, as for a command that failed, until
+    // it's cleared (with an empty message) or the selection moves
+    void setMessage(int action, const QString& message);
+
     // Quit Session asks to be pressed again. Moving the selection ends this.
     void setQuitConfirmation(bool confirm);
     bool isQuitConfirmation() const { return m_QuitConfirmation; }
@@ -119,6 +150,8 @@ private:
     };
 
     void buildItems();
+    // Puts the message in place of its button's label
+    void applyMessage();
     void setColumnIndex(int index);
     void setRowIndex(int index);
     void draw();
@@ -139,6 +172,12 @@ private:
     int m_OptionChecked;
 
     QVector<QPair<QString, QString>> m_CustomCommands;
+    QVector<QPair<QString, QString>> m_HostCommands;
+    QVector<HostGroup> m_HostGroups;
+    int m_Group;
+
+    int m_MessageAction;
+    QString m_Message;
 
     // Icons as drawn, by icon, size and color. Cleared as the menu opens.
     QHash<QString, QImage> m_IconCache;
@@ -150,6 +189,9 @@ private:
     int m_RowIndex;
     // How far the row is scrolled left (pixels) where it's wider than the window
     qreal m_RowScroll;
+    // How far the column is moved down (pixels) to show buttons above the window's top, where
+    // it's taller than the window
+    qreal m_ColumnScroll;
 
     // Where each button was last drawn, in the window's pixels
     struct HitTarget {

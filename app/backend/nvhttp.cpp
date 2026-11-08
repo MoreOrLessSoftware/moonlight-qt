@@ -454,6 +454,62 @@ void NvHTTP::handleSslErrors(QNetworkReply* reply, const QList<QSslError>& error
     }
 }
 
+int
+NvHTTP::requestHttps(QString command,
+                     QString arguments,
+                     int timeoutMs,
+                     QByteArray& body)
+{
+    body.clear();
+
+    QUrl url(m_BaseUrlHttps);
+    url.setPath("/" + command);
+    url.setQuery("uniqueid=" + (m_UseTrueUid ? IdentityManager::get()->getUniqueId() : "0123456789ABCDEF") +
+                 "&uuid=" + QUuid::createUuid().toRfc4122().toHex() +
+                 (!arguments.isEmpty() ? ("&" + arguments) : ""));
+
+    QNetworkRequest request(url);
+    request.setSslConfiguration(IdentityManager::get()->getSslConfig());
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+#endif
+#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
+    request.setAttribute(QNetworkRequest::ConnectionCacheExpiryTimeoutSecondsAttribute, 0);
+#endif
+
+    auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);
+    QNetworkReply* reply = m_Nam->get(request);
+
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, &loop, &QEventLoop::quit);
+    if (timeoutMs) {
+        QTimer::singleShot(timeoutMs, &loop, &QEventLoop::quit);
+    }
+    loop.exec(QEventLoop::ExcludeUserInputEvents);
+
+    if (!reply->isFinished()) {
+        qWarning() << "Aborting timed out request for" << command;
+        reply->abort();
+    }
+
+#if QT_VERSION < QT_VERSION_CHECK(6, 3, 0)
+    m_Nam->clearAccessCache();
+#endif
+    disconnect(sslErrorsConnection);
+
+    int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (status != 0) {
+        body = reply->readAll();
+    }
+    else {
+        qWarning() << command << "request failed with error:" << reply->error();
+    }
+
+    delete reply;
+    return status;
+}
+
 QString
 NvHTTP::openConnectionToString(QUrl baseUrl,
                                QString command,

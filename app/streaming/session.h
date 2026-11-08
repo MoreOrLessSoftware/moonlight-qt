@@ -11,12 +11,15 @@
 #include "audio/renderers/renderer.h"
 #include "video/overlaymanager.h"
 #include "overlaymenu.h"
+#include "hostcommands.h"
 #include "settings/overlaymenucommands.h"
 
 // The overlay menu's Quit Session question timing out (data1: which one)
 #define SDL_CODE_OVERLAY_MENU_QUIT_TIMEOUT 107
 // A custom command's keys all sent (data1: its post action, data2: the session's token)
 #define SDL_CODE_OVERLAY_MENU_COMMAND_DONE 108
+// A message on one of the overlay menu's buttons timing out (data1: which one)
+#define SDL_CODE_OVERLAY_MENU_MESSAGE_TIMEOUT 111
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -199,6 +202,13 @@ private:
 
     void finishOverlayMenuCommand(const SDL_UserEvent& event);
 
+    // The host's commands for the overlay menu (see HostCommandsClient)
+    void fetchHostCommands();
+    void handleHostCommandsFetched(const SDL_UserEvent& event);
+    void runHostCommand(const HostCommand& command, int action);
+    void handleHostCommandRan(const SDL_UserEvent& event);
+    void showOverlayMenuMessage(int action, const QString& message);
+
     void updateOptimalWindowDisplayMode();
 
     enum class DecoderAvailability {
@@ -332,6 +342,18 @@ private:
     QVector<OverlayMenuCommand> m_OverlayMenuCommands;
     // Tells this session's finished commands from those of an earlier one
     int m_OverlayMenuCommandToken = 0;
+    // The host's commands, fetched as the stream starts and each time the menu opens
+    HostCommandsTarget m_HostCommandsTarget;
+    HostCommands m_HostCommands;
+    // Cleared once the host answers without commands (it doesn't have the feature)
+    bool m_HostCommandsSupported = true;
+    bool m_HostCommandsFetching = false;
+    // The menu button of the host command running, for its result
+    QString m_HostCommandRunningId;
+    int m_HostCommandRunningAction = OverlayMenu::ActionNone;
+    bool m_HostCommandRunningCloses = false;
+    // Counts the menu's messages, so only the latest one's timeout clears it
+    int m_OverlayMenuMessages = 0;
 
     static CONNECTION_LISTENER_CALLBACKS k_ConnCallbacks;
     static Session* s_ActiveSession;

@@ -2074,6 +2074,17 @@ void Session::exec()
         m_OverlayMenu.setCustomCommands(commands);
     }
 
+    // The host's commands, which it may not have
+    {
+        QReadLocker lock(&m_Computer->lock);
+        m_HostCommandsTarget.address = m_Computer->activeAddress;
+        m_HostCommandsTarget.httpsPort = m_Computer->activeHttpsPort;
+        m_HostCommandsTarget.serverCert = m_Computer->serverCert;
+        m_HostCommandsTarget.useTrueUid = !m_Computer->isNvidiaServerSoftware;
+        m_HostCommandsSupported = !m_Computer->isNvidiaServerSoftware;
+    }
+    fetchHostCommands();
+
     // However the menu closes, the input goes back to the host. The mouse is captured again
     // after, since capturing it can send it the mouse's position.
     m_OverlayMenu.setClosedHandler([this] {
@@ -2175,6 +2186,17 @@ void Session::exec()
                 if ((int)(intptr_t)event.user.data1 == m_OverlayMenuQuitTimeouts) {
                     m_OverlayMenu.setQuitConfirmation(false);
                 }
+                break;
+            case SDL_CODE_OVERLAY_MENU_MESSAGE_TIMEOUT:
+                if ((int)(intptr_t)event.user.data1 == m_OverlayMenuMessages) {
+                    m_OverlayMenu.setMessage((int)(intptr_t)event.user.data2, QString());
+                }
+                break;
+            case SDL_CODE_HOST_COMMANDS_FETCHED:
+                handleHostCommandsFetched(event.user);
+                break;
+            case SDL_CODE_HOST_COMMAND_RAN:
+                handleHostCommandRan(event.user);
                 break;
             case SDL_CODE_OVERLAY_MENU_TEST_MOVE:
                 switch ((char)(intptr_t)event.user.data1) {
