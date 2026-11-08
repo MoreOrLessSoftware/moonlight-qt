@@ -3,6 +3,8 @@
 #include <QString>
 #include <QVector>
 
+#include <functional>
+
 #include "SDL_compat.h"
 #include "video/overlaymanager.h"
 
@@ -42,6 +44,10 @@ public:
     };
 
     explicit OverlayMenu(Overlay::OverlayManager& overlays);
+
+    // Called after each change to the menu, to have the renderer draw it even if the host
+    // sends no new frames
+    void setRedrawHandler(std::function<void()> handler);
 
     // Whether the Jitter Tolerance button is shown (only with frame pacing). Takes effect the
     // next time the menu opens.
@@ -84,6 +90,7 @@ private:
                     qreal scale, qreal verticalPadding);
 
     Overlay::OverlayManager& m_Overlays;
+    std::function<void()> m_RedrawHandler;
     SDL_Window* m_Window;
     bool m_Open;
     bool m_ShowJitterTolerance;

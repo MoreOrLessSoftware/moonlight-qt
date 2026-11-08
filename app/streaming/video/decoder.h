@@ -87,6 +87,9 @@ public:
     virtual QSize getDecoderMaxResolution() = 0;
     virtual int submitDecodeUnit(PDECODE_UNIT du) = 0;
     virtual void renderFrameOnMainThread() = 0;
+    // Draws the last frame again, for an overlay that changed while the host may not be
+    // sending new frames. Main thread.
+    virtual void requestRedraw() {}
     virtual void setHdrMode(bool enabled) = 0;
     virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO info) = 0;
 };

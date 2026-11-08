@@ -77,6 +77,11 @@ public:
 
     void renderOnMainThread();
 
+    // Draws the last frame again unless a new one is drawn within a couple of the stream's
+    // frame intervals, so a change to an overlay shows while the host sends no frames (as
+    // for a desktop that isn't changing). Any thread.
+    void requestRedraw();
+
 private:
     static int vsyncThread(void* context);
 
@@ -89,6 +94,10 @@ private:
     void renderFrame(AVFrame* frame, int64_t handedOverUs);
 
     void dropFrameForEnqueue(QQueue<AVFrame*>& queue);
+
+    bool waitForFrameOrRedraw(QWaitCondition& queueNotEmpty, const QQueue<AVFrame*>& queue);
+
+    void redrawLastFrame();
 
     static int cadenceThread(void* context);
 
@@ -203,4 +212,8 @@ private:
     uint32_t m_DroppedSinceRow;
     uint32_t m_DrainedSinceRow;
     uint32_t m_EvictedFrames;
+
+    // A redraw asked for by requestRedraw(), and when it's due. Under m_FrameQueueLock.
+    bool m_RedrawRequested;
+    int64_t m_RedrawDueUs;
 };

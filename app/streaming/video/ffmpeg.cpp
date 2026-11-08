@@ -2794,3 +2794,10 @@ void FFmpegVideoDecoder::renderFrameOnMainThread()
     m_Pacer->renderOnMainThread();
 }
 
+void FFmpegVideoDecoder::requestRedraw()
+{
+    if (m_Pacer != nullptr) {
+        m_Pacer->requestRedraw();
+    }
+}
+

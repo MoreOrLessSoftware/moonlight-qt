@@ -95,6 +95,11 @@ OverlayMenu::OverlayMenu(Overlay::OverlayManager& overlays) :
 {
 }
 
+void OverlayMenu::setRedrawHandler(std::function<void()> handler)
+{
+    m_RedrawHandler = handler;
+}
+
 void OverlayMenu::setShowJitterTolerance(bool show)
 {
     m_ShowJitterTolerance = show;
@@ -126,6 +131,10 @@ bool OverlayMenu::open(SDL_Window* window)
     // Drawn before it's enabled, so it shows up with its image
     draw();
     m_Overlays.setOverlayState(Overlay::OverlayMenu, true);
+
+    if (m_RedrawHandler) {
+        m_RedrawHandler();
+    }
     return true;
 }
 
@@ -137,6 +146,10 @@ void OverlayMenu::close()
 
     m_Open = false;
     m_Overlays.setOverlayState(Overlay::OverlayMenu, false);
+
+    if (m_RedrawHandler) {
+        m_RedrawHandler();
+    }
 }
 
 void OverlayMenu::refresh()
@@ -389,6 +402,11 @@ void OverlayMenu::draw()
     }
 
     m_Overlays.updateOverlayImage(Overlay::OverlayMenu, surface);
+
+    // Opening asks once it's enabled
+    if (m_RedrawHandler && m_Overlays.isOverlayEnabled(Overlay::OverlayMenu)) {
+        m_RedrawHandler();
+    }
 }
 
 void OverlayMenu::drawButton(QPainter& painter, const QRectF& rect, const Item& item, bool selected,

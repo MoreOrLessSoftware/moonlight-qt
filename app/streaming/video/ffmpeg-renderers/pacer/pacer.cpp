@@ -295,7 +295,9 @@ Pacer::Pacer(IFFmpegRenderer* renderer, GpuTimer* decodeTimer, PVIDEO_STATS vide
     m_FrameIndex(0),
     m_DroppedSinceRow(0),
     m_DrainedSinceRow(0),
-    m_EvictedFrames(0)
+    m_EvictedFrames(0),
+    m_RedrawRequested(false),
+    m_RedrawDueUs(0)
 {
 
 }
@@ -369,9 +371,17 @@ void Pacer::renderOnMainThread()
 
     if (!m_RenderQueue.isEmpty()) {
         AVFrame* frame = m_RenderQueue.dequeue();
+        m_RedrawRequested = false;
         m_FrameQueueLock.unlock();
 
         renderFrame(frame, frame->pkt_dts);
+    }
+    else if (m_RedrawRequested) {
+        // Drawn now rather than waiting for a new frame, which would take another event
+        m_RedrawRequested = false;
+        m_FrameQueueLock.unlock();
+
+        redrawLastFrame();
     }
     else {
         m_FrameQueueLock.unlock();
@@ -429,10 +439,8 @@ int Pacer::renderThread(void* context)
         // the not empty condition
         me->m_FrameQueueLock.lock();
 
-        // Wait for a frame to be ready to render
-        while (!me->m_Stopping && me->m_RenderQueue.isEmpty()) {
-            me->m_RenderQueueNotEmpty.wait(&me->m_FrameQueueLock);
-        }
+        // Wait for a frame to be ready to render, or for a redraw to come due
+        bool redraw = me->waitForFrameOrRedraw(me->m_RenderQueueNotEmpty, me->m_RenderQueue);
 
         if (me->m_Stopping) {
             // Exit this thread
@@ -440,7 +448,14 @@ int Pacer::renderThread(void* context)
             break;
         }
 
+        if (redraw) {
+            me->m_FrameQueueLock.unlock();
+            me->redrawLastFrame();
+            continue;
+        }
+
         AVFrame* frame = me->m_RenderQueue.dequeue();
+        me->m_RedrawRequested = false;
         me->m_FrameQueueLock.unlock();
 
         me->renderFrame(frame, frame->pkt_dts);
@@ -733,6 +748,67 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
     return true;
 }
 
+void Pacer::requestRedraw()
+{
+    m_FrameQueueLock.lock();
+    if (!m_RedrawRequested) {
+        m_RedrawRequested = true;
+
+        // A new frame would show the change anyway, so this gives the host a couple of
+        // frame intervals to send one before drawing the last frame again
+        m_RedrawDueUs = (int64_t)LiGetMicroseconds() + 2 * 1000000 / qMax(m_MaxVideoFps, 1);
+    }
+    m_FrameQueueLock.unlock();
+
+    // Whichever thread renders waits for its queue (see waitForFrameOrRedraw()). Only the
+    // cadence thread waits on the pacing queue's condition untimed; the V-sync thread's timed
+    // wait on it is left alone.
+    if (m_CadenceThread != nullptr) {
+        m_PacingQueueNotEmpty.wakeAll();
+    }
+    else if (m_RenderThread != nullptr) {
+        m_RenderQueueNotEmpty.wakeAll();
+    }
+    else {
+        SDL_Event event;
+        event.type = SDL_USEREVENT;
+        event.user.code = SDL_CODE_FRAME_READY;
+        SDL_PushEvent(&event);
+    }
+}
+
+// Called with m_FrameQueueLock held, which it keeps. Waits for a frame in the queue, or
+// for a requested redraw to come due with no frame to draw. True for the redraw, false
+// for a frame or for stopping.
+bool Pacer::waitForFrameOrRedraw(QWaitCondition& queueNotEmpty, const QQueue<AVFrame*>& queue)
+{
+    while (!m_Stopping && queue.isEmpty()) {
+        if (!m_RedrawRequested) {
+            queueNotEmpty.wait(&m_FrameQueueLock);
+            continue;
+        }
+
+        int64_t remainingUs = m_RedrawDueUs - (int64_t)LiGetMicroseconds();
+        if (remainingUs <= 0) {
+            m_RedrawRequested = false;
+            return true;
+        }
+
+        queueNotEmpty.wait(&m_FrameQueueLock, (unsigned long)((remainingUs + 999) / 1000));
+    }
+
+    return false;
+}
+
+// Draws and presents the last frame again, on the thread that renders. It's still held (see
+// finishFrame()), so its surface is intact. Not counted in the statistics or the trace.
+void Pacer::redrawLastFrame()
+{
+    if (m_DeferredFreeFrame != nullptr) {
+        m_VsyncRenderer->renderFrame(m_DeferredFreeFrame);
+    }
+}
+
 void Pacer::signalVsync()
 {
     m_VsyncSignalled.wakeOne();
@@ -980,16 +1056,21 @@ int Pacer::cadenceThread(void* context)
     while (!me->m_Stopping) {
         me->m_FrameQueueLock.lock();
 
-        while (!me->m_Stopping && me->m_PacingQueue.isEmpty()) {
-            me->m_PacingQueueNotEmpty.wait(&me->m_FrameQueueLock);
-        }
+        bool redraw = me->waitForFrameOrRedraw(me->m_PacingQueueNotEmpty, me->m_PacingQueue);
 
         if (me->m_Stopping) {
             me->m_FrameQueueLock.unlock();
             break;
         }
 
+        if (redraw) {
+            me->m_FrameQueueLock.unlock();
+            me->redrawLastFrame();
+            continue;
+        }
+
         AVFrame* frame = me->m_PacingQueue.dequeue();
+        me->m_RedrawRequested = false;
         int waiting = me->m_PacingQueue.count();
         me->m_DroppedSinceRow += me->m_EvictedFrames;
         me->m_EvictedFrames = 0;
