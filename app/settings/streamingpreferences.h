@@ -132,6 +132,17 @@ public:
     };
     Q_ENUM(OverlayColor);
 
+    // The gamepad buttons held to open the in-stream menu
+    enum OverlayMenuTrigger
+    {
+        OMT_SELECT,
+        OMT_START,
+        OMT_GUIDE,
+        OMT_LB_RB,
+        OMT_OFF,
+    };
+    Q_ENUM(OverlayMenuTrigger);
+
     Q_PROPERTY(int width MEMBER width NOTIFY displayModeChanged)
     Q_PROPERTY(int height MEMBER height NOTIFY displayModeChanged)
     Q_PROPERTY(int fps MEMBER fps NOTIFY displayModeChanged)
@@ -175,6 +186,8 @@ public:
     Q_PROPERTY(bool swapFaceButtons MEMBER swapFaceButtons NOTIFY swapFaceButtonsChanged)
     Q_PROPERTY(bool keepAwake MEMBER keepAwake NOTIFY keepAwakeChanged)
     Q_PROPERTY(CaptureSysKeysMode captureSysKeysMode MEMBER captureSysKeysMode NOTIFY captureSysKeysModeChanged)
+    Q_PROPERTY(OverlayMenuTrigger overlayMenuTrigger MEMBER overlayMenuTrigger NOTIFY overlayMenuTriggerChanged)
+    Q_PROPERTY(int overlayMenuHoldMs MEMBER overlayMenuHoldMs NOTIFY overlayMenuHoldMsChanged)
     Q_PROPERTY(Language language MEMBER language NOTIFY languageChanged);
 
     Q_INVOKABLE bool retranslate();
@@ -235,6 +248,9 @@ public:
     UIDisplayMode uiDisplayMode;
     Language language;
     CaptureSysKeysMode captureSysKeysMode;
+    OverlayMenuTrigger overlayMenuTrigger;
+    // How long the trigger is held to open the in-stream menu
+    int overlayMenuHoldMs;
     OverlayColor overlayColor;
     RendererSelection rendererSelection;
 
@@ -278,6 +294,8 @@ signals:
     void reverseScrollDirectionChanged();
     void swapFaceButtonsChanged();
     void captureSysKeysModeChanged();
+    void overlayMenuTriggerChanged();
+    void overlayMenuHoldMsChanged();
     void keepAwakeChanged();
     void languageChanged();
     void rendererSelectionChanged();

@@ -1,6 +1,8 @@
 #include "streaming/session.h"
 
 #include <Limelight.h>
+
+#include <vector>
 #include "SDL_compat.h"
 
 #define VK_0 0x30
@@ -588,6 +590,122 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
 void SdlInputHandler::pasteClipboardText()
 {
     performSpecialKeyCombo(KeyComboPasteText);
+}
+
+namespace {
+
+// How long each key of a sequence waits for the next, as on the Android client, and how long
+// one chord waits for the next
+#define KEY_SEQUENCE_KEY_DELAY_MS 50
+#define KEY_SEQUENCE_CHORD_DELAY_MS 100
+
+struct KeySequenceEvent
+{
+    short keyCode;
+    char action;
+    char modifiers;
+    Uint32 delayAfterMs;
+};
+
+struct KeySequence
+{
+    std::vector<KeySequenceEvent> events;
+    size_t next = 0;
+    SDL_Event done;
+};
+
+int modifierForKey(int vk)
+{
+    switch (vk) {
+    case 0xA0: case 0xA1: return MODIFIER_SHIFT;
+    case 0xA2: case 0xA3: return MODIFIER_CTRL;
+    case 0xA4: case 0xA5: return MODIFIER_ALT;
+    case 0x5B: case 0x5C: return MODIFIER_META;
+    default: return 0;
+    }
+}
+
+// The keys sent as extended, as handleKeyEvent() sends them
+bool isExtendedKey(int vk)
+{
+    switch (vk) {
+    case 0x21: case 0x22: case 0x23: case 0x24:     // Page Up, Page Down, End, Home
+    case 0x25: case 0x26: case 0x27: case 0x28:     // Arrows
+    case 0x2C: case 0x2D: case 0x2E:                // Print Screen, Insert, Delete
+    case 0x5B: case 0x5C: case 0x5D:                // Windows keys, Menu
+    case 0x6F: case 0x90:                           // Num /, Num Lock
+    case 0xA3: case 0xA5:                           // Right Ctrl, Right Alt
+        return true;
+    default:
+        return false;
+    }
+}
+
+Uint32 keySequenceCallback(Uint32, void* param)
+{
+    auto sequence = static_cast<KeySequence*>(param);
+
+    const KeySequenceEvent& event = sequence->events[sequence->next++];
+    LiSendKeyboardEvent2(event.keyCode, event.action, event.modifiers, 0);
+
+    if (sequence->next < sequence->events.size()) {
+        return event.delayAfterMs;
+    }
+
+    SDL_PushEvent(&sequence->done);
+    delete sequence;
+    return 0;
+}
+
+}
+
+void SdlInputHandler::sendKeySequence(const QVector<QVector<int>>& steps, Sint32 doneCode, void* doneData1, void* doneData2)
+{
+    auto sequence = new KeySequence();
+    sequence->done = {};
+    sequence->done.type = SDL_USEREVENT;
+    sequence->done.user.code = doneCode;
+    sequence->done.user.data1 = doneData1;
+    sequence->done.user.data2 = doneData2;
+
+    for (const QVector<int>& step : steps) {
+        QVector<int> keys;
+        for (int vk : step) {
+            // The generic modifiers are sent as the left ones, as from a keyboard
+            switch (vk) {
+            case 0x10: vk = 0xA0; break;
+            case 0x11: vk = 0xA2; break;
+            case 0x12: vk = 0xA4; break;
+            }
+            keys.append(vk);
+        }
+
+        // Each key is pressed in order with the modifiers held so far (its own included, as
+        // SDL reports a modifier key's own press), then released in reverse
+        int modifiers = 0;
+        for (int vk : keys) {
+            modifiers |= modifierForKey(vk);
+            sequence->events.push_back({ (short)(0x8000 | vk), KEY_ACTION_DOWN,
+                                         (char)(modifiers | (isExtendedKey(vk) ? MODIFIER_EXTENDED : 0)),
+                                         KEY_SEQUENCE_KEY_DELAY_MS });
+        }
+        for (int i = keys.size() - 1; i >= 0; i--) {
+            int vk = keys[i];
+            modifiers &= ~modifierForKey(vk);
+            sequence->events.push_back({ (short)(0x8000 | vk), KEY_ACTION_UP,
+                                         (char)(modifiers | (isExtendedKey(vk) ? MODIFIER_EXTENDED : 0)),
+                                         KEY_SEQUENCE_KEY_DELAY_MS });
+        }
+        sequence->events.back().delayAfterMs = KEY_SEQUENCE_CHORD_DELAY_MS;
+    }
+
+    if (sequence->events.empty()) {
+        SDL_PushEvent(&sequence->done);
+        delete sequence;
+        return;
+    }
+
+    SDL_AddTimer(1, keySequenceCallback, sequence);
 }
 
 void SdlInputHandler::raiseAllKeys()

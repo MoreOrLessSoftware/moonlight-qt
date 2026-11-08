@@ -2061,6 +2061,20 @@ void Session::exec()
     // The host may send no new frames while the menu changes, as on a desktop that isn't
     // changing. The lock is recursive, and the menu is also drawn while it's held for a new
     // decoder (which has no frame to draw again yet).
+    // The custom commands, along the menu's row
+    m_OverlayMenuCommands = OverlayMenuCommand::load();
+    {
+        static int s_NextOverlayMenuCommandToken = 0;
+        m_OverlayMenuCommandToken = ++s_NextOverlayMenuCommandToken;
+
+        QVector<QPair<QString, QString>> commands;
+        for (const OverlayMenuCommand& command : std::as_const(m_OverlayMenuCommands)) {
+            QString icon = command.icon.startsWith("material:") ? command.icon.mid(9) : QString();
+            commands.append({ icon, command.label() });
+        }
+        m_OverlayMenu.setCustomCommands(commands);
+    }
+
     // However the menu closes, the input goes back to the host
     m_OverlayMenu.setClosedHandler([this] {
         m_InputHandler->notifyOverlayMenuClosed();
@@ -2148,6 +2162,9 @@ void Session::exec()
                                                  (uint8_t)((uintptr_t)event.user.data2 >> 16),
                                                  (uint8_t)((uintptr_t)event.user.data2 >> 8),
                                                  (uint8_t)((uintptr_t)event.user.data2));
+                break;
+            case SDL_CODE_OVERLAY_MENU_COMMAND_DONE:
+                finishOverlayMenuCommand(event.user);
                 break;
             case SDL_CODE_OVERLAY_MENU_QUIT_TIMEOUT:
                 if ((int)(intptr_t)event.user.data1 == m_OverlayMenuQuitTimeouts) {

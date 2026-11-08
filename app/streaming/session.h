@@ -11,9 +11,12 @@
 #include "audio/renderers/renderer.h"
 #include "video/overlaymanager.h"
 #include "overlaymenu.h"
+#include "settings/overlaymenucommands.h"
 
 // The overlay menu's Quit Session question timing out (data1: which one)
 #define SDL_CODE_OVERLAY_MENU_QUIT_TIMEOUT 107
+// A custom command's keys all sent (data1: its post action, data2: the session's token)
+#define SDL_CODE_OVERLAY_MENU_COMMAND_DONE 108
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -191,6 +194,8 @@ private:
 
     void pickOverlayMenuOption(int option);
 
+    void finishOverlayMenuCommand(const SDL_UserEvent& event);
+
     void updateOptimalWindowDisplayMode();
 
     enum class DecoderAvailability {
@@ -316,6 +321,10 @@ private:
     bool m_QuitHostApp = false;
     // Network jitter tolerance picked from the menu for this session, or 0 for the setting
     int m_PacingArrivalPercentileOverride = 0;
+    // The custom commands in the menu, read as the stream starts
+    QVector<OverlayMenuCommand> m_OverlayMenuCommands;
+    // Tells this session's finished commands from those of an earlier one
+    int m_OverlayMenuCommandToken = 0;
 
     static CONNECTION_LISTENER_CALLBACKS k_ConnCallbacks;
     static Session* s_ActiveSession;

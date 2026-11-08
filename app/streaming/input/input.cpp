@@ -15,9 +15,6 @@
 
 std::atomic<bool> SdlInputHandler::s_OverlayMenuOpen { false };
 
-// Holding Select alone for this long opens the overlay menu, as on the Android client
-#define OVERLAY_MENU_DEFAULT_HOLD_MS 1500
-
 SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, int streamHeight)
     : m_MultiController(prefs.multiController),
       m_GamepadMouse(prefs.gamepadMouse),
@@ -43,9 +40,27 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_DragTimer(0),
       m_DragButton(0),
       m_NumFingersDown(0),
-      m_OverlayMenuTriggerButtons(BACK_FLAG),
-      m_OverlayMenuHoldMs(OVERLAY_MENU_DEFAULT_HOLD_MS)
+      m_OverlayMenuTriggerButtons(0),
+      m_OverlayMenuHoldMs((Uint32)qBound(100, prefs.overlayMenuHoldMs, 10000))
 {
+    switch (prefs.overlayMenuTrigger) {
+    case StreamingPreferences::OMT_SELECT:
+        m_OverlayMenuTriggerButtons = BACK_FLAG;
+        break;
+    case StreamingPreferences::OMT_START:
+        m_OverlayMenuTriggerButtons = PLAY_FLAG;
+        break;
+    case StreamingPreferences::OMT_GUIDE:
+        m_OverlayMenuTriggerButtons = SPECIAL_FLAG;
+        break;
+    case StreamingPreferences::OMT_LB_RB:
+        m_OverlayMenuTriggerButtons = LB_FLAG | RB_FLAG;
+        break;
+    case StreamingPreferences::OMT_OFF:
+        // Only the keyboard shortcut opens it
+        break;
+    }
+
     // A session that ended with the menu open mustn't leave the next one's input going to it
     s_OverlayMenuOpen = false;
 

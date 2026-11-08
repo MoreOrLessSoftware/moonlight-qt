@@ -114,6 +114,11 @@ void OverlayMenu::setShowGamepadButtons(bool show)
     m_ShowGamepadButtons = show;
 }
 
+void OverlayMenu::setCustomCommands(const QVector<QPair<QString, QString>>& commands)
+{
+    m_CustomCommands = commands;
+}
+
 void OverlayMenu::setShowJitterTolerance(bool show)
 {
     m_ShowJitterTolerance = show;
@@ -279,6 +284,9 @@ void OverlayMenu::buildItems()
     m_Column.append({ ActionDisconnect, "desktop_access_disabled", QCoreApplication::translate("OverlayMenu", "Disconnect") });
 
     // The row, left to right: custom commands, then Close
+    for (int i = 0; i < m_CustomCommands.size() && ActionCustomBase + i < ActionOptionBase; i++) {
+        m_Row.append({ ActionCustomBase + i, m_CustomCommands[i].first, m_CustomCommands[i].second });
+    }
     m_Row.append({ ActionClose, QString(), QCoreApplication::translate("OverlayMenu", "Close (B)") });
 }
 

@@ -61,6 +61,10 @@ public:
     // next time the menu opens.
     void setShowGamepadButtons(bool show);
 
+    // The custom commands along the row, as Material Symbols icon names (or empty) and labels.
+    // Takes effect the next time the menu opens.
+    void setCustomCommands(const QVector<QPair<QString, QString>>& commands);
+
     // Whether the Jitter Tolerance button is shown (only with frame pacing). Takes effect the
     // next time the menu opens.
     void setShowJitterTolerance(bool show);
@@ -127,6 +131,8 @@ private:
     int m_OptionsAction;
     QStringList m_OptionLabels;
     int m_OptionChecked;
+
+    QVector<QPair<QString, QString>> m_CustomCommands;
 
     QVector<Item> m_Column;
     QVector<Item> m_Row;

@@ -186,6 +186,11 @@ public:
     void pasteClipboardText();
     int getFirstGamepadSlot();
 
+    // Presses chords of keys (Windows virtual key codes) on the host one after another, each
+    // pressed in order and released in reverse, then posts an SDL user event with the given
+    // code and data once they're all released. Main thread.
+    void sendKeySequence(const QVector<QVector<int>>& steps, Sint32 doneCode, void* doneData1, void* doneData2);
+
     static
     QString getUnmappedGamepads();
 

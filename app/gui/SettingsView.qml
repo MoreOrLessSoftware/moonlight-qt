@@ -2048,6 +2048,125 @@ Flickable {
         }
 
         GroupBox {
+            id: overlayMenuSettingsGroupBox
+            width: (parent.width - (parent.leftPadding + parent.rightPadding))
+            padding: 12
+            title: "<font color=\"skyblue\">" + qsTr("In-Stream Menu") + "</font>"
+            font.pointSize: 12
+
+            Column {
+                anchors.fill: parent
+                spacing: 5
+
+                Label {
+                    width: parent.width
+                    text: qsTr("Open the in-stream menu by holding")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                AutoResizingComboBox {
+                    function createModel() {
+                        var model = Qt.createQmlObject('import QtQuick 2.0; ListModel {}', parent, '')
+
+                        model.append({ text: qsTr("Select / Back / View"), val: StreamingPreferences.OMT_SELECT })
+                        model.append({ text: qsTr("Start / Menu"), val: StreamingPreferences.OMT_START })
+                        model.append({ text: qsTr("Guide / Home"), val: StreamingPreferences.OMT_GUIDE })
+                        model.append({ text: qsTr("LB + RB"), val: StreamingPreferences.OMT_LB_RB })
+                        model.append({ text: qsTr("Nothing (keyboard only)"), val: StreamingPreferences.OMT_OFF })
+
+                        return model
+                    }
+
+                    function reinitialize() {
+                        model = createModel()
+                        currentIndex = 0
+
+                        var saved = StreamingPreferences.overlayMenuTrigger
+                        for (var i = 0; i < model.count; i++) {
+                            if (saved === model.get(i).val) {
+                                currentIndex = i
+                                break
+                            }
+                        }
+
+                        activated(currentIndex)
+                    }
+
+                    Component.onCompleted: {
+                        reinitialize()
+                        languageChanged.connect(reinitialize)
+                    }
+
+                    id: overlayMenuTriggerComboBox
+                    hoverEnabled: true
+                    textRole: "text"
+                    onActivated: {
+                        StreamingPreferences.overlayMenuTrigger = model.get(currentIndex).val
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Holding these gamepad buttons on their own opens the in-stream menu. Ctrl+Alt+Shift+O opens it from the keyboard.")
+                }
+
+                Label {
+                    width: parent.width
+                    text: qsTr("For")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                    enabled: overlayMenuTriggerComboBox.currentIndex >= 0 &&
+                             overlayMenuTriggerComboBox.model.get(overlayMenuTriggerComboBox.currentIndex).val !== StreamingPreferences.OMT_OFF
+                }
+
+                AutoResizingComboBox {
+                    function createModel() {
+                        var model = Qt.createQmlObject('import QtQuick 2.0; ListModel {}', parent, '')
+
+                        var durations = [500, 1000, 1500, 2000, 2500, 3000]
+                        for (var i = 0; i < durations.length; i++) {
+                            model.append({ text: qsTr("%1 seconds").arg((durations[i] / 1000).toLocaleString(Qt.locale(), 'f', 1)),
+                                           val: durations[i] })
+                        }
+
+                        return model
+                    }
+
+                    function reinitialize() {
+                        model = createModel()
+
+                        // 1.5 seconds unless the saved time is one of the others
+                        currentIndex = 2
+                        var saved = StreamingPreferences.overlayMenuHoldMs
+                        for (var i = 0; i < model.count; i++) {
+                            if (saved === model.get(i).val) {
+                                currentIndex = i
+                                break
+                            }
+                        }
+
+                        activated(currentIndex)
+                    }
+
+                    Component.onCompleted: {
+                        reinitialize()
+                        languageChanged.connect(reinitialize)
+                    }
+
+                    id: overlayMenuHoldComboBox
+                    hoverEnabled: true
+                    textRole: "text"
+                    enabled: overlayMenuTriggerComboBox.currentIndex >= 0 &&
+                             overlayMenuTriggerComboBox.model.get(overlayMenuTriggerComboBox.currentIndex).val !== StreamingPreferences.OMT_OFF
+                    onActivated: {
+                        StreamingPreferences.overlayMenuHoldMs = model.get(currentIndex).val
+                    }
+                }
+            }
+        }
+
+        GroupBox {
             id: advancedSettingsGroupBox
             width: (parent.width - (parent.leftPadding + parent.rightPadding))
             padding: 12

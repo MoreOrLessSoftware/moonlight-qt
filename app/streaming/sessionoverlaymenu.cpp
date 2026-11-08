@@ -222,6 +222,63 @@ void Session::activateOverlayMenuAction(int action)
         if (action >= OverlayMenu::ActionOptionBase) {
             pickOverlayMenuOption(action - OverlayMenu::ActionOptionBase);
         }
+        else if (action >= OverlayMenu::ActionCustomBase &&
+                 action - OverlayMenu::ActionCustomBase < m_OverlayMenuCommands.size()) {
+            const OverlayMenuCommand& command = m_OverlayMenuCommands[action - OverlayMenu::ActionCustomBase];
+
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Sending the overlay menu's custom command: %s",
+                        qPrintable(OverlayMenuCommand::describeKeys(command.steps)));
+
+            // Closing first gives the game its focus back before the keys arrive. Otherwise the
+            // menu stays open for more, unless the session is ending once they're sent.
+            if (command.postAction == OverlayMenuCommand::PostActionCloseMenu) {
+                closeOverlayMenu();
+            }
+
+            m_InputHandler->sendKeySequence(command.steps, SDL_CODE_OVERLAY_MENU_COMMAND_DONE,
+                                            (void*)(intptr_t)command.postAction,
+                                            (void*)(intptr_t)m_OverlayMenuCommandToken);
+        }
+        break;
+    }
+}
+
+void Session::finishOverlayMenuCommand(const SDL_UserEvent& event)
+{
+    // One from an earlier session has nothing to do with this one
+    if ((int)(intptr_t)event.data2 != m_OverlayMenuCommandToken) {
+        return;
+    }
+
+    switch ((int)(intptr_t)event.data1) {
+    case OverlayMenuCommand::PostActionDisconnect: {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Disconnecting after the overlay menu's custom command");
+        closeOverlayMenu();
+        setLeaveHostAppRunning();
+
+        SDL_Event quitEvent = {};
+        quitEvent.type = SDL_QUIT;
+        quitEvent.quit.timestamp = SDL_GetTicks();
+        SDL_PushEvent(&quitEvent);
+        break;
+    }
+
+    case OverlayMenuCommand::PostActionQuit: {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Quitting the session after the overlay menu's custom command");
+        closeOverlayMenu();
+        m_QuitHostApp = true;
+
+        SDL_Event quitEvent = {};
+        quitEvent.type = SDL_QUIT;
+        quitEvent.quit.timestamp = SDL_GetTicks();
+        SDL_PushEvent(&quitEvent);
+        break;
+    }
+
+    default:
         break;
     }
 }
