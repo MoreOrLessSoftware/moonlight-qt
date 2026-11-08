@@ -67,6 +67,7 @@ public:
     virtual int getDecoderColorRange() override;
     virtual int getDecoderCapabilities() override;
     virtual void notifyOverlayUpdated(Overlay::OverlayType) override;
+    virtual bool isOverlaySupported(Overlay::OverlayType) override { return true; }
     virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO) override;
 
 #ifdef HAVE_EGL

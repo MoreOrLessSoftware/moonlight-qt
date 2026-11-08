@@ -1563,8 +1563,8 @@ void DrmRenderer::notifyOverlayUpdated(Overlay::OverlayType type)
         uint32_t dumbBuffer, fbId;
         SDL_Rect overlayRect;
 
-        if (type == Overlay::OverlayStatusUpdate) {
-            // Bottom Left
+        if (type == Overlay::OverlayStatusUpdate || type == Overlay::OverlayMenu) {
+            // Bottom Left. The menu's image includes its margin from the edges.
             overlayRect.x = 0;
             overlayRect.y = m_OutputRect.h - newSurface->h;
         }

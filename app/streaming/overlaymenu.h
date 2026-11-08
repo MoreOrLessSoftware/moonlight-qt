@@ -84,6 +84,10 @@ public:
 
     void navigate(Direction direction);
 
+    // Selects the button at a point in the window (in window coordinates, as SDL's mouse
+    // events have them), returning whether there's one there
+    bool selectAt(int x, int y);
+
     // Shows options in place of the main buttons, for the main button with the given action
     // (like ActionStats), with the checked one marked and selected. Picking one is
     // ActionOptionBase plus its index, and Back returns to the main buttons.
@@ -146,4 +150,12 @@ private:
     int m_RowIndex;
     // How far the row is scrolled left (pixels) where it's wider than the window
     qreal m_RowScroll;
+
+    // Where each button was last drawn, in the window's pixels
+    struct HitTarget {
+        Region region;
+        int index;
+        QRectF rect;
+    };
+    QVector<HitTarget> m_HitTargets;
 };

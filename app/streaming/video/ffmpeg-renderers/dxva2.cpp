@@ -658,8 +658,8 @@ void DXVA2Renderer::notifyOverlayUpdated(Overlay::OverlayType type)
 
     SDL_FRect renderRect = {};
 
-    if (type == Overlay::OverlayStatusUpdate) {
-        // Bottom Left
+    if (type == Overlay::OverlayStatusUpdate || type == Overlay::OverlayMenu) {
+        // Bottom Left. The menu's image includes its margin from the edges.
         renderRect.x = 0;
         renderRect.y = m_DisplayHeight - newSurface->h;
     }

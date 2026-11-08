@@ -78,6 +78,7 @@ public:
     virtual bool markDrawEnd(PGPU_MARK mark) override;
     virtual int waitForGpuMark(const GPU_MARK& mark, uint32_t timeoutMs) override;
     virtual void notifyOverlayUpdated(Overlay::OverlayType) override;
+    virtual bool isOverlaySupported(Overlay::OverlayType) override { return true; }
     virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO) override;
     virtual int getRendererAttributes() override;
     virtual int getDecoderColorspace() override;

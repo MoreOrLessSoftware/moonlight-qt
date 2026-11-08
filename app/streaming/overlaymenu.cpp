@@ -305,6 +305,54 @@ void OverlayMenu::navigate(Direction direction)
     draw();
 }
 
+bool OverlayMenu::selectAt(int x, int y)
+{
+    if (!m_Open || m_Window == nullptr) {
+        return false;
+    }
+
+    // From window coordinates to the pixels the menu is drawn in
+    int windowWidth, windowHeight, pixelWidth, pixelHeight;
+    SDL_GetWindowSize(m_Window, &windowWidth, &windowHeight);
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+    SDL_GetWindowSizeInPixels(m_Window, &pixelWidth, &pixelHeight);
+#else
+    pixelWidth = windowWidth;
+    pixelHeight = windowHeight;
+#endif
+    if (windowWidth <= 0 || windowHeight <= 0) {
+        return false;
+    }
+    QPointF point(x * (qreal)pixelWidth / windowWidth, y * (qreal)pixelHeight / windowHeight);
+
+    for (const HitTarget& target : std::as_const(m_HitTargets)) {
+        if (!target.rect.contains(point)) {
+            continue;
+        }
+
+        bool selected = m_Region == target.region &&
+                (target.region == RegionColumn ? m_ColumnIndex : m_RowIndex) == target.index;
+        if (!selected) {
+            // Moving on from Quit Session takes back its question
+            if (m_QuitConfirmation) {
+                m_QuitConfirmation = false;
+                buildItems();
+            }
+
+            if (target.region == RegionColumn) {
+                setColumnIndex(target.index);
+            }
+            else {
+                setRowIndex(target.index);
+            }
+            draw();
+        }
+        return true;
+    }
+
+    return false;
+}
+
 void OverlayMenu::setColumnIndex(int index)
 {
     m_Region = RegionColumn;
@@ -333,8 +381,13 @@ int OverlayMenu::selectedAction() const
 
 void OverlayMenu::draw()
 {
+    // In pixels, as the renderers draw overlays (a HiDPI window has more of them than its size)
     int windowWidth, windowHeight;
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+    SDL_GetWindowSizeInPixels(m_Window, &windowWidth, &windowHeight);
+#else
     SDL_GetWindowSize(m_Window, &windowWidth, &windowHeight);
+#endif
     if (windowWidth <= 0 || windowHeight <= 0 || m_Column.isEmpty()) {
         return;
     }
@@ -433,6 +486,29 @@ void OverlayMenu::draw()
         for (int i = 0; i < m_Row.size(); i++) {
             drawButton(painter, QRectF(rowLeft + rowX[i] - m_RowScroll, bottom - buttonHeight, rowWidths[i], buttonHeight),
                        m_Row[i], m_Region == RegionRow && i == m_RowIndex, scale, verticalPadding);
+        }
+    }
+
+    // Where the buttons are in the window, for the mouse. The image is drawn at its bottom left.
+    {
+        m_HitTargets.clear();
+
+        const qreal top = windowHeight - imageHeight;
+        const qreal bottom = imageHeight - margin;
+
+        qreal y = bottom - columnTotalHeight;
+        for (int i = 0; i < m_Column.size(); i++) {
+            m_HitTargets.append({ RegionColumn, i, QRectF(margin, top + y, columnWidth, buttonHeight) });
+            y += buttonHeight + columnSpacing;
+        }
+
+        // Only the part of a row button scrolled into view
+        const QRectF rowArea(rowLeft, top, rowVisible, imageHeight);
+        for (int i = 0; i < m_Row.size(); i++) {
+            QRectF rect = QRectF(rowLeft + rowX[i] - m_RowScroll, top + bottom - buttonHeight, rowWidths[i], buttonHeight) & rowArea;
+            if (!rect.isEmpty()) {
+                m_HitTargets.append({ RegionRow, i, rect });
+            }
         }
     }
 

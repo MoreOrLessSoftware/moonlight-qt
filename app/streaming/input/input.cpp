@@ -471,6 +471,12 @@ void SdlInputHandler::setCaptureActive(bool active)
 
 void SdlInputHandler::handleTouchFingerEvent(SDL_TouchFingerEvent* event)
 {
+    // Nothing goes to the host while the overlay menu is open (it takes the mouse events
+    // SDL makes from touches)
+    if (s_OverlayMenuOpen) {
+        return;
+    }
+
 #if SDL_VERSION_ATLEAST(2, 0, 10)
     if (SDL_GetTouchDeviceType(event->touchId) != SDL_TOUCH_DEVICE_DIRECT) {
         // Ignore anything that isn't a touchscreen. We may get callbacks

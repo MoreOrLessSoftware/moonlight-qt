@@ -1130,8 +1130,8 @@ bool PlVkRenderer::drawFrame(AVFrame* frame, pl_frame* mappedFrame, pl_frame* ta
         if (m_Overlays[i].hasOverlay) {
             // Position the overlay
             overlayParts[i].src = { 0, 0, (float)m_Overlays[i].overlay.tex->params.w, (float)m_Overlays[i].overlay.tex->params.h };
-            if (i == Overlay::OverlayStatusUpdate) {
-                // Bottom Left
+            if (i == Overlay::OverlayStatusUpdate || i == Overlay::OverlayMenu) {
+                // Bottom Left. The menu's image includes its margin from the edges.
                 overlayParts[i].dst.x0 = 0;
                 overlayParts[i].dst.y0 = SDL_max(0, targetFrame->crop.y1 - overlayParts[i].src.y1);
             }

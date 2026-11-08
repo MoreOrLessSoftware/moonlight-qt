@@ -2074,9 +2074,15 @@ void Session::exec()
         m_OverlayMenu.setCustomCommands(commands);
     }
 
-    // However the menu closes, the input goes back to the host
+    // However the menu closes, the input goes back to the host. The mouse is captured again
+    // after, since capturing it can send it the mouse's position.
     m_OverlayMenu.setClosedHandler([this] {
         m_InputHandler->notifyOverlayMenuClosed();
+
+        if (m_OverlayMenuReleasedMouse) {
+            m_OverlayMenuReleasedMouse = false;
+            m_InputHandler->setCaptureActive(true);
+        }
     });
 
     m_OverlayMenu.setRedrawHandler([this] {

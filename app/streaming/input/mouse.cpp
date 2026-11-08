@@ -1,3 +1,4 @@
+#include "streaming/session.h"
 #include "input.h"
 
 #include <Limelight.h>
@@ -29,6 +30,12 @@ void SdlInputHandler::notifyMouseLeave()
 void SdlInputHandler::handleMouseButtonEvent(SDL_MouseButtonEvent* event)
 {
     int button;
+
+    // The overlay menu takes the mouse while it's open (touches included)
+    if (s_OverlayMenuOpen) {
+        Session::get()->handleOverlayMenuMouseButton(event->x, event->y, event->button, event->state == SDL_PRESSED);
+        return;
+    }
 
     if (event->which == SDL_TOUCH_MOUSEID) {
         // Ignore synthetic mouse events
@@ -92,6 +99,12 @@ void SdlInputHandler::handleMouseButtonEvent(SDL_MouseButtonEvent* event)
 
 void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
 {
+    // The overlay menu takes the mouse while it's open: it selects the button it's over
+    if (s_OverlayMenuOpen) {
+        Session::get()->handleOverlayMenuMouseMotion(event->x, event->y);
+        return;
+    }
+
     if (!isCaptureActive()) {
         // Not capturing
         return;
@@ -180,6 +193,10 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
 
 void SdlInputHandler::handleMouseWheelEvent(SDL_MouseWheelEvent* event)
 {
+    if (s_OverlayMenuOpen) {
+        return;
+    }
+
     if (!isCaptureActive()) {
         // Not capturing
         return;

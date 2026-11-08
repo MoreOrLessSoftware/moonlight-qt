@@ -437,8 +437,8 @@ void VDPAURenderer::notifyOverlayUpdated(Overlay::OverlayType type)
 
         VdpRect overlayRect;
 
-        if (type == Overlay::OverlayStatusUpdate) {
-            // Bottom Left
+        if (type == Overlay::OverlayStatusUpdate || type == Overlay::OverlayMenu) {
+            // Bottom Left. The menu's image includes its margin from the edges.
             overlayRect.x0 = 0;
             overlayRect.y0 = m_DisplayHeight - newSurface->h;
         }

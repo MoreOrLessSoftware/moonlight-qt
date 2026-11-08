@@ -16,6 +16,7 @@ public:
     virtual bool initialize(PDECODER_PARAMETERS params) override;
     virtual bool prepareDecoderContext(AVCodecContext* context, AVDictionary** options) override;
     virtual void notifyOverlayUpdated(Overlay::OverlayType type) override;
+    virtual bool isOverlaySupported(Overlay::OverlayType) override { return true; }
     virtual void waitToRender() override;
     virtual void renderFrame(AVFrame* frame) override;
     virtual int getDecoderColorspace() override;

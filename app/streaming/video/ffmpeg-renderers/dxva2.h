@@ -17,6 +17,7 @@ public:
     virtual bool prepareDecoderContext(AVCodecContext* context, AVDictionary** options) override;
     virtual void renderFrame(AVFrame* frame) override;
     virtual void notifyOverlayUpdated(Overlay::OverlayType type) override;
+    virtual bool isOverlaySupported(Overlay::OverlayType) override { return true; }
     virtual int getDecoderColorspace() override;
     virtual int getDecoderColorRange() override;
     virtual int getDecoderCapabilities() override;

@@ -145,6 +145,9 @@ public:
     void openOverlayMenu(int slot);
     void closeOverlayMenu();
     void handleOverlayMenuInput(int buttons, int slot);
+    // Mouse input in window coordinates, as SDL's events have it
+    void handleOverlayMenuMouseButton(int x, int y, int button, bool pressed);
+    void handleOverlayMenuMouseMotion(int x, int y);
 
 signals:
     void stageStarting(QString stage);
@@ -315,6 +318,10 @@ private:
     bool m_OverlayMenuTestPending = qEnvironmentVariableIsSet("ML_OVERLAY_MENU_TEST");
     // The gamepad slot the menu's gamepad actions are for, or -1 for the first one
     int m_OverlayMenuSlot = -1;
+    // Whether opening the menu let go of the mouse, which is captured again as it closes
+    bool m_OverlayMenuReleasedMouse = false;
+    // Whether the left mouse button went down on one of the menu's buttons
+    bool m_OverlayMenuPressedButton = false;
     // Counts Quit Session's questions, so only the latest one's timeout takes it back
     int m_OverlayMenuQuitTimeouts = 0;
     // Quit Session from the menu quits the host app whatever the settings say

@@ -528,8 +528,8 @@ public:
 
             if (overlayTexture) {
                 SDL_FRect renderRect = {};
-                if (i == Overlay::OverlayStatusUpdate) {
-                    // Bottom Left
+                if (i == Overlay::OverlayStatusUpdate || i == Overlay::OverlayMenu) {
+                    // Bottom Left. The menu's image includes its margin from the edges.
                     renderRect.x = 0;
                     renderRect.y = 0;
                 }
@@ -746,6 +746,11 @@ public:
 
         return true;
     }}
+
+    virtual bool isOverlaySupported(Overlay::OverlayType) override
+    {
+        return true;
+    }
 
     virtual void notifyOverlayUpdated(Overlay::OverlayType type) override
     { @autoreleasepool {

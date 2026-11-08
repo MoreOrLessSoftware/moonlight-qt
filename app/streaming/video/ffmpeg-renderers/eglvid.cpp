@@ -204,8 +204,8 @@ void EGLRenderer::renderOverlay(Overlay::OverlayType type, int viewportWidth, in
 
         // These overlay positions differ from the other renderers because OpenGL
         // places the origin in the lower-left corner instead of the upper-left.
-        if (type == Overlay::OverlayStatusUpdate) {
-            // Bottom Left
+        if (type == Overlay::OverlayStatusUpdate || type == Overlay::OverlayMenu) {
+            // Bottom Left. The menu's image includes its margin from the edges.
             overlayRect.x = 0;
             overlayRect.y = 0;
         }

@@ -27,6 +27,48 @@ void Session::openOverlayMenu(int slot)
 
     m_OverlayMenuSlot = slot;
     m_InputHandler->notifyOverlayMenuOpened();
+
+    // The pointer is shown for clicking the menu's buttons, and captured again as it closes
+    m_OverlayMenuPressedButton = false;
+    m_OverlayMenuReleasedMouse = m_InputHandler->isCaptureActive();
+    if (m_OverlayMenuReleasedMouse) {
+        m_InputHandler->setCaptureActive(false);
+    }
+}
+
+void Session::handleOverlayMenuMouseButton(int x, int y, int button, bool pressed)
+{
+    if (!m_OverlayMenu.isOpen()) {
+        return;
+    }
+
+    if (button == SDL_BUTTON_LEFT) {
+        bool onButton = m_OverlayMenu.selectAt(x, y);
+
+        // Acting on the release, as Moonlight captures the mouse on a release, so the host
+        // doesn't get a release without a press once the mouse is captured again
+        if (pressed) {
+            m_OverlayMenuPressedButton = onButton;
+        }
+        else if (onButton && m_OverlayMenuPressedButton) {
+            activateOverlayMenuAction(m_OverlayMenu.selectedAction());
+        }
+        else if (!onButton && !m_OverlayMenuPressedButton) {
+            // A click outside the menu closes it, like a popup
+            closeOverlayMenu();
+        }
+    }
+    else if (button == SDL_BUTTON_RIGHT && !pressed) {
+        // Back, like B
+        handleOverlayMenuInput(B_FLAG, -1);
+    }
+}
+
+void Session::handleOverlayMenuMouseMotion(int x, int y)
+{
+    if (m_OverlayMenu.isOpen()) {
+        m_OverlayMenu.selectAt(x, y);
+    }
 }
 
 void Session::closeOverlayMenu()

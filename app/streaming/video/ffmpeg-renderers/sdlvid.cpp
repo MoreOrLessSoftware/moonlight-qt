@@ -234,8 +234,8 @@ void SdlRenderer::renderOverlay(Overlay::OverlayType type)
                 SDL_DestroyTexture(m_OverlayTextures[type]);
             }
 
-            if (type == Overlay::OverlayStatusUpdate) {
-                // Bottom Left
+            if (type == Overlay::OverlayStatusUpdate || type == Overlay::OverlayMenu) {
+                // Bottom Left. The menu's image includes its margin from the edges.
                 SDL_Rect viewportRect;
                 SDL_RenderGetViewport(m_Renderer, &viewportRect);
                 m_OverlayRects[type].x = 0;
