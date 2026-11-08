@@ -31,6 +31,7 @@ public:
     virtual int submitDecodeUnit(PDECODE_UNIT du) override;
     virtual void renderFrameOnMainThread() override;
     virtual void requestRedraw() override;
+    virtual void setPacingArrivalPercentile(int percentile) override;
     virtual void setHdrMode(bool enabled) override;
     virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO info) override;
 

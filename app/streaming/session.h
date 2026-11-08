@@ -12,6 +12,9 @@
 #include "video/overlaymanager.h"
 #include "overlaymenu.h"
 
+// The overlay menu's Quit Session question timing out (data1: which one)
+#define SDL_CODE_OVERLAY_MENU_QUIT_TIMEOUT 107
+
 class SupportedVideoFormatList : public QList<int>
 {
 public:
@@ -134,6 +137,12 @@ public:
     // Disconnect without quitting the host app, regardless of the quitAppAfter preference
     void setLeaveHostAppRunning() { m_LeaveHostAppRunning = true; }
 
+    // The overlay menu (sessionoverlaymenu.cpp). It's opened by the gamepad in the given slot,
+    // or -1 for the keyboard, and takes menu buttons (D-pad, A, B and so on) from either.
+    void openOverlayMenu(int slot);
+    void closeOverlayMenu();
+    void handleOverlayMenuInput(int buttons, int slot);
+
 signals:
     void stageStarting(QString stage);
 
@@ -177,6 +186,10 @@ private:
     void toggleFullscreen();
 
     void notifyMouseEmulationMode(bool enabled);
+
+    void activateOverlayMenuAction(int action);
+
+    void pickOverlayMenuOption(int option);
 
     void updateOptimalWindowDisplayMode();
 
@@ -295,6 +308,14 @@ private:
     OverlayMenu m_OverlayMenu { m_OverlayManager };
     // ML_OVERLAY_MENU_TEST opens the menu once the first renderer is up (see exec())
     bool m_OverlayMenuTestPending = qEnvironmentVariableIsSet("ML_OVERLAY_MENU_TEST");
+    // The gamepad slot the menu's gamepad actions are for, or -1 for the first one
+    int m_OverlayMenuSlot = -1;
+    // Counts Quit Session's questions, so only the latest one's timeout takes it back
+    int m_OverlayMenuQuitTimeouts = 0;
+    // Quit Session from the menu quits the host app whatever the settings say
+    bool m_QuitHostApp = false;
+    // Network jitter tolerance picked from the menu for this session, or 0 for the setting
+    int m_PacingArrivalPercentileOverride = 0;
 
     static CONNECTION_LISTENER_CALLBACKS k_ConnCallbacks;
     static Session* s_ActiveSession;

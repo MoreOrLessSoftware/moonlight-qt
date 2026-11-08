@@ -2801,3 +2801,10 @@ void FFmpegVideoDecoder::requestRedraw()
     }
 }
 
+void FFmpegVideoDecoder::setPacingArrivalPercentile(int percentile)
+{
+    if (m_Pacer != nullptr) {
+        m_Pacer->setArrivalPercentile(percentile);
+    }
+}
+

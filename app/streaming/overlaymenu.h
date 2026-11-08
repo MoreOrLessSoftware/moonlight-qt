@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <functional>
@@ -32,8 +33,12 @@ public:
         ActionQuit,
         ActionDisconnect,
         ActionClose,
+        // Back from options to the main buttons
+        ActionBack,
         // Custom command n is ActionCustomBase + n
         ActionCustomBase = 100,
+        // Option n of the options showing is ActionOptionBase + n
+        ActionOptionBase = 200,
     };
 
     enum Direction {
@@ -48,6 +53,13 @@ public:
     // Called after each change to the menu, to have the renderer draw it even if the host
     // sends no new frames
     void setRedrawHandler(std::function<void()> handler);
+
+    // Called once the menu has closed, however it closed
+    void setClosedHandler(std::function<void()> handler);
+
+    // Whether the Guide and Mouse buttons are shown, which need a gamepad. Takes effect the
+    // next time the menu opens.
+    void setShowGamepadButtons(bool show);
 
     // Whether the Jitter Tolerance button is shown (only with frame pacing). Takes effect the
     // next time the menu opens.
@@ -66,6 +78,18 @@ public:
 
     void navigate(Direction direction);
 
+    // Shows options in place of the main buttons, for the main button with the given action
+    // (like ActionStats), with the checked one marked and selected. Picking one is
+    // ActionOptionBase plus its index, and Back returns to the main buttons.
+    void showOptions(int action, const QStringList& labels, int checked);
+    void showMainButtons();
+    // The main button whose options are showing, or ActionNone
+    int getOptionsAction() const { return m_OptionsAction; }
+
+    // Quit Session asks to be pressed again. Moving the selection ends this.
+    void setQuitConfirmation(bool confirm);
+    bool isQuitConfirmation() const { return m_QuitConfirmation; }
+
     // The selected button's action, or ActionNone if the menu is closed
     int selectedAction() const;
 
@@ -75,6 +99,8 @@ private:
         // A Material Symbols icon name, or empty for none
         QString icon;
         QString label;
+        // A longer label it may change to, whose width is kept for it so the menu doesn't move
+        QString widestLabel;
     };
 
     enum Region {
@@ -91,9 +117,16 @@ private:
 
     Overlay::OverlayManager& m_Overlays;
     std::function<void()> m_RedrawHandler;
+    std::function<void()> m_ClosedHandler;
     SDL_Window* m_Window;
     bool m_Open;
     bool m_ShowJitterTolerance;
+    bool m_ShowGamepadButtons;
+    bool m_QuitConfirmation;
+
+    int m_OptionsAction;
+    QStringList m_OptionLabels;
+    int m_OptionChecked;
 
     QVector<Item> m_Column;
     QVector<Item> m_Row;

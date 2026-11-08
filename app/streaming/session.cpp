@@ -311,6 +311,11 @@ bool Session::chooseDecoder(StreamingPreferences::VideoDecoderSelection vds,
     params.pacingSmoothingPercent = pacingPrefs->pacingSmoothingPercent;
     params.pacingArrivalPercentile = pacingPrefs->pacingArrivalPercentile;
 
+    // Or as picked from the overlay menu for this session
+    if (s_ActiveSession != nullptr && s_ActiveSession->m_PacingArrivalPercentileOverride != 0) {
+        params.pacingArrivalPercentile = s_ActiveSession->m_PacingArrivalPercentileOverride;
+    }
+
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "V-sync %s",
                 enableVsync ? "enabled" : "disabled");
@@ -1353,7 +1358,7 @@ private:
         bool shouldQuit =
                 !m_Session->m_UnexpectedTermination &&
                 !m_Session->m_LeaveHostAppRunning &&
-                m_Session->m_Preferences->quitAppAfter;
+                (m_Session->m_Preferences->quitAppAfter || m_Session->m_QuitHostApp);
 
         // Notify the UI
         if (shouldQuit) {
@@ -2056,6 +2061,11 @@ void Session::exec()
     // The host may send no new frames while the menu changes, as on a desktop that isn't
     // changing. The lock is recursive, and the menu is also drawn while it's held for a new
     // decoder (which has no frame to draw again yet).
+    // However the menu closes, the input goes back to the host
+    m_OverlayMenu.setClosedHandler([this] {
+        m_InputHandler->notifyOverlayMenuClosed();
+    });
+
     m_OverlayMenu.setRedrawHandler([this] {
         SDL_LockMutex(m_DecoderLock);
         if (m_VideoDecoder != nullptr) {
@@ -2139,13 +2149,21 @@ void Session::exec()
                                                  (uint8_t)((uintptr_t)event.user.data2 >> 8),
                                                  (uint8_t)((uintptr_t)event.user.data2));
                 break;
+            case SDL_CODE_OVERLAY_MENU_QUIT_TIMEOUT:
+                if ((int)(intptr_t)event.user.data1 == m_OverlayMenuQuitTimeouts) {
+                    m_OverlayMenu.setQuitConfirmation(false);
+                }
+                break;
             case SDL_CODE_OVERLAY_MENU_TEST_MOVE:
                 switch ((char)(intptr_t)event.user.data1) {
-                case 'U': m_OverlayMenu.navigate(OverlayMenu::DirectionUp); break;
-                case 'D': m_OverlayMenu.navigate(OverlayMenu::DirectionDown); break;
-                case 'L': m_OverlayMenu.navigate(OverlayMenu::DirectionLeft); break;
-                case 'R': m_OverlayMenu.navigate(OverlayMenu::DirectionRight); break;
-                case 'C': m_OverlayMenu.close(); break;
+                case 'U': handleOverlayMenuInput(UP_FLAG, -1); break;
+                case 'D': handleOverlayMenuInput(DOWN_FLAG, -1); break;
+                case 'L': handleOverlayMenuInput(LEFT_FLAG, -1); break;
+                case 'R': handleOverlayMenuInput(RIGHT_FLAG, -1); break;
+                case 'A': handleOverlayMenuInput(A_FLAG, -1); break;
+                case 'B': handleOverlayMenuInput(B_FLAG, -1); break;
+                case 'X': handleOverlayMenuInput(X_FLAG, -1); break;
+                case 'Y': handleOverlayMenuInput(Y_FLAG, -1); break;
                 }
                 break;
             case SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS:
@@ -2369,12 +2387,13 @@ void Session::exec()
             // but the window may have changed size, and the renderer may not draw the menu
             m_OverlayMenu.refresh();
 
-            // ML_OVERLAY_MENU_TEST opens the menu with the first renderer, then makes the moves
-            // it lists (U, D, L and R), one a second, for checking how the menu is drawn. Once
-            // the host has nothing new to send, they're only seen through redraws.
+            // ML_OVERLAY_MENU_TEST opens the menu with the first renderer, then presses the menu
+            // buttons it lists (U, D, L, R, A, B, X and Y), one a second, as the keyboard would.
+            // Once the host has nothing new to send, they're only seen through redraws.
             if (m_OverlayMenuTestPending) {
                 m_OverlayMenuTestPending = false;
-                if (m_OverlayMenu.open(m_Window)) {
+                openOverlayMenu(-1);
+                if (m_OverlayMenu.isOpen()) {
                     Uint32 delayMs = 0;
                     for (char move : qgetenv("ML_OVERLAY_MENU_TEST").toUpper()) {
                         delayMs += 1000;

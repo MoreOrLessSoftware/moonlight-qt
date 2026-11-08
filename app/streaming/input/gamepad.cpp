@@ -60,10 +60,17 @@ void SdlInputHandler::sendGamepadState(GamepadState* state)
 {
     SDL_assert(m_GamepadMask == 0x1 || m_MultiController);
 
-    // Handle Select+PS as the clickpad button on PS4/5 controllers without a clickpad mapping
-    int buttons = state->buttons;
+    // The host had a neutral state as the overlay menu opened, and gets nothing more until it
+    // closes
+    if (s_OverlayMenuOpen) {
+        return;
+    }
+
+    // Handle Select+PS as the clickpad button on PS4/5 controllers without a clickpad mapping.
+    // Buttons held as the overlay menu closed are left out until they're released.
+    int buttons = state->buttons & ~state->overlayMenuSuppressedButtons;
     if (state->clickpadButtonEmulationEnabled) {
-        if (state->buttons == (BACK_FLAG | SPECIAL_FLAG)) {
+        if (buttons == (BACK_FLAG | SPECIAL_FLAG)) {
             buttons = MISC_FLAG;
             state->emulatedClickpadButtonDown = true;
         }
@@ -84,7 +91,7 @@ void SdlInputHandler::sendGamepadState(GamepadState* state)
     if (!m_MultiController) {
         for (int i = 0; i < MAX_GAMEPADS; i++) {
             if (m_GamepadState[i].index == state->index) {
-                buttons |= m_GamepadState[i].buttons;
+                buttons |= m_GamepadState[i].buttons & ~m_GamepadState[i].overlayMenuSuppressedButtons;
                 if (lt < m_GamepadState[i].lt) {
                     lt = m_GamepadState[i].lt;
                 }
@@ -161,6 +168,11 @@ void SdlInputHandler::sendGamepadBatteryState(GamepadState* state, SDL_JoystickP
 Uint32 SdlInputHandler::mouseEmulationTimerCallback(Uint32 interval, void *param)
 {
     auto gamepad = reinterpret_cast<GamepadState*>(param);
+
+    // The stick moves the overlay menu's selection while it's open, not the mouse
+    if (s_OverlayMenuOpen) {
+        return interval;
+    }
 
     int rawX;
     int rawY;
@@ -272,6 +284,18 @@ void SdlInputHandler::handleControllerAxisEvent(SDL_ControllerAxisEvent* event)
         SDL_PeepEvents(&nextEvent, 1, SDL_GETEVENT, SDL_CONTROLLERAXISMOTION, SDL_CONTROLLERAXISMOTION);
     }
 
+    // The left stick moves the overlay menu's selection while it's open
+    if (s_OverlayMenuOpen) {
+        int direction = getOverlayMenuStickDirection(state->lsX, state->lsY, state->overlayMenuStickDirection);
+        if (direction != state->overlayMenuStickDirection) {
+            state->overlayMenuStickDirection = direction;
+            if (direction != 0) {
+                Session::get()->handleOverlayMenuInput(direction, (int)(state - m_GamepadState));
+            }
+        }
+        return;
+    }
+
     // Only send the gamepad state to the host if it's not in mouse emulation mode
     if (state->mouseEmulationTimer == 0 && dirty) {
         sendGamepadState(state);
@@ -307,6 +331,20 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
             event->button = SDL_CONTROLLER_BUTTON_X;
             break;
         }
+    }
+
+    // The overlay menu takes the buttons while it's open. They're still tracked, so the ones
+    // held as it closes can be kept from the host.
+    if (s_OverlayMenuOpen) {
+        if (event->state == SDL_PRESSED) {
+            state->buttons |= k_ButtonMap[event->button];
+            Session::get()->handleOverlayMenuInput(k_ButtonMap[event->button], (int)(state - m_GamepadState));
+        }
+        else {
+            state->buttons &= ~k_ButtonMap[event->button];
+        }
+        updateOverlayMenuTrigger(state);
+        return;
     }
 
     if (event->state == SDL_PRESSED) {
@@ -348,7 +386,15 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
     else {
         state->buttons &= ~k_ButtonMap[event->button];
 
-        if (event->button == SDL_CONTROLLER_BUTTON_START) {
+        // A button held as the overlay menu closed was pressed for the menu, so its release
+        // is no long press of Start and releases no mouse button
+        bool pressedForMenu = (state->overlayMenuSuppressedButtons & k_ButtonMap[event->button]) != 0;
+        state->overlayMenuSuppressedButtons &= ~k_ButtonMap[event->button];
+
+        if (pressedForMenu) {
+            // Nothing more to do
+        }
+        else if (event->button == SDL_CONTROLLER_BUTTON_START) {
             if (SDL_GetTicks() - state->lastStartDownTime > MOUSE_EMULATION_LONG_PRESS_TIME) {
                 if (state->mouseEmulationTimer != 0) {
                     SDL_RemoveTimer(state->mouseEmulationTimer);
@@ -388,6 +434,9 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
             }
         }
     }
+
+    // Holding the trigger (Select) alone opens the overlay menu
+    updateOverlayMenuTrigger(state);
 
     // Handle Start+Select+L1+R1 as a gamepad quit combo
     if (state->buttons == (PLAY_FLAG | BACK_FLAG | LB_FLAG | RB_FLAG) && qgetenv("NO_GAMEPAD_QUIT") != "1") {
@@ -1005,6 +1054,28 @@ void SdlInputHandler::setAdaptiveTriggers(uint16_t controllerNumber, DualSenseOu
 
 bool SdlInputHandler::handleUserEvent(const SDL_UserEvent& event)
 {
+    switch (event.code) {
+    case SDL_CODE_OVERLAY_MENU_TRIGGER: {
+        // Only if the trigger is still held alone, on a gamepad that's still there
+        int slot = (int)(intptr_t)event.data1;
+        if (slot >= 0 && slot < MAX_GAMEPADS) {
+            GamepadState* state = &m_GamepadState[slot];
+            if ((state->controller != nullptr || state->gameInputDevice != nullptr) &&
+                    (state->buttons & ~state->overlayMenuSuppressedButtons) == m_OverlayMenuTriggerButtons) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "Opening the overlay menu from gamepad %d",
+                            state->index);
+                Session::get()->openOverlayMenu(slot);
+            }
+        }
+        return true;
+    }
+
+    case SDL_CODE_OVERLAY_MENU_INPUT:
+        Session::get()->handleOverlayMenuInput((int)(intptr_t)event.data2, (int)(intptr_t)event.data1);
+        return true;
+    }
+
 #ifdef HAVE_GAMEINPUT
     if (m_GameInput && m_GameInput->handleUserEvent(event)) {
         return true;
@@ -1013,6 +1084,190 @@ bool SdlInputHandler::handleUserEvent(const SDL_UserEvent& event)
     (void)event;
 #endif
     return false;
+}
+
+void SdlInputHandler::updateOverlayMenuTrigger(GamepadState* state)
+{
+    // Buttons held as the menu closed don't count until they're released and pressed again,
+    // so holding Select on after closing it doesn't open it again
+    bool armed = !s_OverlayMenuOpen && m_OverlayMenuTriggerButtons != 0 &&
+            (state->buttons & ~state->overlayMenuSuppressedButtons) == m_OverlayMenuTriggerButtons;
+
+    if (armed && state->overlayMenuTimer == 0) {
+        state->overlayMenuTimer = SDL_AddTimer(m_OverlayMenuHoldMs, overlayMenuTriggerCallback,
+                                               (void*)(intptr_t)(state - m_GamepadState));
+    }
+    else if (!armed && state->overlayMenuTimer != 0) {
+        // The ID of a timer that has fired is never reused, so removing it is harmless
+        SDL_RemoveTimer(state->overlayMenuTimer);
+        state->overlayMenuTimer = 0;
+    }
+}
+
+Uint32 SdlInputHandler::overlayMenuTriggerCallback(Uint32, void* param)
+{
+    // Opened on the main thread, which checks the trigger is still held
+    SDL_Event event = {};
+    event.type = SDL_USEREVENT;
+    event.user.code = SDL_CODE_OVERLAY_MENU_TRIGGER;
+    event.user.data1 = param;
+    SDL_PushEvent(&event);
+    return 0;
+}
+
+int SdlInputHandler::getOverlayMenuStickDirection(short x, short y, int previous)
+{
+    int absX = abs(x);
+    int absY = abs(y);
+
+    // Back near the middle, ready for the next push
+    if (qMax(absX, absY) < 10000) {
+        return 0;
+    }
+
+    // Still pushed from before
+    if (previous != 0) {
+        return previous;
+    }
+
+    if (qMax(absX, absY) < 20000) {
+        return 0;
+    }
+
+    // The axis pushed furthest wins, so a diagonal push moves one way. Up is positive.
+    if (absX >= absY) {
+        return x > 0 ? RIGHT_FLAG : LEFT_FLAG;
+    }
+    else {
+        return y > 0 ? UP_FLAG : DOWN_FLAG;
+    }
+}
+
+void SdlInputHandler::notifyOverlayMenuOpened()
+{
+    s_OverlayMenuOpen = true;
+
+    // The host gets neutral gamepads, and nothing more until the menu closes
+    for (int i = 0; i < MAX_GAMEPADS; i++) {
+        GamepadState* state = &m_GamepadState[i];
+        if (state->controller != nullptr) {
+            LiSendMultiControllerEvent(state->index, m_GamepadMask, 0, 0, 0, 0, 0, 0, 0);
+            updateOverlayMenuTrigger(state);
+
+            // A stick already pushed has to come back before it moves the selection
+            state->overlayMenuStickDirection = getOverlayMenuStickDirection(state->lsX, state->lsY, 0);
+        }
+    }
+
+#ifdef HAVE_GAMEINPUT
+    if (m_GameInput) {
+        m_GameInput->notifyOverlayMenuOpened();
+    }
+#endif
+
+    // And no keys held, including the shortcut's modifiers
+    raiseAllKeys();
+}
+
+void SdlInputHandler::notifyOverlayMenuClosed()
+{
+    if (!s_OverlayMenuOpen) {
+        return;
+    }
+
+    // Buttons still held (like the A that picked an action) are kept from the host until
+    // they're released, so the game doesn't get a press it never had
+    for (int i = 0; i < MAX_GAMEPADS; i++) {
+        GamepadState* state = &m_GamepadState[i];
+        if (state->controller != nullptr) {
+            state->overlayMenuSuppressedButtons = state->buttons;
+            state->overlayMenuStickDirection = 0;
+        }
+    }
+
+#ifdef HAVE_GAMEINPUT
+    if (m_GameInput) {
+        m_GameInput->notifyOverlayMenuClosed();
+    }
+#endif
+
+    s_OverlayMenuOpen = false;
+}
+
+int SdlInputHandler::getFirstGamepadSlot()
+{
+    for (int i = 0; i < MAX_GAMEPADS; i++) {
+        if (m_GamepadState[i].controller != nullptr || m_GamepadState[i].gameInputDevice != nullptr) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void SdlInputHandler::toggleMouseEmulation(int slot)
+{
+    if (slot < 0) {
+        slot = getFirstGamepadSlot();
+        if (slot < 0) {
+            return;
+        }
+    }
+
+#ifdef HAVE_GAMEINPUT
+    if (m_GamepadState[slot].gameInputDevice != nullptr) {
+        if (m_GameInput) {
+            m_GameInput->toggleMouseEmulation(slot, false);
+        }
+        return;
+    }
+#endif
+
+    GamepadState* state = &m_GamepadState[slot];
+    if (state->controller == nullptr) {
+        return;
+    }
+
+    // Asked for from the menu, so not subject to the gamepad mouse setting like a long press
+    // of Start is
+    if (state->mouseEmulationTimer != 0) {
+        SDL_RemoveTimer(state->mouseEmulationTimer);
+        state->mouseEmulationTimer = 0;
+
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Mouse emulation deactivated");
+        Session::get()->notifyMouseEmulationMode(false);
+    }
+    else {
+        state->mouseEmulationTimer = SDL_AddTimer(MOUSE_EMULATION_POLLING_INTERVAL, SdlInputHandler::mouseEmulationTimerCallback, state);
+
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Mouse emulation active");
+        Session::get()->notifyMouseEmulationMode(true);
+    }
+}
+
+void SdlInputHandler::sendGuideButton(int slot)
+{
+    if (slot < 0) {
+        slot = getFirstGamepadSlot();
+        if (slot < 0) {
+            return;
+        }
+    }
+
+    GamepadState* state = &m_GamepadState[slot];
+    if (state->controller == nullptr && state->gameInputDevice == nullptr) {
+        return;
+    }
+
+    // Pressed alone, then released a moment later from a timer, which gets the gamepad's
+    // number and the mask packed into its parameter
+    LiSendMultiControllerEvent(state->index, m_GamepadMask, SPECIAL_FLAG, 0, 0, 0, 0, 0, 0);
+    SDL_AddTimer(100, [](Uint32, void* param) -> Uint32 {
+        uintptr_t packed = (uintptr_t)param;
+        LiSendMultiControllerEvent((short)(packed & 0xFF), (short)(packed >> 8), 0, 0, 0, 0, 0, 0, 0);
+        return 0;
+    }, (void*)(((uintptr_t)(uint16_t)m_GamepadMask << 8) | (uintptr_t)(uint8_t)state->index));
 }
 
 QString SdlInputHandler::getUnmappedGamepads()

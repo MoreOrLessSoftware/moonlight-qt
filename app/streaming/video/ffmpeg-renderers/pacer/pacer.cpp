@@ -657,7 +657,7 @@ bool Pacer::initialize(PDECODER_PARAMETERS params, bool enablePacing)
                                    "no tearing from %3% of the refresh rate, %4 wait timer, host timestamp steps %5, %6 us drawing margin, %7 us spin, display queue drain %8, %9 us tear guard, "
                                    "late frames cut short %10, %11")
                 .arg(smoothing)
-                .arg(m_ArrivalPercentile)
+                .arg(m_ArrivalPercentile.load())
                 .arg((int)std::lround(m_NoTearFraction * 100))
                 .arg(m_WaitTimerHighRes ? "high resolution" : "standard")
                 .arg(m_HostStepsEnabled ? "handled" : "ignored")
@@ -807,6 +807,11 @@ void Pacer::redrawLastFrame()
     if (m_DeferredFreeFrame != nullptr) {
         m_VsyncRenderer->renderFrame(m_DeferredFreeFrame);
     }
+}
+
+void Pacer::setArrivalPercentile(int percentile)
+{
+    m_ArrivalPercentile = qBound(50, percentile, 100);
 }
 
 void Pacer::signalVsync()

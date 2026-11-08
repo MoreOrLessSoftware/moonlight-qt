@@ -186,6 +186,19 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         SDL_PushEvent(&disconnectEvent);
         break;
 
+    case KeyComboOverlayMenu:
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Detected overlay menu combo");
+
+        if (s_OverlayMenuOpen) {
+            Session::get()->closeOverlayMenu();
+        }
+        else {
+            // Not from a gamepad, so its gamepad actions go to the first one
+            Session::get()->openOverlayMenu(-1);
+        }
+        break;
+
     case KeyComboToggleKeyboardGrab:
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Detected keyboard grab toggle combo");
@@ -248,6 +261,36 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
                 return;
             }
         }
+    }
+
+    // The overlay menu takes the keyboard while it's open: the arrow keys move, Enter or Space
+    // picks, and Escape or Backspace goes back. Nothing goes to the host.
+    if (s_OverlayMenuOpen) {
+        if (event->state == SDL_PRESSED) {
+            int menuButton = 0;
+            switch (event->keysym.scancode) {
+            case SDL_SCANCODE_UP: menuButton = UP_FLAG; break;
+            case SDL_SCANCODE_DOWN: menuButton = DOWN_FLAG; break;
+            case SDL_SCANCODE_LEFT: menuButton = LEFT_FLAG; break;
+            case SDL_SCANCODE_RIGHT: menuButton = RIGHT_FLAG; break;
+            case SDL_SCANCODE_RETURN:
+            case SDL_SCANCODE_KP_ENTER:
+            case SDL_SCANCODE_SPACE:
+                menuButton = A_FLAG;
+                break;
+            case SDL_SCANCODE_ESCAPE:
+            case SDL_SCANCODE_BACKSPACE:
+                menuButton = B_FLAG;
+                break;
+            default:
+                break;
+            }
+
+            if (menuButton != 0) {
+                Session::get()->handleOverlayMenuInput(menuButton, -1);
+            }
+        }
+        return;
     }
 
     // Set modifier flags
@@ -540,6 +583,11 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
                              KEY_ACTION_DOWN : KEY_ACTION_UP,
                          modifiers,
                          flags);
+}
+
+void SdlInputHandler::pasteClipboardText()
+{
+    performSpecialKeyCombo(KeyComboPasteText);
 }
 
 void SdlInputHandler::raiseAllKeys()

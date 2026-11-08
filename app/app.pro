@@ -204,6 +204,7 @@ SOURCES += \
     gui/sdlgamepadkeynavigation.cpp \
     streaming/video/overlaymanager.cpp \
     streaming/overlaymenu.cpp \
+    streaming/sessionoverlaymenu.cpp \
     backend/systemproperties.cpp \
     wm.cpp
 

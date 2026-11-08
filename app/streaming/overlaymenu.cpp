@@ -88,6 +88,10 @@ OverlayMenu::OverlayMenu(Overlay::OverlayManager& overlays) :
     m_Window(nullptr),
     m_Open(false),
     m_ShowJitterTolerance(false),
+    m_ShowGamepadButtons(true),
+    m_QuitConfirmation(false),
+    m_OptionsAction(ActionNone),
+    m_OptionChecked(-1),
     m_Region(RegionColumn),
     m_ColumnIndex(0),
     m_RowIndex(0),
@@ -98,6 +102,16 @@ OverlayMenu::OverlayMenu(Overlay::OverlayManager& overlays) :
 void OverlayMenu::setRedrawHandler(std::function<void()> handler)
 {
     m_RedrawHandler = handler;
+}
+
+void OverlayMenu::setClosedHandler(std::function<void()> handler)
+{
+    m_ClosedHandler = handler;
+}
+
+void OverlayMenu::setShowGamepadButtons(bool show)
+{
+    m_ShowGamepadButtons = show;
 }
 
 void OverlayMenu::setShowJitterTolerance(bool show)
@@ -118,6 +132,8 @@ bool OverlayMenu::open(SDL_Window* window)
     }
 
     m_Window = window;
+    m_OptionsAction = ActionNone;
+    m_QuitConfirmation = false;
     buildItems();
 
     // Disconnect, the bottom of the column, starts out selected
@@ -150,6 +166,64 @@ void OverlayMenu::close()
     if (m_RedrawHandler) {
         m_RedrawHandler();
     }
+    if (m_ClosedHandler) {
+        m_ClosedHandler();
+    }
+}
+
+void OverlayMenu::showOptions(int action, const QStringList& labels, int checked)
+{
+    if (!m_Open) {
+        return;
+    }
+
+    m_OptionsAction = action;
+    m_OptionLabels = labels;
+    m_OptionChecked = checked;
+    m_QuitConfirmation = false;
+    buildItems();
+
+    m_Region = RegionColumn;
+    m_ColumnIndex = qBound(0, checked, (int)m_Column.size() - 1);
+    m_RowIndex = 0;
+    m_RowScroll = 0;
+    draw();
+}
+
+void OverlayMenu::showMainButtons()
+{
+    if (!m_Open) {
+        return;
+    }
+
+    // Back on the button the options were for
+    int action = m_OptionsAction;
+    m_OptionsAction = ActionNone;
+    buildItems();
+
+    m_Region = RegionColumn;
+    m_ColumnIndex = m_Column.size() - 1;
+    for (int i = 0; i < m_Column.size(); i++) {
+        if (m_Column[i].action == action) {
+            m_ColumnIndex = i;
+            break;
+        }
+    }
+    m_RowIndex = 0;
+    m_RowScroll = 0;
+    draw();
+}
+
+void OverlayMenu::setQuitConfirmation(bool confirm)
+{
+    if (!m_Open || m_QuitConfirmation == confirm) {
+        return;
+    }
+
+    // The buttons stay where they are, only Quit Session's label changes
+    m_QuitConfirmation = confirm;
+    buildItems();
+    draw();
 }
 
 void OverlayMenu::refresh()
@@ -175,17 +249,33 @@ void OverlayMenu::buildItems()
     m_Column.clear();
     m_Row.clear();
 
+    if (m_OptionsAction != ActionNone) {
+        // The options, with the one in effect marked, and Back
+        for (int i = 0; i < m_OptionLabels.size(); i++) {
+            m_Column.append({ ActionOptionBase + i,
+                              i == m_OptionChecked ? "radio_button_checked" : "radio_button_unchecked",
+                              m_OptionLabels[i] });
+        }
+        m_Row.append({ ActionBack, "arrow_back", QCoreApplication::translate("OverlayMenu", "Back (B)") });
+        return;
+    }
+
     // The column, top to bottom. The hints in brackets are the controller buttons that run
     // them directly while the menu is open.
-    m_Column.append({ ActionGuide, "sports_esports", QCoreApplication::translate("OverlayMenu", "Guide (Start)") });
-    m_Column.append({ ActionMouseEmulation, "mouse", QCoreApplication::translate("OverlayMenu", "Mouse (X)") });
+    if (m_ShowGamepadButtons) {
+        m_Column.append({ ActionGuide, "sports_esports", QCoreApplication::translate("OverlayMenu", "Guide (Start)") });
+        m_Column.append({ ActionMouseEmulation, "mouse", QCoreApplication::translate("OverlayMenu", "Mouse (X)") });
+    }
     m_Column.append({ ActionFullScreen, "fullscreen", QCoreApplication::translate("OverlayMenu", "Full Screen (Y)") });
     m_Column.append({ ActionPasteText, "content_paste", QCoreApplication::translate("OverlayMenu", "Paste Text") });
     m_Column.append({ ActionStats, "monitoring", QCoreApplication::translate("OverlayMenu", "Stats (RB)") });
     if (m_ShowJitterTolerance) {
         m_Column.append({ ActionJitterTolerance, "network_check", QCoreApplication::translate("OverlayMenu", "Jitter Tolerance") });
     }
-    m_Column.append({ ActionQuit, "power_settings_new", QCoreApplication::translate("OverlayMenu", "Quit Session") });
+    m_Column.append({ ActionQuit, "power_settings_new",
+                      m_QuitConfirmation ? QCoreApplication::translate("OverlayMenu", "Press Again to Quit") :
+                                           QCoreApplication::translate("OverlayMenu", "Quit Session"),
+                      QCoreApplication::translate("OverlayMenu", "Press Again to Quit") });
     m_Column.append({ ActionDisconnect, "desktop_access_disabled", QCoreApplication::translate("OverlayMenu", "Disconnect") });
 
     // The row, left to right: custom commands, then Close
@@ -198,15 +288,24 @@ void OverlayMenu::navigate(Direction direction)
         return;
     }
 
+    // Moving on from Quit Session takes back its question
+    if (m_QuitConfirmation) {
+        m_QuitConfirmation = false;
+        buildItems();
+    }
+
     // The same moves as the Android client's OverlayMenuView
     switch (direction) {
     case DirectionUp:
         if (m_Region == RegionColumn) {
             setColumnIndex((m_ColumnIndex - 1 + m_Column.size()) % m_Column.size());
         }
-        else {
+        else if (m_OptionsAction == ActionNone) {
             // Up from the row goes to the button above Disconnect
             setColumnIndex(m_Column.size() >= 2 ? m_Column.size() - 2 : 0);
+        }
+        else {
+            setColumnIndex(m_Column.size() - 1);
         }
         break;
 
@@ -319,7 +418,8 @@ void OverlayMenu::draw()
     QFontMetricsF labelMetrics(labelFont);
 
     auto buttonWidth = [&](const Item& item) {
-        qreal width = 2 * scale * MENU_PADDING + labelMetrics.horizontalAdvance(item.label);
+        qreal width = 2 * scale * MENU_PADDING + qMax(labelMetrics.horizontalAdvance(item.label),
+                                                      labelMetrics.horizontalAdvance(item.widestLabel));
         if (!item.icon.isEmpty()) {
             width += scale * MENU_ICON_SIZE;
             if (!item.label.isEmpty()) {

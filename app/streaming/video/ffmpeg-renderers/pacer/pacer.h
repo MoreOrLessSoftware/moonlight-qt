@@ -9,6 +9,8 @@
 #include <QMutex>
 #include <QWaitCondition>
 
+#include <atomic>
+
 // The maximum number of frames pacer will ever hold is:
 // - 3 frames in the pacing queue
 // - 1 frame removed from the render queue in the process of rendering
@@ -82,6 +84,10 @@ public:
     // for a desktop that isn't changing). Any thread.
     void requestRedraw();
 
+    // Changes how long frames wait for late arrivals (see DECODER_PARAMETERS) mid-session.
+    // Any thread.
+    void setArrivalPercentile(int percentile);
+
 private:
     static int vsyncThread(void* context);
 
@@ -152,7 +158,8 @@ private:
     double m_TrackerAlpha;
     double m_TrackerBeta;
     double m_TrackerResyncUs;
-    int m_ArrivalPercentile;
+    // Atomic, since it can change mid-session (setArrivalPercentile())
+    std::atomic<int> m_ArrivalPercentile;
     double m_NoTearFraction;
     int m_TearGuardUs;
     bool m_DrawAheadEnabled;

@@ -13,6 +13,11 @@
 #include "gameinput.h"
 #endif
 
+std::atomic<bool> SdlInputHandler::s_OverlayMenuOpen { false };
+
+// Holding Select alone for this long opens the overlay menu, as on the Android client
+#define OVERLAY_MENU_DEFAULT_HOLD_MS 1500
+
 SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, int streamHeight)
     : m_MultiController(prefs.multiController),
       m_GamepadMouse(prefs.gamepadMouse),
@@ -37,8 +42,13 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_RightButtonReleaseTimer(0),
       m_DragTimer(0),
       m_DragButton(0),
-      m_NumFingersDown(0)
+      m_NumFingersDown(0),
+      m_OverlayMenuTriggerButtons(BACK_FLAG),
+      m_OverlayMenuHoldMs(OVERLAY_MENU_DEFAULT_HOLD_MS)
 {
+    // A session that ended with the menu open mustn't leave the next one's input going to it
+    s_OverlayMenuOpen = false;
+
     // System keys are always captured when running without a DE
     if (!WMUtils::isRunningDesktopEnvironment()) {
         m_CaptureSystemKeysMode = StreamingPreferences::CSK_ALWAYS;
@@ -144,6 +154,11 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
     m_SpecialKeyCombos[KeyComboDisconnectOnly].scanCode = SDL_SCANCODE_W;
     m_SpecialKeyCombos[KeyComboDisconnectOnly].enabled = true;
 
+    m_SpecialKeyCombos[KeyComboOverlayMenu].keyCombo = KeyComboOverlayMenu;
+    m_SpecialKeyCombos[KeyComboOverlayMenu].keyCode = SDLK_o;
+    m_SpecialKeyCombos[KeyComboOverlayMenu].scanCode = SDL_SCANCODE_O;
+    m_SpecialKeyCombos[KeyComboOverlayMenu].enabled = true;
+
     m_OldIgnoreDevices = SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES);
     m_OldIgnoreDevicesExcept = SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT);
 
@@ -238,6 +253,8 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
 
 SdlInputHandler::~SdlInputHandler()
 {
+    s_OverlayMenuOpen = false;
+
 #ifdef HAVE_GAMEINPUT
     // Stop GameInput callbacks before tearing down the shared gamepad slots
     m_GameInput.reset();

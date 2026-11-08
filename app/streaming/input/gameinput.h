@@ -54,6 +54,14 @@ public:
     bool rumble(int slot, uint16_t lowFreqMotor, uint16_t highFreqMotor);
     bool rumbleTriggers(int slot, uint16_t leftTrigger, uint16_t rightTrigger);
 
+    // Main thread: the overlay menu opened or closed (see SdlInputHandler::notifyOverlayMenuOpened())
+    void notifyOverlayMenuOpened();
+    void notifyOverlayMenuClosed();
+
+    // Main thread: turns gamepad mouse mode on or off for a slot. Turning it on can be left to
+    // the gamepad mouse setting, as for a long press of Start.
+    void toggleMouseEmulation(int slot, bool requirePreference);
+
     // Main thread: the window lost focus. Without background input GameInput stops sending readings, so
     // release everything on the host instead of leaving buttons or triggers held.
     void notifyFocusLost();

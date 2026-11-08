@@ -5,7 +5,12 @@
 
 #include "SDL_compat.h"
 
+#include <atomic>
 #include <memory>
+
+// SDL user events for the overlay menu, from timer and GameInput threads to the main loop
+#define SDL_CODE_OVERLAY_MENU_TRIGGER 130   // data1: gamepad slot that held the trigger
+#define SDL_CODE_OVERLAY_MENU_INPUT   131   // data1: gamepad slot, data2: menu buttons pressed
 
 #ifdef HAVE_GAMEINPUT
 class GameInputGamepads;
@@ -45,6 +50,12 @@ struct GamepadState {
     short lsX, lsY;
     short rsX, rsY;
     unsigned char lt, rt;
+
+    // The overlay menu: the timer for holding its trigger, buttons held as it closed (kept from
+    // the host until they're released), and which way the left stick last moved the selection
+    SDL_TimerID overlayMenuTimer;
+    int overlayMenuSuppressedButtons;
+    int overlayMenuStickDirection;
 };
 
 
@@ -165,6 +176,16 @@ public:
 
     void updatePointerRegionLock();
 
+    // The overlay menu (Session::openOverlayMenu()). While it's open, gamepad and keyboard input
+    // goes to it rather than the host.
+    void notifyOverlayMenuOpened();
+    void notifyOverlayMenuClosed();
+    // A gamepad slot, or -1 for the first gamepad there is
+    void toggleMouseEmulation(int slot);
+    void sendGuideButton(int slot);
+    void pasteClipboardText();
+    int getFirstGamepadSlot();
+
     static
     QString getUnmappedGamepads();
 
@@ -187,6 +208,7 @@ private:
         KeyComboQuitAndExit,
         KeyComboToggleKeyboardGrab,
         KeyComboDisconnectOnly,
+        KeyComboOverlayMenu,
         KeyComboMax
     };
 
@@ -206,6 +228,18 @@ private:
     void handleRelativeFingerEvent(SDL_TouchFingerEvent* event);
 
     void performSpecialKeyCombo(KeyCombo combo);
+
+    // Starts or stops the timer for holding the overlay menu's trigger, for a change to the
+    // gamepad's buttons. Main thread, or the GameInput thread for its gamepads.
+    void updateOverlayMenuTrigger(GamepadState* state);
+
+    // The menu button for the left stick's position: a D-pad flag once it's pushed far enough
+    // one way, then the same until it's back near the middle (so a push moves the selection once)
+    static
+    int getOverlayMenuStickDirection(short x, short y, int previous);
+
+    static
+    Uint32 overlayMenuTriggerCallback(Uint32 interval, void* param);
 
     static
     Uint32 longPressTimerCallback(Uint32 interval, void* param);
@@ -268,6 +302,12 @@ private:
     SDL_TimerID m_DragTimer;
     char m_DragButton;
     int m_NumFingersDown;
+
+    // Whether the overlay menu is open, read from the timer and GameInput threads too
+    static std::atomic<bool> s_OverlayMenuOpen;
+    // The gamepad buttons held alone to open the overlay menu, and for how long
+    int m_OverlayMenuTriggerButtons;
+    Uint32 m_OverlayMenuHoldMs;
 
     static const int k_ButtonMap[];
 

@@ -90,6 +90,8 @@ public:
     // Draws the last frame again, for an overlay that changed while the host may not be
     // sending new frames. Main thread.
     virtual void requestRedraw() {}
+    // Network jitter tolerance (see DECODER_PARAMETERS) for the rest of the session. Main thread.
+    virtual void setPacingArrivalPercentile(int) {}
     virtual void setHdrMode(bool enabled) = 0;
     virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO info) = 0;
 };
