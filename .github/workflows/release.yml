@@ -3,7 +3,7 @@
 # them to a draft release. This is separate from the upstream workflows, so they can
 # stay disabled and unchanged. When upstream changes the dependency versions in
 # build-appimage.yml, make the same changes here.
-name: Release
+name: mlsoft Release
 permissions:
   contents: read
 
