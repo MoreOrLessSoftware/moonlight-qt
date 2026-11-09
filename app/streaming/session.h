@@ -14,8 +14,6 @@
 #include "hostcommands.h"
 #include "settings/overlaymenucommands.h"
 
-// The overlay menu's Quit Session question timing out (data1: which one)
-#define SDL_CODE_OVERLAY_MENU_QUIT_TIMEOUT 107
 // A custom command's keys all sent (data1: its post action, data2: the session's token)
 #define SDL_CODE_OVERLAY_MENU_COMMAND_DONE 108
 // A message on one of the overlay menu's buttons timing out (data1: which one)
@@ -332,8 +330,6 @@ private:
     bool m_OverlayMenuReleasedMouse = false;
     // Whether the left mouse button went down on one of the menu's buttons
     bool m_OverlayMenuPressedButton = false;
-    // Counts Quit Session's questions, so only the latest one's timeout takes it back
-    int m_OverlayMenuQuitTimeouts = 0;
     // Quit Session from the menu quits the host app whatever the settings say
     bool m_QuitHostApp = false;
     // Network jitter tolerance picked from the menu for this session, or 0 for the setting

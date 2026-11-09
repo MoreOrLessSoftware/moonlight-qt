@@ -31,7 +31,7 @@ OverlayMenu::OverlayMenu(Overlay::OverlayManager& overlays) :
     m_Open(false),
     m_ShowJitterTolerance(false),
     m_ShowGamepadButtons(true),
-    m_QuitConfirmation(false),
+    m_DisconnectPage(false),
     m_OptionsAction(ActionNone),
     m_OptionChecked(-1),
     m_Group(-1),
@@ -114,7 +114,7 @@ void OverlayMenu::showGroup(int group)
 
     m_Group = group;
     m_OptionsAction = ActionNone;
-    m_QuitConfirmation = false;
+    m_DisconnectPage = false;
     m_MessageAction = ActionNone;
     buildItems();
 
@@ -158,7 +158,7 @@ bool OverlayMenu::open(SDL_Window* window)
     m_OptionsAction = ActionNone;
     m_Group = -1;
     m_MessageAction = ActionNone;
-    m_QuitConfirmation = false;
+    m_DisconnectPage = false;
     buildItems();
 
     // Disconnect, the bottom of the column, starts out selected
@@ -208,7 +208,7 @@ void OverlayMenu::showOptions(int action, const QStringList& labels, int checked
     m_OptionChecked = checked;
     m_Group = -1;
     m_MessageAction = ActionNone;
-    m_QuitConfirmation = false;
+    m_DisconnectPage = false;
     buildItems();
 
     m_Region = RegionColumn;
@@ -225,10 +225,12 @@ void OverlayMenu::showMainButtons()
         return;
     }
 
-    // Back on the button the options or group were for
-    int action = m_Group >= 0 ? ActionHostGroupBase + m_Group : m_OptionsAction;
+    // Back on the button the page was for
+    int action = m_DisconnectPage ? (int)ActionDisconnectPage :
+                 m_Group >= 0 ? ActionHostGroupBase + m_Group : m_OptionsAction;
     m_OptionsAction = ActionNone;
     m_Group = -1;
+    m_DisconnectPage = false;
     m_MessageAction = ActionNone;
     buildItems();
 
@@ -252,15 +254,23 @@ void OverlayMenu::showMainButtons()
     draw();
 }
 
-void OverlayMenu::setQuitConfirmation(bool confirm)
+void OverlayMenu::showDisconnectPage()
 {
-    if (!m_Open || m_QuitConfirmation == confirm) {
+    if (!m_Open) {
         return;
     }
 
-    // The buttons stay where they are, only Quit Session's label changes
-    m_QuitConfirmation = confirm;
+    m_DisconnectPage = true;
+    m_OptionsAction = ActionNone;
+    m_Group = -1;
+    m_MessageAction = ActionNone;
     buildItems();
+
+    m_Region = RegionColumn;
+    m_ColumnIndex = m_Column.size() - 1;
+    m_RowIndex = 0;
+    m_RowScroll = 0;
+    m_ColumnScroll = 0;
     draw();
 }
 
@@ -310,6 +320,16 @@ void OverlayMenu::buildItems()
         return;
     }
 
+    if (m_DisconnectPage) {
+        // Disconnect stays last, where the button that opened this page was, so a repeated
+        // press can only land on the choice that leaves the game running
+        m_Column.append({ ActionQuit, "power_settings_new", QCoreApplication::translate("OverlayMenu", "Quit Session") });
+        m_Column.append({ ActionDisconnect, "desktop_access_disabled", QCoreApplication::translate("OverlayMenu", "Disconnect") });
+        m_Row.append({ ActionBack, "arrow_back", QCoreApplication::translate("OverlayMenu", "Back (B)") });
+        applyMessage();
+        return;
+    }
+
     // The column, top to bottom. The hints in brackets are the controller buttons that run
     // them directly while the menu is open.
     if (m_ShowGamepadButtons) {
@@ -322,11 +342,7 @@ void OverlayMenu::buildItems()
     if (m_ShowJitterTolerance) {
         m_Column.append({ ActionJitterTolerance, "network_check", QCoreApplication::translate("OverlayMenu", "Jitter Tolerance") });
     }
-    m_Column.append({ ActionQuit, "power_settings_new",
-                      m_QuitConfirmation ? QCoreApplication::translate("OverlayMenu", "Press Again to Quit") :
-                                           QCoreApplication::translate("OverlayMenu", "Quit Session"),
-                      QCoreApplication::translate("OverlayMenu", "Press Again to Quit") });
-    m_Column.append({ ActionDisconnect, "desktop_access_disabled", QCoreApplication::translate("OverlayMenu", "Disconnect") });
+    m_Column.append({ ActionDisconnectPage, "desktop_access_disabled", QCoreApplication::translate("OverlayMenu", "Disconnect") });
 
     // The row, left to right: custom commands, the host's commands, the host's groups, then
     // Close
@@ -364,9 +380,8 @@ void OverlayMenu::navigate(Direction direction)
         return;
     }
 
-    // Moving on from Quit Session takes back its question, and a message goes
-    if (m_QuitConfirmation || m_MessageAction != ActionNone) {
-        m_QuitConfirmation = false;
+    // A message goes as the selection moves
+    if (m_MessageAction != ActionNone) {
         m_MessageAction = ActionNone;
         buildItems();
     }
@@ -459,9 +474,8 @@ bool OverlayMenu::selectAt(int x, int y)
         bool selected = m_Region == target.region &&
                 (target.region == RegionColumn ? m_ColumnIndex : m_RowIndex) == target.index;
         if (!selected) {
-            // Moving on from Quit Session takes back its question, and a message goes
-            if (m_QuitConfirmation || m_MessageAction != ActionNone) {
-                m_QuitConfirmation = false;
+            // A message goes as the selection moves
+            if (m_MessageAction != ActionNone) {
                 m_MessageAction = ActionNone;
                 buildItems();
             }
@@ -543,8 +557,7 @@ void OverlayMenu::draw()
     QFontMetricsF labelMetrics(labelFont);
 
     auto buttonWidth = [&](const Item& item) {
-        qreal width = 2 * scale * MENU_PADDING + qMax(labelMetrics.horizontalAdvance(item.label),
-                                                      labelMetrics.horizontalAdvance(item.widestLabel));
+        qreal width = 2 * scale * MENU_PADDING + labelMetrics.horizontalAdvance(item.label);
         if (!item.icon.isEmpty()) {
             width += scale * MENU_ICON_SIZE;
             if (!item.label.isEmpty()) {

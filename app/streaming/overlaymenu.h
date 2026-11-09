@@ -35,8 +35,10 @@ public:
         ActionQuit,
         ActionDisconnect,
         ActionClose,
-        // Back from options to the main buttons
+        // Back from another page to the main buttons
         ActionBack,
+        // Opens the page with Quit Session and Disconnect
+        ActionDisconnectPage,
         // Custom command n is ActionCustomBase + n
         ActionCustomBase = 100,
         // Option n of the options showing is ActionOptionBase + n
@@ -120,16 +122,17 @@ public:
     // The host group whose commands are showing, or -1
     int getGroup() const { return m_Group; }
 
-    // Whether the main buttons are showing (not options or a group's commands)
-    bool isOnMainButtons() const { return m_OptionsAction == ActionNone && m_Group < 0; }
+    // Shows Quit Session and Disconnect in place of the main buttons, with Disconnect selected.
+    // Back returns to the main buttons.
+    void showDisconnectPage();
+
+    // Whether the main buttons are showing (not options, a group's commands or the disconnect
+    // page)
+    bool isOnMainButtons() const { return m_OptionsAction == ActionNone && m_Group < 0 && !m_DisconnectPage; }
 
     // Shows a short message in place of a button's label, as for a command that failed, until
     // it's cleared (with an empty message) or the selection moves
     void setMessage(int action, const QString& message);
-
-    // Quit Session asks to be pressed again. Moving the selection ends this.
-    void setQuitConfirmation(bool confirm);
-    bool isQuitConfirmation() const { return m_QuitConfirmation; }
 
     // The selected button's action, or ActionNone if the menu is closed
     int selectedAction() const;
@@ -140,8 +143,6 @@ private:
         // A Material Symbols icon name, another icon (see OverlayMenuCommand::icon), or empty
         QString icon;
         QString label;
-        // A longer label it may change to, whose width is kept for it so the menu doesn't move
-        QString widestLabel;
     };
 
     enum Region {
@@ -165,7 +166,9 @@ private:
     bool m_Open;
     bool m_ShowJitterTolerance;
     bool m_ShowGamepadButtons;
-    bool m_QuitConfirmation;
+    // Quit Session and Disconnect are showing in place of the main buttons. Quitting closes the
+    // game on the host, losing anything unsaved, so getting to it takes this extra step.
+    bool m_DisconnectPage;
 
     int m_OptionsAction;
     QStringList m_OptionLabels;

@@ -7,9 +7,6 @@
 
 #include <QCoreApplication>
 
-// How long Quit Session waits to be pressed again
-#define OVERLAY_MENU_QUIT_CONFIRM_MS 3000
-
 // How long a message (like why a host command failed) shows on its button
 #define OVERLAY_MENU_MESSAGE_MS 4000
 
@@ -137,7 +134,7 @@ void Session::handleOverlayMenuInput(int buttons, int slot)
             activateOverlayMenuAction(m_OverlayMenu.selectedAction());
             break;
 
-        // B (or Select, like Android's back button) goes back from options, or closes
+        // B (or Select, like Android's back button) goes back from a page, or closes
         case B_FLAG:
         case BACK_FLAG:
             if (mainButtons) {
@@ -228,35 +225,24 @@ void Session::activateOverlayMenuAction(int action)
         break;
     }
 
-    case OverlayMenu::ActionQuit:
-        if (!m_OverlayMenu.isQuitConfirmation()) {
-            // Quitting closes the game on the host, losing anything unsaved, so it takes a
-            // second press within a few seconds. Each timer carries its own number, so only the
-            // latest takes the question back.
-            m_OverlayMenu.setQuitConfirmation(true);
-            SDL_AddTimer(OVERLAY_MENU_QUIT_CONFIRM_MS, [](Uint32, void* param) -> Uint32 {
-                SDL_Event event = {};
-                event.type = SDL_USEREVENT;
-                event.user.code = SDL_CODE_OVERLAY_MENU_QUIT_TIMEOUT;
-                event.user.data1 = param;
-                SDL_PushEvent(&event);
-                return 0;
-            }, (void*)(intptr_t)++m_OverlayMenuQuitTimeouts);
-        }
-        else {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "Quitting the session from the overlay menu");
-            closeOverlayMenu();
-
-            // The host app is quit whatever the settings say
-            m_QuitHostApp = true;
-
-            SDL_Event event = {};
-            event.type = SDL_QUIT;
-            event.quit.timestamp = SDL_GetTicks();
-            SDL_PushEvent(&event);
-        }
+    case OverlayMenu::ActionDisconnectPage:
+        m_OverlayMenu.showDisconnectPage();
         break;
+
+    case OverlayMenu::ActionQuit: {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Quitting the session from the overlay menu");
+        closeOverlayMenu();
+
+        // The host app is quit whatever the settings say
+        m_QuitHostApp = true;
+
+        SDL_Event event = {};
+        event.type = SDL_QUIT;
+        event.quit.timestamp = SDL_GetTicks();
+        SDL_PushEvent(&event);
+        break;
+    }
 
     case OverlayMenu::ActionDisconnect: {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,

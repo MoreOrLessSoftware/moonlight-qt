@@ -2182,11 +2182,6 @@ void Session::exec()
             case SDL_CODE_OVERLAY_MENU_COMMAND_DONE:
                 finishOverlayMenuCommand(event.user);
                 break;
-            case SDL_CODE_OVERLAY_MENU_QUIT_TIMEOUT:
-                if ((int)(intptr_t)event.user.data1 == m_OverlayMenuQuitTimeouts) {
-                    m_OverlayMenu.setQuitConfirmation(false);
-                }
-                break;
             case SDL_CODE_OVERLAY_MENU_MESSAGE_TIMEOUT:
                 if ((int)(intptr_t)event.user.data1 == m_OverlayMenuMessages) {
                     m_OverlayMenu.setMessage((int)(intptr_t)event.user.data2, QString());
