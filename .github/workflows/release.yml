@@ -1,0 +1,334 @@
+---
+# Builds the Windows portable zip and the Linux AppImage for a vX.X.X tag and attaches
+# them to a draft release. This is separate from the upstream workflows, so they can
+# stay disabled and unchanged. When upstream changes the dependency versions in
+# build-appimage.yml, make the same changes here.
+name: Release
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+concurrency:
+  group: release-${{ github.ref }}
+
+env:
+  TAG: ${{ github.ref_name }}
+  ASSET_VERSION: mlsoft-${{ github.ref_name }}
+  QMAKE_EXTRA_ARGS: CONFIG+=disable-update-check
+
+jobs:
+  build-windows:
+    runs-on: windows-2025
+    env:
+      QT_VERSION: 6.8.3
+      # The deps' FFmpeg with --enable-amf, laid over the stock deps from setup-deps.ps1
+      FFMPEG_AMF_URL: https://github.com/${{ github.repository }}/releases/download/deps-ffmpeg-9.0.2-amf/ffmpeg-9.0.2-amf-windows-x64.zip
+      # Keep on the same commit as the Linux build below
+      PYROWAVE_COMMIT: 7fe0e2667cd3076b8b2bf04bcb80bc8d691b800b
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+        with:
+          submodules: 'recursive'
+          fetch-depth: 1
+
+      - name: Download dependencies
+        run: powershell ./setup-deps.ps1
+
+      - name: Apply FFmpeg with AMF
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $Env:RUNNER_TEMP 'ffmpeg-amf.zip'
+          curl.exe -s -S -L -f -o $zip $Env:FFMPEG_AMF_URL
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Expand-Archive -Path $zip -DestinationPath libs/windows -Force
+
+      - name: Install MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+
+      # Cloned with MSYS2's git, since Windows git could give the script CRLF line endings
+      - name: Build PyroWave
+        shell: msys2 {0}
+        run: |
+          set -e
+          git clone https://github.com/Themaister/pyrowave deps/pyrowave
+          cd deps/pyrowave
+          git checkout "$PYROWAVE_COMMIT"
+          ./checkout_granite.sh
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target pyrowave-shared
+          test -f build/libpyrowave-shared-1.dll
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          cache: true
+          set-env: false
+          add-tools-to-path: false
+          tools: 'tools_qtcreator_gui'
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@073e34d7c2ab4ae6961ed7cca690b3abd5ba5a7e'
+
+      # CI_VERSION stays unset: with it, the package gets portable.dat.inactive instead of portable.dat
+      - name: Build Binaries
+        shell: cmd
+        run: |
+          set "PATH=%QT_PATH%;%PATH%"
+          scripts\build-arch.bat release
+        env:
+          QT_PATH: ${{ runner.workspace }}\Qt\${{ env.QT_VERSION }}\msvc2022_64\bin
+          PYROWAVE_DLL: ${{ github.workspace }}\deps\pyrowave\build\libpyrowave-shared-1.dll
+
+      # build-arch.bat only warns about a missing PyroWave, and stock FFmpeg would also build
+      - name: Verify and Name Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $deploy = 'build/deploy-x64-release'
+          foreach ($file in 'Moonlight.exe', 'portable.dat', 'libpyrowave-shared-1.dll', 'avcodec-63.dll') {
+            if (-not (Test-Path "$deploy/$file")) { throw "$file is missing from the package" }
+          }
+          $avcodec = [IO.File]::ReadAllText((Resolve-Path "$deploy/avcodec-63.dll"), [Text.Encoding]::Latin1)
+          if (-not $avcodec.Contains('hevc_amf')) { throw 'The packaged FFmpeg has no AMF decoders' }
+
+          $zips = @(Get-ChildItem build/installer-x64-release -Filter 'MoonlightPortable-x64-*.zip')
+          if ($zips.Count -ne 1) { throw "Expected one portable zip, found $($zips.Count)" }
+          New-Item -ItemType Directory -Force build/release | Out-Null
+          Move-Item $zips[0].FullName "build/release/Moonlight-Windows-x64-$Env:ASSET_VERSION.zip"
+
+      - name: Upload Package
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows
+          path: build/release/*
+          compression-level: 0
+          if-no-files-found: error
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    env:
+      CI_VERSION: mlsoft-${{ github.ref_name }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+        with:
+          submodules: 'recursive'
+          fetch-depth: 1
+
+      - name: Setup environment
+        run: |
+          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-1.4.313-jammy.list https://packages.lunarg.com/vulkan/1.4.313/lunarg-vulkan-1.4.313-jammy.list
+          sudo apt update
+          sudo apt install -y qt6-base-dev qt6-declarative-dev libqt6svg6-dev qml6-module-qtquick-controls qml6-module-qtquick-templates qml6-module-qtquick-layouts \
+            qml6-module-qtqml-workerscript qml6-module-qtquick-window qml6-module-qtquick python3-pip nasm libgbm-dev libdrm-dev libfreetype-dev libasound2-dev \
+            libdbus-1-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libibus-1.0-dev libpulse-dev libudev-dev libx11-dev libxcursor-dev \
+            libxext-dev libxi-dev libxinerama-dev libxkbcommon-dev libxrandr-dev libxss-dev libxt-dev libxv-dev libxxf86vm-dev libxcb-dri3-dev libx11-xcb-dev \
+            libxfixes-dev libxtst-dev wayland-protocols libopus-dev libvdpau-dev libgl-dev libpipewire-0.3-dev liburing-dev vulkan-sdk cmake
+          sudo pip3 install meson
+          mkdir -p dep_root/{bin,include,lib}
+          echo "DEP_ROOT=$PWD/dep_root" >> "${GITHUB_ENV}"
+          echo "$PWD/dep_root/bin" >> "${GITHUB_PATH}"
+
+      - name: Checkout SDL3
+        uses: actions/checkout@v5
+        with:
+          repository: libsdl-org/SDL
+          ref: release-3.4.18
+          path: deps/SDL
+
+      - name: Build SDL3
+        working-directory: deps/SDL
+        run: |
+          cmake -DSDL_KMSDRM=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_INSTALL_DOCS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -S . -B build
+          cmake --build build -j
+          sudo cmake --install build
+
+      - name: Checkout sdl2-compat
+        uses: actions/checkout@v5
+        with:
+          repository: libsdl-org/sdl2-compat
+          ref: release-2.32.74
+          path: deps/sdl2-compat
+
+      - name: Build sdl2-compat
+        working-directory: deps/sdl2-compat
+        run: |
+          cmake -DSDL2COMPAT_TESTS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -S . -B build
+          cmake --build build -j
+          sudo cmake --install build
+
+      - name: Checkout SDL_ttf
+        uses: actions/checkout@v5
+        with:
+          repository: libsdl-org/SDL_ttf
+          ref: a883e490e30fb44a5336ea3dcb990c6982c5216f
+          path: deps/SDL_ttf
+          submodules: 'recursive'
+
+      - name: Build SDL_ttf
+        working-directory: deps/SDL_ttf
+        run: |
+          ./autogen.sh
+          ./configure
+          make -j$(nproc)
+          sudo make install
+
+      - name: Checkout libva
+        uses: actions/checkout@v5
+        with:
+          repository: intel/libva
+          ref: 2.24.1
+          path: deps/libva
+
+      - name: Build libva
+        working-directory: deps/libva
+        run: |
+          ./autogen.sh
+          ./configure --enable-x11=yes --enable-glx=no --enable-drm=no --enable-wayland=no
+          make -j$(nproc)
+          sudo make install
+
+      - name: Checkout libplacebo
+        uses: actions/checkout@v5
+        with:
+          repository: haasn/libplacebo
+          ref: 92b5ac6db79f4d680eb656692f7bf51e9606f42a
+          path: deps/libplacebo
+          submodules: 'recursive'
+
+      - name: Build libplacebo
+        working-directory: deps/libplacebo
+        run: |
+          git apply ../../app/deploy/linux/appimage/*.patch
+          meson setup build -Dvulkan=enabled -Dopengl=disabled -Ddemos=false
+          ninja -C build
+          sudo ninja install -C build
+
+      - name: Build dav1d
+        working-directory: deps
+        env:
+          DAV1D_VER: 1.5.4
+        run: |
+          git clone --branch $DAV1D_VER --depth 1 https://code.videolan.org/videolan/dav1d.git
+          pushd dav1d
+          meson setup build -Ddefault_library=static -Dbuildtype=release -Denable_tools=false -Denable_tests=false
+          ninja -C build
+          sudo ninja install -C build
+          popd
+
+      - name: Checkout FFmpeg
+        uses: actions/checkout@v5
+        with:
+          repository: FFmpeg/FFmpeg
+          ref: n9.0.2
+          path: deps/FFmpeg
+
+      - name: Build FFmpeg
+        working-directory: deps/FFmpeg
+        run: |
+          ./configure --enable-pic --enable-lto --disable-static --enable-shared --disable-all --disable-autodetect \
+            --enable-avcodec --enable-avformat --enable-swscale \
+            --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=av1 \
+            --enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=hevc_vaapi --enable-hwaccel=av1_vaapi \
+            --enable-vdpau --enable-hwaccel=h264_vdpau  --enable-hwaccel=hevc_vdpau --enable-hwaccel=av1_vdpau \
+            --enable-libdrm --enable-vulkan --enable-hwaccel=h264_vulkan --enable-hwaccel=hevc_vulkan --enable-hwaccel=av1_vulkan \
+            --enable-libdav1d --enable-decoder=libdav1d
+          make -j$(nproc)
+          sudo make install
+
+      # Moonlight loads libpyrowave-shared.so.1 at runtime, so build-appimage.sh packages
+      # it from PYROWAVE_LIBRARY. Keep on the same commit as the Windows build above.
+      - name: Checkout PyroWave
+        uses: actions/checkout@v5
+        with:
+          repository: Themaister/pyrowave
+          ref: 7fe0e2667cd3076b8b2bf04bcb80bc8d691b800b
+          path: deps/pyrowave
+
+      - name: Build PyroWave
+        working-directory: deps/pyrowave
+        run: |
+          # Fetches Granite at the commit PyroWave pins, with only the submodules it needs
+          ./checkout_granite.sh
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target pyrowave-shared -j$(nproc)
+          PYROWAVE_LIBRARY=$(find $PWD/build -name 'libpyrowave-shared.so.1' -print -quit)
+          [ -n "$PYROWAVE_LIBRARY" ] || { echo "libpyrowave-shared.so.1 wasn't built" 1>&2; exit 1; }
+          echo "PYROWAVE_LIBRARY=$PYROWAVE_LIBRARY" >> "${GITHUB_ENV}"
+
+      - name: Install linuxdeploy
+        working-directory: dep_root/bin
+        run: |
+          wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy*.AppImage
+
+      - name: Build Binaries
+        run: |
+          sudo ldconfig
+          scripts/build-appimage.sh
+
+      - name: Name Package
+        run: |
+          set -e
+          NAME="Moonlight-LinuxAppImage-${ASSET_VERSION}"
+          mkdir -p build/release
+          mv "build/installer-release/Moonlight-${CI_VERSION}-x86_64.AppImage" "build/release/${NAME}.AppImage"
+          cd build/release
+          zip -9 "${NAME}.zip" "${NAME}.AppImage"
+          rm "${NAME}.AppImage"
+
+      - name: Upload Package
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux
+          path: build/release/*
+          compression-level: 0
+          if-no-files-found: error
+
+  draft-release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Download Packages
+        uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create Draft Release
+        run: |
+          set -e
+          ls -l dist
+          if IS_DRAFT=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$IS_DRAFT" != "true" ]; then
+              echo "$TAG is already published, so its files were left alone" 1>&2
+              exit 1
+            fi
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --draft --verify-tag \
+              --title "Moonlight Experimental for Windows/Linux $TAG" --notes ""
+          fi
