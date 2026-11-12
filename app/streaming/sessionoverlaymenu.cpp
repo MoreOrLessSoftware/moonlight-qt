@@ -107,7 +107,7 @@ void Session::handleOverlayMenuInput(int buttons, int slot)
     // rest are dropped.
     static const int k_MenuButtons[] = {
         UP_FLAG, DOWN_FLAG, LEFT_FLAG, RIGHT_FLAG,
-        A_FLAG, B_FLAG, BACK_FLAG, X_FLAG, Y_FLAG, PLAY_FLAG, RB_FLAG,
+        A_FLAG, B_FLAG, BACK_FLAG, X_FLAG, PLAY_FLAG, RB_FLAG,
     };
     for (int button : k_MenuButtons) {
         if (!(buttons & button) || !m_OverlayMenu.isOpen()) {
@@ -145,15 +145,10 @@ void Session::handleOverlayMenuInput(int buttons, int slot)
             }
             break;
 
-        // Shortcuts to the main buttons, as on the Android client (Y was its keyboard)
+        // Shortcuts to the main buttons, as on the Android client
         case X_FLAG:
             if (mainButtons) {
                 activateOverlayMenuAction(OverlayMenu::ActionMouseEmulation);
-            }
-            break;
-        case Y_FLAG:
-            if (mainButtons) {
-                activateOverlayMenuAction(OverlayMenu::ActionFullScreen);
             }
             break;
         case PLAY_FLAG:
@@ -181,19 +176,6 @@ void Session::activateOverlayMenuAction(int action)
     case OverlayMenu::ActionMouseEmulation:
         closeOverlayMenu();
         m_InputHandler->toggleMouseEmulation(m_OverlayMenuSlot);
-        break;
-
-    case OverlayMenu::ActionFullScreen:
-        closeOverlayMenu();
-        toggleFullscreen();
-
-        // As for the shortcut, in case key events get lost across the change
-        m_InputHandler->raiseAllKeys();
-        break;
-
-    case OverlayMenu::ActionPasteText:
-        closeOverlayMenu();
-        m_InputHandler->pasteClipboardText();
         break;
 
     case OverlayMenu::ActionStats: {

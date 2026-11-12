@@ -336,8 +336,6 @@ void OverlayMenu::buildItems()
         m_Column.append({ ActionGuide, "sports_esports", QCoreApplication::translate("OverlayMenu", "Guide (Start)") });
         m_Column.append({ ActionMouseEmulation, "mouse", QCoreApplication::translate("OverlayMenu", "Mouse (X)") });
     }
-    m_Column.append({ ActionFullScreen, "fullscreen", QCoreApplication::translate("OverlayMenu", "Full Screen (Y)") });
-    m_Column.append({ ActionPasteText, "content_paste", QCoreApplication::translate("OverlayMenu", "Paste Text") });
     m_Column.append({ ActionStats, "monitoring", QCoreApplication::translate("OverlayMenu", "Stats (RB)") });
     if (m_ShowJitterTolerance) {
         m_Column.append({ ActionJitterTolerance, "network_check", QCoreApplication::translate("OverlayMenu", "Jitter Tolerance") });

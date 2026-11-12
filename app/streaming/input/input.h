@@ -183,7 +183,6 @@ public:
     // A gamepad slot, or -1 for the first gamepad there is
     void toggleMouseEmulation(int slot);
     void sendGuideButton(int slot);
-    void pasteClipboardText();
     int getFirstGamepadSlot();
 
     // Presses chords of keys (Windows virtual key codes) on the host one after another, each

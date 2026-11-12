@@ -587,11 +587,6 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
                          flags);
 }
 
-void SdlInputHandler::pasteClipboardText()
-{
-    performSpecialKeyCombo(KeyComboPasteText);
-}
-
 namespace {
 
 // How long each key of a sequence waits for the next, as on the Android client, and how long

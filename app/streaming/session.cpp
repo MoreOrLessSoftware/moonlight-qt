@@ -2202,7 +2202,6 @@ void Session::exec()
                 case 'A': handleOverlayMenuInput(A_FLAG, -1); break;
                 case 'B': handleOverlayMenuInput(B_FLAG, -1); break;
                 case 'X': handleOverlayMenuInput(X_FLAG, -1); break;
-                case 'Y': handleOverlayMenuInput(Y_FLAG, -1); break;
                 }
                 break;
             case SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS:
@@ -2427,7 +2426,7 @@ void Session::exec()
             m_OverlayMenu.refresh();
 
             // ML_OVERLAY_MENU_TEST opens the menu with the first renderer, then presses the menu
-            // buttons it lists (U, D, L, R, A, B, X and Y), one a second, as the keyboard would.
+            // buttons it lists (U, D, L, R, A, B and X), one a second, as the keyboard would.
             // Once the host has nothing new to send, they're only seen through redraws.
             if (m_OverlayMenuTestPending) {
                 m_OverlayMenuTestPending = false;

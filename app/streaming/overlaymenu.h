@@ -28,8 +28,6 @@ public:
         ActionNone,
         ActionGuide,
         ActionMouseEmulation,
-        ActionFullScreen,
-        ActionPasteText,
         ActionStats,
         ActionJitterTolerance,
         ActionQuit,
