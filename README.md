@@ -17,13 +17,13 @@ An in-stream menu, drawn over the stream without interrupting it.
 - Host commands: MoreOrLessSoftware Sunshine hosts can define their own [client commands](https://github.com/MoreOrLessSoftware/Sunshine/blob/mlsoft-custom/docs/client_commands.md), including groups for the program in the foreground, and commands added by [plugins](https://github.com/MoreOrLessSoftware/Sunshine/blob/mlsoft-custom/docs/plugins.md). They appear in the menu automatically.
 - Disconnect and Quit Session.
 
-![Overlay Menu](./screenshots/v1.0.0/overlay_menu.webp)
+[![Overlay Menu](./screenshots/v1.0.0/overlay_menu.webp)](https://raw.githubusercontent.com/MoreOrLessSoftware/moonlight-qt/mlsoft-custom2/screenshots/v1.0.0/overlay_menu.webp)
 
 ### Video Presets
 
 Save the Video Settings (resolution, frame rate, codec, bitrate, display mode, V-Sync, frame pacing, HDR and 4:4:4) as named presets, then switch between them from the settings page or the toolbar, or launch an app with a preset from its context menu. Presets can be renamed, reordered and deleted, and `--preset <name>` selects one from the command line.
 
-![Settings](./screenshots/v1.0.0/settings.webp)
+[![Settings](./screenshots/v1.0.0/settings.webp)](https://raw.githubusercontent.com/MoreOrLessSoftware/moonlight-qt/mlsoft-custom2/screenshots/v1.0.0/settings.webp)
 
 ### Frame Pacing
 
@@ -55,7 +55,7 @@ Support for [PyroWave](https://github.com/Themaister/pyrowave), an experimental 
 - Decode and render times measured to when the GPU finishes, so the latency figures add up.
 - A choice of text color, and a latency measurement mode (Ctrl+Alt+Shift+S cycles off, on, latency mode) that moves the overlay for camera-based latency tests. Sunshine's *Latency Test* plugin shows the test pattern for these, and its per-frame latency trace and CSV can be matched against this client's traces.
 
-![Stats](./screenshots/v1.0.0/stats.webp)
+[![Stats](./screenshots/v1.0.0/stats.webp)](https://raw.githubusercontent.com/MoreOrLessSoftware/moonlight-qt/mlsoft-custom2/screenshots/v1.0.0/stats.webp)
 
 ### Input
 
