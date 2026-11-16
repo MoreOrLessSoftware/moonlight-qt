@@ -71,3 +71,11 @@ Support for [PyroWave](https://github.com/Themaister/pyrowave), an experimental 
 ## Building
 
 See instructions from the base repository: https://github.com/moonlight-stream/moonlight-qt#building
+
+## Downloads
+
+[Download for Windows and Linux from releases](https://github.com/MoreOrLessSoftware/moonlight-qt/releases)
+
+## Credits
+
+This is a fork of [Moonlight PC](https://github.com/moonlight-stream/moonlight-qt), authored by [Cameron Gutman](https://github.com/cgutman) and others. PyroWave decoding uses [PyroWave](https://github.com/Themaister/pyrowave) by Hans-Kristian Arntzen.
