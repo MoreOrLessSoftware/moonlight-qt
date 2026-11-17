@@ -22,6 +22,11 @@ ApplicationWindow {
     width: 1280
     height: 600
 
+    // Material 2 (Qt before 6.5, like the distro Qt the Linux builds use) uppercases
+    // the text of buttons and tabs. Keep it as written, like Material 3 does. Only
+    // capitalization is set here, so every control and popup inherits just that.
+    font.capitalization: Font.MixedCase
+
     // This function runs prior to creation of the initial StackView item
     function doEarlyInit() {
         // Override the background color to Material 2 colors for Qt 6.5+
