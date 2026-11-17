@@ -1740,9 +1740,17 @@ bool FFmpegVideoDecoder::tryInitializeNonHwAccelDecoder(PDECODER_PARAMETERS para
 // On AMD GPUs, AMD's own decoder through AMF can take much less time per frame than
 // D3D11VA: a 4K HEVC frame took about 5.7 ms from submission to decoded on a Radeon
 // 780M, against 10 ms with D3D11VA, at about the same throughput. Tried ahead of
-// D3D11VA, which takes over wherever AMF isn't available (other GPUs, FFmpeg builds
-// without AMF). ML_AMF_DECODE=0 turns it off, and ML_AMF_DECODE=1 also tries the
-// H.264 and AV1 decoders, which haven't been measured.
+// D3D11VA for HEVC, which takes over wherever AMF isn't available (other GPUs, FFmpeg
+// builds without AMF). ML_AMF_DECODE=0 turns it off, and ML_AMF_DECODE=1 also tries
+// the H.264 and AV1 decoders, which haven't been measured.
+//
+// hevc_amf corrupts HEVC that marks long-term references, as Sunshine's AMF direct
+// encoder did by default until 2026-11 (amd_ltr_frames). D3D11VA decodes the same
+// stream cleanly. A host that sends such HEVC needs ML_AMF_DECODE=0.
+//
+// av1_amf isn't on by default: on a Radeon 780M it corrupted AV1 from Sunshine's AMF
+// direct encoder (4 tiles, no long-term references) and crashed within seconds, a
+// stream that D3D11VA decodes cleanly.
 bool FFmpegVideoDecoder::tryInitializeAmfDecoder(PDECODER_PARAMETERS params)
 {
 #ifdef Q_OS_WIN32
