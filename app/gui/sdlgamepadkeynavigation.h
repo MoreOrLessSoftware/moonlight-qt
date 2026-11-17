@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QSet>
 #include <QTimer>
 #include <QEvent>
 
@@ -31,6 +32,8 @@ private:
 
     void updateTimerState();
 
+    void addGamepad(SDL_GameController* gc);
+
 private slots:
     void onPollingTimerFired();
 
@@ -38,6 +41,11 @@ private:
     StreamingPreferences* m_Prefs;
     QTimer* m_PollingTimer;
     QList<SDL_GameController*> m_Gamepads;
+
+    // Gamepads whose left stick has been seen at rest. A stick only navigates once it
+    // has been centred, so one that never is (like a pedal or throttle that SDL maps to
+    // the left stick and rests at one end) can't keep navigating on its own.
+    QSet<SDL_GameController*> m_CenteredSticks;
     bool m_Enabled;
     bool m_UiNavMode;
     bool m_FirstPoll;

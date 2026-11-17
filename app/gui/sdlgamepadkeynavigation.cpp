@@ -7,6 +7,8 @@
 #include "settings/mappingmanager.h"
 
 #define AXIS_NAVIGATION_REPEAT_DELAY 150
+#define AXIS_NAVIGATION_THRESHOLD 30000
+#define AXIS_CENTERED_THRESHOLD 8000
 
 SdlGamepadKeyNavigation::SdlGamepadKeyNavigation(StreamingPreferences* prefs)
     : m_Prefs(prefs),
@@ -64,7 +66,7 @@ void SdlGamepadKeyNavigation::enable()
         if (SDL_IsGameController(i)) {
             SDL_GameController* gc = SDL_GameControllerOpen(i);
             if (gc != nullptr) {
-                m_Gamepads.append(gc);
+                addGamepad(gc);
             }
         }
     }
@@ -89,6 +91,7 @@ void SdlGamepadKeyNavigation::disable()
         SDL_GameControllerClose(m_Gamepads[0]);
         m_Gamepads.removeAt(0);
     }
+    m_CenteredSticks.clear();
 
     SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
 }
@@ -206,7 +209,7 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
                 // the SDL_CONTROLLERDEVICEADDED event if an unopened gamepad disappears
                 // before we've processed the add event.
                 if (!m_Gamepads.contains(gc)) {
-                    m_Gamepads.append(gc);
+                    addGamepad(gc);
                 }
                 else {
                     // We already have this game controller open
@@ -221,10 +224,19 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
     for (auto gc : std::as_const(m_Gamepads)) {
         short leftX = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX);
         short leftY = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY);
+
+        // Ignore the stick until it's been seen at rest (see m_CenteredSticks)
+        if (!m_CenteredSticks.contains(gc)) {
+            if (qAbs((int)leftX) < AXIS_CENTERED_THRESHOLD && qAbs((int)leftY) < AXIS_CENTERED_THRESHOLD) {
+                m_CenteredSticks.insert(gc);
+            }
+            continue;
+        }
+
         if (SDL_GetTicks() - m_LastAxisNavigationEventTime < AXIS_NAVIGATION_REPEAT_DELAY) {
             // Do nothing
         }
-        else if (leftY < -30000) {
+        else if (leftY < -AXIS_NAVIGATION_THRESHOLD) {
             if (m_UiNavMode) {
                 // Back-tab
                 sendKey(QEvent::Type::KeyPress, Qt::Key_Tab, Qt::ShiftModifier);
@@ -237,7 +249,7 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
 
             m_LastAxisNavigationEventTime = SDL_GetTicks();
         }
-        else if (leftY > 30000) {
+        else if (leftY > AXIS_NAVIGATION_THRESHOLD) {
             if (m_UiNavMode) {
                 sendKey(QEvent::Type::KeyPress, Qt::Key_Tab);
                 sendKey(QEvent::Type::KeyRelease, Qt::Key_Tab);
@@ -249,17 +261,28 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
 
             m_LastAxisNavigationEventTime = SDL_GetTicks();
         }
-        else if (leftX < -30000) {
+        else if (leftX < -AXIS_NAVIGATION_THRESHOLD) {
             sendKey(QEvent::Type::KeyPress, Qt::Key_Left);
             sendKey(QEvent::Type::KeyRelease, Qt::Key_Left);
             m_LastAxisNavigationEventTime = SDL_GetTicks();
         }
-        else if (leftX > 30000) {
+        else if (leftX > AXIS_NAVIGATION_THRESHOLD) {
             sendKey(QEvent::Type::KeyPress, Qt::Key_Right);
             sendKey(QEvent::Type::KeyRelease, Qt::Key_Right);
             m_LastAxisNavigationEventTime = SDL_GetTicks();
         }
     }
+}
+
+void SdlGamepadKeyNavigation::addGamepad(SDL_GameController* gc)
+{
+    m_Gamepads.append(gc);
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "UI navigation gamepad: %s (left stick %d, %d)",
+                SDL_GameControllerName(gc),
+                SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX),
+                SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY));
 }
 
 void SdlGamepadKeyNavigation::sendKey(QEvent::Type type, Qt::Key key, Qt::KeyboardModifiers modifiers)
