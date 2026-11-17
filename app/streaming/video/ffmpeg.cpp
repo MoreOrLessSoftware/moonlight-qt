@@ -7,6 +7,7 @@
 
 #include <QDateTime>
 #include <QFile>
+#include <QVarLengthArray>
 
 extern "C" {
 #include <libavutil/mastering_display_metadata.h>
@@ -332,7 +333,8 @@ void FFmpegVideoDecoder::reset()
     }
     m_VideoDumpTried = false;
 
-    m_StripAv1Padding = false;
+    m_CleanAv1ForAmf = false;
+    m_LoggedAv1RepeatedTile = false;
     m_FramesIn = m_FramesOut = 0;
     m_FrameInfoQueue.clear();
     m_SendEndTimes.clear();
@@ -1757,19 +1759,20 @@ bool FFmpegVideoDecoder::tryInitializeNonHwAccelDecoder(PDECODER_PARAMETERS para
 
 // On AMD GPUs, AMD's own decoder through AMF can take much less time per frame than
 // D3D11VA: a 4K HEVC frame took about 5.7 ms from submission to decoded on a Radeon
-// 780M, against 10 ms with D3D11VA, at about the same throughput. For 1080p100 AV1 the
-// gain is smaller: last packet to presented 4.5 ms against 5.2 ms on average, though
-// the slowest 1% of frames took a little longer. Tried ahead of D3D11VA for HEVC and
-// AV1, which takes over wherever AMF isn't available (other GPUs, FFmpeg builds
-// without AMF). ML_AMF_DECODE=0 turns it off, and ML_AMF_DECODE=1 also tries the
-// H.264 decoder, which hasn't been measured.
+// 780M, against 10 ms with D3D11VA, at about the same throughput. Tried ahead of
+// D3D11VA for HEVC, which takes over wherever AMF isn't available (other GPUs, FFmpeg
+// builds without AMF). ML_AMF_DECODE=0 turns it off, and ML_AMF_DECODE=1 also tries
+// the H.264 and AV1 decoders.
 //
 // hevc_amf corrupts HEVC that marks long-term references, as Sunshine's AMF direct
 // encoder did by default until 2026-11 (amd_ltr_frames). D3D11VA decodes the same
 // stream cleanly. A host that sends such HEVC needs ML_AMF_DECODE=0.
 //
-// av1_amf hangs on AV1 padding OBUs, which are taken out first. See
-// stripAv1PaddingObus().
+// av1_amf hangs on AV1 padding OBUs and decodes a tile sent twice wrongly; both are
+// taken out first (see cleanAv1ForAmf()). It isn't on by default even so: on 1080p100
+// AV1 it was only 0.7 ms quicker from last packet to presented (4.5 against 5.2 ms),
+// and once, after a burst of 40-150 KB frames, avcodec_send_packet() didn't return for
+// 7.7 s, until the stream was torn down. The same frames decoded offline didn't stall.
 bool FFmpegVideoDecoder::tryInitializeAmfDecoder(PDECODER_PARAMETERS params)
 {
 #ifdef Q_OS_WIN32
@@ -1799,7 +1802,7 @@ bool FFmpegVideoDecoder::tryInitializeAmfDecoder(PDECODER_PARAMETERS params)
     else if (allCodecs && (params->videoFormat & VIDEO_FORMAT_MASK_H264)) {
         decoderName = "h264_amf";
     }
-    else if (params->videoFormat & VIDEO_FORMAT_MASK_AV1) {
+    else if (allCodecs && (params->videoFormat & VIDEO_FORMAT_MASK_AV1)) {
         decoderName = "av1_amf";
     }
     else {
@@ -1831,8 +1834,8 @@ bool FFmpegVideoDecoder::tryInitializeAmfDecoder(PDECODER_PARAMETERS params)
                         "Decoding with %s",
                         decoderName);
 
-            // See stripAv1PaddingObus()
-            m_StripAv1Padding = strcmp(decoderName, "av1_amf") == 0;
+            // See cleanAv1ForAmf()
+            m_CleanAv1ForAmf = strcmp(decoderName, "av1_amf") == 0;
             return true;
         }
     }
@@ -2786,56 +2789,91 @@ Uint32 FFmpegVideoDecoder::decodeCallWatchdog(Uint32 interval, void* param)
     return interval;
 }
 
-// Removes AV1 padding OBUs from a temporal unit, returning its new size.
+// Takes out of an AV1 temporal unit what AMD's AV1 decoder (av1_amf, Radeon 780M,
+// driver 32.0.22024.13003) mishandles, returning its new size. FFmpeg's AV1 decoder and
+// dav1d cope with both of these:
 //
-// Sunshine ends every AV1 frame it sends in parts while it encodes with a padding OBU
-// that fills out the frame's last packet. Decoders are meant to discard padding, and
-// FFmpeg's AV1 decoder and dav1d do, but AMD's (av1_amf, Radeon 780M, driver
-// 32.0.22024.13003) stops returning from avcodec_send_packet() after some tens of such
-// frames, which stalls the stream and then quitting. Without the padding it decodes them
-// all. Anything that doesn't parse as an OBU with a size field is left as it is.
-int FFmpegVideoDecoder::stripAv1PaddingObus(uint8_t* data, int size)
+// - Padding OBUs. Sunshine ends every AV1 frame it sends in parts while it encodes with
+//   one, filling out the frame's last packet. Decoders are meant to discard them, but
+//   av1_amf stops returning from avcodec_send_packet() after some tens of such frames,
+//   which stalls the stream and then quitting.
+// - A tile sent twice. Sunshine's AMF direct encoder (before 2026-11) could take the
+//   previous frame's copy of a tile, left over in AMF's buffer, for the next tile and
+//   send it ahead of the real one. av1_amf decodes the stale copy, and the corruption
+//   lasts until the next key frame, which nothing then asks for. Of two adjacent tile
+//   groups for the same tiles, the later one is kept. Their first byte is the flag that
+//   they name their tiles, then the first tile's number, so it matches for the same
+//   tiles (and the whole header, up to 8 tiles).
+//
+// Anything that doesn't parse as OBUs with size fields is left as it is.
+int FFmpegVideoDecoder::cleanAv1ForAmf(uint8_t* data, int size)
 {
-    int in = 0;
-    int out = 0;
+    struct Obu {
+        int start;
+        int payload;
+        int end;
+        int type;
+    };
+    QVarLengthArray<Obu, 32> obus;
 
-    while (in < size) {
-        uint8_t header = data[in];
+    int parsed = 0;
+    while (parsed < size) {
+        uint8_t header = data[parsed];
         if ((header & 0x80) || !(header & 0x02)) {
             break;
         }
 
-        int pos = in + 1 + ((header & 0x04) ? 1 : 0);
-        uint64_t payload = 0;
+        int pos = parsed + 1 + ((header & 0x04) ? 1 : 0);
+        uint64_t payloadSize = 0;
         bool sizeRead = false;
         for (int shift = 0; pos < size && shift <= 56; shift += 7) {
             uint8_t byte = data[pos++];
-            payload |= (uint64_t)(byte & 0x7F) << shift;
+            payloadSize |= (uint64_t)(byte & 0x7F) << shift;
             if (!(byte & 0x80)) {
                 sizeRead = true;
                 break;
             }
         }
-        if (!sizeRead || payload > (uint64_t)(size - pos)) {
+        if (!sizeRead || payloadSize > (uint64_t)(size - pos)) {
             break;
         }
 
-        int end = pos + (int)payload;
-        if (((header >> 3) & 0x0F) != 15) {
-            if (out != in) {
-                memmove(data + out, data + in, end - in);
+        int end = pos + (int)payloadSize;
+        obus.append({ parsed, pos, end, (header >> 3) & 0x0F });
+        parsed = end;
+    }
+
+    int out = 0;
+    for (int i = 0; i < obus.size(); i++) {
+        const Obu& obu = obus[i];
+        bool drop = obu.type == 15;
+
+        if (obu.type == 4 && i + 1 < obus.size() && obus[i + 1].type == 4 &&
+                obu.payload < obu.end && obus[i + 1].payload < obus[i + 1].end &&
+                (data[obu.payload] & 0x80) &&
+                data[obu.payload] == data[obus[i + 1].payload]) {
+            drop = true;
+            if (!m_LoggedAv1RepeatedTile) {
+                m_LoggedAv1RepeatedTile = true;
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "The host sent an AV1 tile twice; dropping the first copy (logged once)");
             }
-            out += end - in;
         }
-        in = end;
+
+        if (!drop) {
+            if (out != obu.start) {
+                memmove(data + out, data + obu.start, obu.end - obu.start);
+            }
+            out += obu.end - obu.start;
+        }
     }
 
     // Keep whatever couldn't be parsed
-    if (in < size) {
-        if (out != in) {
-            memmove(data + out, data + in, size - in);
+    if (parsed < size) {
+        if (out != parsed) {
+            memmove(data + out, data + parsed, size - parsed);
         }
-        out += size - in;
+        out += size - parsed;
     }
 
     return out;
@@ -2928,8 +2966,8 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
         entry = entry->next;
     }
 
-    if (m_StripAv1Padding) {
-        offset = stripAv1PaddingObus(reinterpret_cast<uint8_t*>(m_DecodeBuffer.data()), offset);
+    if (m_CleanAv1ForAmf) {
+        offset = cleanAv1ForAmf(reinterpret_cast<uint8_t*>(m_DecodeBuffer.data()), offset);
     }
 
     m_Pkt->data = reinterpret_cast<uint8_t*>(m_DecodeBuffer.data());

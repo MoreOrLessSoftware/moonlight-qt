@@ -184,8 +184,9 @@ private:
     void countDecodeSend(int64_t startUs, int64_t sendStartUs, int64_t sendEndUs);
     void countDecodedFrame(int64_t receiveStartUs, int64_t receiveEndUs);
     bool m_DecodeCallLog;
-    static int stripAv1PaddingObus(uint8_t* data, int size);
-    bool m_StripAv1Padding = false;
+    int cleanAv1ForAmf(uint8_t* data, int size);
+    bool m_LoggedAv1RepeatedTile = false;
+    bool m_CleanAv1ForAmf = false;
     void logSlowDecodeCall(const char* call, int64_t startUs, int64_t endUs);
     // The call the decoder thread is in, for a watchdog timer that reports one that
     // never returns
