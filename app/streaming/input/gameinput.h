@@ -58,6 +58,9 @@ public:
     void notifyOverlayMenuOpened();
     void notifyOverlayMenuClosed();
 
+    // Main thread: a Guide tap's time is up (see SdlInputHandler::endOverlayMenuGuideTap())
+    void endOverlayMenuGuideTap(int slot);
+
     // Main thread: turns gamepad mouse mode on or off for a slot. Turning it on can be left to
     // the gamepad mouse setting, as for a long press of Start.
     void toggleMouseEmulation(int slot, bool requirePreference);

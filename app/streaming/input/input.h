@@ -11,6 +11,7 @@
 // SDL user events for the overlay menu, from timer and GameInput threads to the main loop
 #define SDL_CODE_OVERLAY_MENU_TRIGGER 130   // data1: gamepad slot that held the trigger
 #define SDL_CODE_OVERLAY_MENU_INPUT   131   // data1: gamepad slot, data2: menu buttons pressed
+#define SDL_CODE_OVERLAY_MENU_GUIDE_TAP_END 132   // data1: gamepad slot whose Guide tap ends
 
 #ifdef HAVE_GAMEINPUT
 class GameInputGamepads;
@@ -56,6 +57,13 @@ struct GamepadState {
     SDL_TimerID overlayMenuTimer;
     int overlayMenuSuppressedButtons;
     int overlayMenuStickDirection;
+
+    // With Guide as the trigger, a press of it alone is kept from the host until the hold
+    // either opens the menu or ends early (then the host gets a short tap of it), so the host
+    // doesn't see Guide for a hold that opens the menu
+    bool overlayMenuGuideWasHeld;
+    bool overlayMenuGuideWithheld;
+    bool overlayMenuGuideTap;
 };
 
 
@@ -221,6 +229,14 @@ private:
 
     void sendGamepadState(GamepadState* state);
 
+    // The buttons the host sees held on a gamepad: less those held as the overlay menu closed
+    // and a withheld Guide, plus Guide during a tap of it
+    static
+    int getHostButtons(const GamepadState* state);
+
+    // Main thread: a Guide tap's time is up, so the host gets its release
+    void endOverlayMenuGuideTap(GamepadState* state);
+
     void sendGamepadBatteryState(GamepadState* state, SDL_JoystickPowerLevel level);
 
     void handleAbsoluteFingerEvent(SDL_TouchFingerEvent* event);
@@ -244,6 +260,9 @@ private:
 
     static
     Uint32 overlayMenuTriggerCallback(Uint32 interval, void* param);
+
+    static
+    Uint32 overlayMenuGuideTapCallback(Uint32 interval, void* param);
 
     static
     Uint32 longPressTimerCallback(Uint32 interval, void* param);

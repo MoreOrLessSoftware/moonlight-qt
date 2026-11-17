@@ -56,6 +56,18 @@ SdlInputHandler::findStateForGamepad(SDL_JoystickID id)
     return nullptr;
 }
 
+int SdlInputHandler::getHostButtons(const GamepadState* state)
+{
+    int buttons = state->buttons & ~state->overlayMenuSuppressedButtons;
+    if (state->overlayMenuGuideWithheld) {
+        buttons &= ~SPECIAL_FLAG;
+    }
+    if (state->overlayMenuGuideTap) {
+        buttons |= SPECIAL_FLAG;
+    }
+    return buttons;
+}
+
 void SdlInputHandler::sendGamepadState(GamepadState* state)
 {
     SDL_assert(m_GamepadMask == 0x1 || m_MultiController);
@@ -68,7 +80,7 @@ void SdlInputHandler::sendGamepadState(GamepadState* state)
 
     // Handle Select+PS as the clickpad button on PS4/5 controllers without a clickpad mapping.
     // Buttons held as the overlay menu closed are left out until they're released.
-    int buttons = state->buttons & ~state->overlayMenuSuppressedButtons;
+    int buttons = getHostButtons(state);
     if (state->clickpadButtonEmulationEnabled) {
         if (buttons == (BACK_FLAG | SPECIAL_FLAG)) {
             buttons = MISC_FLAG;
@@ -91,7 +103,7 @@ void SdlInputHandler::sendGamepadState(GamepadState* state)
     if (!m_MultiController) {
         for (int i = 0; i < MAX_GAMEPADS; i++) {
             if (m_GamepadState[i].index == state->index) {
-                buttons |= m_GamepadState[i].buttons & ~m_GamepadState[i].overlayMenuSuppressedButtons;
+                buttons |= getHostButtons(&m_GamepadState[i]);
                 if (lt < m_GamepadState[i].lt) {
                     lt = m_GamepadState[i].lt;
                 }
@@ -1071,6 +1083,24 @@ bool SdlInputHandler::handleUserEvent(const SDL_UserEvent& event)
         return true;
     }
 
+    case SDL_CODE_OVERLAY_MENU_GUIDE_TAP_END: {
+        int slot = (int)(intptr_t)event.data1;
+        if (slot >= 0 && slot < MAX_GAMEPADS) {
+#ifdef HAVE_GAMEINPUT
+            if (m_GamepadState[slot].gameInputDevice != nullptr) {
+                if (m_GameInput) {
+                    m_GameInput->endOverlayMenuGuideTap(slot);
+                }
+                return true;
+            }
+#endif
+            if (m_GamepadState[slot].controller != nullptr) {
+                endOverlayMenuGuideTap(&m_GamepadState[slot]);
+            }
+        }
+        return true;
+    }
+
     case SDL_CODE_OVERLAY_MENU_INPUT:
         Session::get()->handleOverlayMenuInput((int)(intptr_t)event.data2, (int)(intptr_t)event.data1);
         return true;
@@ -1101,6 +1131,59 @@ void SdlInputHandler::updateOverlayMenuTrigger(GamepadState* state)
         // The ID of a timer that has fired is never reused, so removing it is harmless
         SDL_RemoveTimer(state->overlayMenuTimer);
         state->overlayMenuTimer = 0;
+    }
+
+    // With Guide as the trigger, the host only gets Guide once it's clear the press isn't for
+    // the menu. The caller sends the gamepad's state after this.
+    if (m_OverlayMenuTriggerButtons == SPECIAL_FLAG) {
+        bool guideHeld = (state->buttons & ~state->overlayMenuSuppressedButtons & SPECIAL_FLAG) != 0;
+
+        if (s_OverlayMenuOpen) {
+            // The menu took the press, so the host never gets it
+            state->overlayMenuGuideWithheld = false;
+        }
+        else if (armed && guideHeld && !state->overlayMenuGuideWasHeld) {
+            // Pressed alone: held back while the hold might open the menu. A Guide that went to
+            // the host with another button stays held there, even once it's alone again.
+            state->overlayMenuGuideWithheld = true;
+        }
+        else if (!armed && state->overlayMenuGuideWithheld) {
+            state->overlayMenuGuideWithheld = false;
+
+            if (!guideHeld && state->mouseEmulationTimer == 0) {
+                // Released before the menu opened: the host gets a tap of it, pressed now
+                // and released from a timer
+                state->overlayMenuGuideTap = true;
+                SDL_AddTimer(100, overlayMenuGuideTapCallback, (void*)(intptr_t)(state - m_GamepadState));
+            }
+            // Otherwise another button joined it, so it goes to the host with that one (a
+            // chord like Select+Guide still works)
+        }
+
+        state->overlayMenuGuideWasHeld = guideHeld;
+    }
+}
+
+Uint32 SdlInputHandler::overlayMenuGuideTapCallback(Uint32, void* param)
+{
+    // Ended on the main thread, which owns the gamepad's state
+    SDL_Event event = {};
+    event.type = SDL_USEREVENT;
+    event.user.code = SDL_CODE_OVERLAY_MENU_GUIDE_TAP_END;
+    event.user.data1 = param;
+    SDL_PushEvent(&event);
+    return 0;
+}
+
+void SdlInputHandler::endOverlayMenuGuideTap(GamepadState* state)
+{
+    if (!state->overlayMenuGuideTap) {
+        return;
+    }
+
+    state->overlayMenuGuideTap = false;
+    if (state->mouseEmulationTimer == 0) {
+        sendGamepadState(state);
     }
 }
 

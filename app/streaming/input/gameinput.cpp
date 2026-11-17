@@ -594,6 +594,16 @@ void GameInputGamepads::notifyOverlayMenuClosed()
     }
 }
 
+void GameInputGamepads::endOverlayMenuGuideTap(int slot)
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    if (m_Pads.find(slot) == m_Pads.end()) {
+        return;  // pad went away in the meantime
+    }
+
+    m_Handler.endOverlayMenuGuideTap(&m_Handler.m_GamepadState[slot]);
+}
+
 void GameInputGamepads::notifyFocusLost()
 {
     if (m_BackgroundInput) {
