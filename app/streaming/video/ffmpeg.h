@@ -184,6 +184,23 @@ private:
     void countDecodeSend(int64_t startUs, int64_t sendStartUs, int64_t sendEndUs);
     void countDecodedFrame(int64_t receiveStartUs, int64_t receiveEndUs);
     bool m_DecodeCallLog;
+    static int stripAv1PaddingObus(uint8_t* data, int size);
+    bool m_StripAv1Padding = false;
+    void logSlowDecodeCall(const char* call, int64_t startUs, int64_t endUs);
+    // The call the decoder thread is in, for a watchdog timer that reports one that
+    // never returns
+    void enterDecodeCall(const char* call);
+    void leaveDecodeCall();
+    static Uint32 decodeCallWatchdog(Uint32 interval, void* param);
+    std::atomic<const char*> m_CurrentDecodeCall { nullptr };
+    std::atomic<int64_t> m_CurrentDecodeCallStartUs { 0 };
+    std::atomic<int64_t> m_CurrentDecodeCallReportedUs { 0 };
+    SDL_TimerID m_DecodeCallWatchdog = 0;
+    // ML_DUMP_VIDEO: every frame as it is handed to the decoder, appended to a file
+    // (see dumpVideoPacket()), for replaying the stream through other decoders
+    void dumpVideoPacket(const AVPacket* packet);
+    FILE* m_VideoDump;
+    bool m_VideoDumpTried;
     DecodeCallStats m_DecodeCalls;
     QQueue<int64_t> m_SendEndTimes;
     int m_PollsSinceFrame;

@@ -5,6 +5,9 @@
 
 #include <h264_stream.h>
 
+#include <QDateTime>
+#include <QFile>
+
 extern "C" {
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/pixdesc.h>
@@ -275,6 +278,8 @@ FFmpegVideoDecoder::FFmpegVideoDecoder(bool testOnly)
       m_DecoderThread(nullptr),
       m_Pyrowave(nullptr),
       m_DecodeCallLog(qEnvironmentVariableIntValue("ML_DECODE_CALL_LOG") != 0),
+      m_VideoDump(nullptr),
+      m_VideoDumpTried(false),
       m_DecodeCalls(),
       m_PollsSinceFrame(0)
 {
@@ -315,6 +320,19 @@ void FFmpegVideoDecoder::reset()
         m_DecoderThread = nullptr;
     }
 
+    if (m_DecodeCallWatchdog != 0) {
+        SDL_RemoveTimer(m_DecodeCallWatchdog);
+        m_DecodeCallWatchdog = 0;
+        m_CurrentDecodeCall = nullptr;
+    }
+
+    if (m_VideoDump != nullptr) {
+        fclose(m_VideoDump);
+        m_VideoDump = nullptr;
+    }
+    m_VideoDumpTried = false;
+
+    m_StripAv1Padding = false;
     m_FramesIn = m_FramesOut = 0;
     m_FrameInfoQueue.clear();
     m_SendEndTimes.clear();
@@ -1739,18 +1757,19 @@ bool FFmpegVideoDecoder::tryInitializeNonHwAccelDecoder(PDECODER_PARAMETERS para
 
 // On AMD GPUs, AMD's own decoder through AMF can take much less time per frame than
 // D3D11VA: a 4K HEVC frame took about 5.7 ms from submission to decoded on a Radeon
-// 780M, against 10 ms with D3D11VA, at about the same throughput. Tried ahead of
-// D3D11VA for HEVC, which takes over wherever AMF isn't available (other GPUs, FFmpeg
-// builds without AMF). ML_AMF_DECODE=0 turns it off, and ML_AMF_DECODE=1 also tries
-// the H.264 and AV1 decoders, which haven't been measured.
+// 780M, against 10 ms with D3D11VA, at about the same throughput. For 1080p100 AV1 the
+// gain is smaller: last packet to presented 4.5 ms against 5.2 ms on average, though
+// the slowest 1% of frames took a little longer. Tried ahead of D3D11VA for HEVC and
+// AV1, which takes over wherever AMF isn't available (other GPUs, FFmpeg builds
+// without AMF). ML_AMF_DECODE=0 turns it off, and ML_AMF_DECODE=1 also tries the
+// H.264 decoder, which hasn't been measured.
 //
 // hevc_amf corrupts HEVC that marks long-term references, as Sunshine's AMF direct
 // encoder did by default until 2026-11 (amd_ltr_frames). D3D11VA decodes the same
 // stream cleanly. A host that sends such HEVC needs ML_AMF_DECODE=0.
 //
-// av1_amf isn't on by default: on a Radeon 780M it corrupted AV1 from Sunshine's AMF
-// direct encoder (4 tiles, no long-term references) and crashed within seconds, a
-// stream that D3D11VA decodes cleanly.
+// av1_amf hangs on AV1 padding OBUs, which are taken out first. See
+// stripAv1PaddingObus().
 bool FFmpegVideoDecoder::tryInitializeAmfDecoder(PDECODER_PARAMETERS params)
 {
 #ifdef Q_OS_WIN32
@@ -1780,7 +1799,7 @@ bool FFmpegVideoDecoder::tryInitializeAmfDecoder(PDECODER_PARAMETERS params)
     else if (allCodecs && (params->videoFormat & VIDEO_FORMAT_MASK_H264)) {
         decoderName = "h264_amf";
     }
-    else if (allCodecs && (params->videoFormat & VIDEO_FORMAT_MASK_AV1)) {
+    else if (params->videoFormat & VIDEO_FORMAT_MASK_AV1) {
         decoderName = "av1_amf";
     }
     else {
@@ -1811,6 +1830,9 @@ bool FFmpegVideoDecoder::tryInitializeAmfDecoder(PDECODER_PARAMETERS params)
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "Decoding with %s",
                         decoderName);
+
+            // See stripAv1PaddingObus()
+            m_StripAv1Padding = strcmp(decoderName, "av1_amf") == 0;
             return true;
         }
     }
@@ -2444,7 +2466,10 @@ void FFmpegVideoDecoder::decoderThreadProc()
 
             // Waiting for input. All output frames have been received.
             // Block until we receive a new frame from the host.
-            if (!LiWaitForNextVideoFrame(&handle, &du)) {
+            enterDecodeCall("LiWaitForNextVideoFrame");
+            bool gotFrame = LiWaitForNextVideoFrame(&handle, &du);
+            leaveDecodeCall();
+            if (!gotFrame) {
                 // This might be a signal from the main thread to exit
                 continue;
             }
@@ -2469,9 +2494,12 @@ void FFmpegVideoDecoder::decoderThreadProc()
             int err;
             do {
                 int64_t receiveStartUs = m_DecodeCallLog ? (int64_t)LiGetMicroseconds() : 0;
+                enterDecodeCall("avcodec_receive_frame");
                 err = avcodec_receive_frame(m_VideoDecoderCtx, frame);
+                leaveDecodeCall();
                 if (m_DecodeCallLog) {
                     int64_t receiveEndUs = (int64_t)LiGetMicroseconds();
+                    logSlowDecodeCall("avcodec_receive_frame", receiveStartUs, receiveEndUs);
                     if (err == 0) {
                         countDecodedFrame(receiveStartUs, receiveEndUs);
                     }
@@ -2489,7 +2517,13 @@ void FFmpegVideoDecoder::decoderThreadProc()
                     bool haveDu = takeFrameInfo(frame, &du);
                     m_FramesOut++;
 
+                    int64_t deliverStartUs = m_DecodeCallLog ? (int64_t)LiGetMicroseconds() : 0;
+                    enterDecodeCall("deliverDecodedFrame");
                     deliverDecodedFrame(frame, haveDu ? &du : nullptr);
+                    leaveDecodeCall();
+                    if (m_DecodeCallLog) {
+                        logSlowDecodeCall("deliverDecodedFrame", deliverStartUs, (int64_t)LiGetMicroseconds());
+                    }
                 }
                 else if (err == AVERROR(EAGAIN)) {
                     VIDEO_FRAME_HANDLE handle;
@@ -2715,6 +2749,154 @@ void FFmpegVideoDecoder::countDecodedFrame(int64_t receiveStartUs, int64_t recei
     m_DecodeCalls.periodStartUs = receiveEndUs;
 }
 
+void FFmpegVideoDecoder::enterDecodeCall(const char* call)
+{
+    if (!m_DecodeCallLog) {
+        return;
+    }
+    if (m_DecodeCallWatchdog == 0) {
+        m_DecodeCallWatchdog = SDL_AddTimer(250, decodeCallWatchdog, this);
+    }
+    m_CurrentDecodeCallStartUs = (int64_t)LiGetMicroseconds();
+    m_CurrentDecodeCallReportedUs = 0;
+    m_CurrentDecodeCall = call;
+}
+
+void FFmpegVideoDecoder::leaveDecodeCall()
+{
+    m_CurrentDecodeCall = nullptr;
+}
+
+// Runs on SDL's timer thread every 250 ms while ML_DECODE_CALL_LOG is set
+Uint32 FFmpegVideoDecoder::decodeCallWatchdog(Uint32 interval, void* param)
+{
+    auto me = (FFmpegVideoDecoder*)param;
+    const char* call = me->m_CurrentDecodeCall;
+    if (call != nullptr) {
+        int64_t nowUs = (int64_t)LiGetMicroseconds();
+        int64_t inCallUs = nowUs - me->m_CurrentDecodeCallStartUs;
+        // Once past 250 ms, then about every second
+        if (inCallUs >= 250000 && nowUs - me->m_CurrentDecodeCallReportedUs >= 1000000) {
+            me->m_CurrentDecodeCallReportedUs = nowUs;
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Decoder thread: still in %s after %.0f ms (frames in %d, out %d)",
+                        call, inCallUs / 1000.0, me->m_FramesIn, me->m_FramesOut);
+        }
+    }
+    return interval;
+}
+
+// Removes AV1 padding OBUs from a temporal unit, returning its new size.
+//
+// Sunshine ends every AV1 frame it sends in parts while it encodes with a padding OBU
+// that fills out the frame's last packet. Decoders are meant to discard padding, and
+// FFmpeg's AV1 decoder and dav1d do, but AMD's (av1_amf, Radeon 780M, driver
+// 32.0.22024.13003) stops returning from avcodec_send_packet() after some tens of such
+// frames, which stalls the stream and then quitting. Without the padding it decodes them
+// all. Anything that doesn't parse as an OBU with a size field is left as it is.
+int FFmpegVideoDecoder::stripAv1PaddingObus(uint8_t* data, int size)
+{
+    int in = 0;
+    int out = 0;
+
+    while (in < size) {
+        uint8_t header = data[in];
+        if ((header & 0x80) || !(header & 0x02)) {
+            break;
+        }
+
+        int pos = in + 1 + ((header & 0x04) ? 1 : 0);
+        uint64_t payload = 0;
+        bool sizeRead = false;
+        for (int shift = 0; pos < size && shift <= 56; shift += 7) {
+            uint8_t byte = data[pos++];
+            payload |= (uint64_t)(byte & 0x7F) << shift;
+            if (!(byte & 0x80)) {
+                sizeRead = true;
+                break;
+            }
+        }
+        if (!sizeRead || payload > (uint64_t)(size - pos)) {
+            break;
+        }
+
+        int end = pos + (int)payload;
+        if (((header >> 3) & 0x0F) != 15) {
+            if (out != in) {
+                memmove(data + out, data + in, end - in);
+            }
+            out += end - in;
+        }
+        in = end;
+    }
+
+    // Keep whatever couldn't be parsed
+    if (in < size) {
+        if (out != in) {
+            memmove(data + out, data + in, size - in);
+        }
+        out += size - in;
+    }
+
+    return out;
+}
+
+// With ML_DECODE_CALL_LOG, names any single decoder call that held up the decoder thread
+void FFmpegVideoDecoder::logSlowDecodeCall(const char* call, int64_t startUs, int64_t endUs)
+{
+    if (endUs - startUs >= 50000) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Decoder thread: %s took %.1f ms (frames in %d, out %d)",
+                    call,
+                    (endUs - startUs) / 1000.0,
+                    m_FramesIn,
+                    m_FramesOut);
+    }
+}
+
+// ML_DUMP_VIDEO=<path prefix> appends every frame, as it is handed to the decoder, to
+// <prefix>-<time>.obu (AV1, low-overhead OBUs), .h265 or .h264 (Annex B). Each decoder
+// gets its own file, as the decoder is recreated for some window changes. FFmpeg reads
+// these back with -f obu, -f hevc or -f h264.
+void FFmpegVideoDecoder::dumpVideoPacket(const AVPacket* packet)
+{
+    if (!m_VideoDumpTried) {
+        m_VideoDumpTried = true;
+
+        QString prefix = qEnvironmentVariable("ML_DUMP_VIDEO");
+        if (prefix.isEmpty()) {
+            return;
+        }
+
+        const char* extension = (m_VideoFormat & VIDEO_FORMAT_MASK_AV1) ? "obu" :
+                                (m_VideoFormat & VIDEO_FORMAT_MASK_H265) ? "h265" : "h264";
+        QString path = QString("%1-%2.%3").arg(prefix).arg(QDateTime::currentMSecsSinceEpoch()).arg(extension);
+#ifdef Q_OS_WIN32
+        if (_wfopen_s(&m_VideoDump, (const wchar_t*)path.utf16(), L"wb") != 0) {
+            m_VideoDump = nullptr;
+        }
+#else
+        m_VideoDump = fopen(QFile::encodeName(path).constData(), "wb");
+#endif
+        if (m_VideoDump == nullptr) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Unable to open video dump '%s'",
+                        qPrintable(path));
+            return;
+        }
+
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Dumping video to %s",
+                    qPrintable(path));
+    }
+
+    if (m_VideoDump != nullptr) {
+        // Flushed every frame, so a crash leaves everything up to it
+        fwrite(packet->data, 1, packet->size, m_VideoDump);
+        fflush(m_VideoDump);
+    }
+}
+
 int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
 {
     PLENTRY entry = du->bufferList;
@@ -2746,6 +2928,10 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
         entry = entry->next;
     }
 
+    if (m_StripAv1Padding) {
+        offset = stripAv1PaddingObus(reinterpret_cast<uint8_t*>(m_DecodeBuffer.data()), offset);
+    }
+
     m_Pkt->data = reinterpret_cast<uint8_t*>(m_DecodeBuffer.data());
     m_Pkt->size = offset;
 
@@ -2760,10 +2946,18 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
     // DU in m_FrameInfoQueue even when the decoder drops a frame. See takeFrameInfo().
     m_Pkt->pts = du->frameNumber;
 
+    dumpVideoPacket(m_Pkt);
+
     int64_t sendStartUs = m_DecodeCallLog ? (int64_t)LiGetMicroseconds() : 0;
+    enterDecodeCall("avcodec_send_packet");
     err = avcodec_send_packet(m_VideoDecoderCtx, m_Pkt);
-    if (m_DecodeCallLog && err >= 0) {
-        countDecodeSend(startUs, sendStartUs, (int64_t)LiGetMicroseconds());
+    leaveDecodeCall();
+    if (m_DecodeCallLog) {
+        int64_t sendEndUs = (int64_t)LiGetMicroseconds();
+        logSlowDecodeCall("avcodec_send_packet", sendStartUs, sendEndUs);
+        if (err >= 0) {
+            countDecodeSend(startUs, sendStartUs, sendEndUs);
+        }
     }
     if (err < 0) {
         char errorstring[512];
