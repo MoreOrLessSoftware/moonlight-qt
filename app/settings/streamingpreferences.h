@@ -203,6 +203,12 @@ public:
     Q_INVOKABLE bool renameVideoPreset(const QString& oldName, const QString& newName);
     Q_INVOKABLE bool moveVideoPresetTo(const QString& name, int newIndex);
 
+    // Where the main window goes and how big it is when Moonlight starts: where it was
+    // when Moonlight was last closed, if that's still on a screen, otherwise a default
+    // size centred on the primary screen. Like the presets, this is stored immediately.
+    Q_INVOKABLE QRect uiWindowGeometry();
+    static void saveUiWindowGeometry(const QRect& geometry);
+
     // Directly accessible members for preferences
     int width;
     int height;

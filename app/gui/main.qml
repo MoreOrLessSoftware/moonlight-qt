@@ -19,8 +19,9 @@ ApplicationWindow {
     property bool clearOnBack: false
 
     id: window
+    // The real size and position are set from the saved ones before the window is shown
     width: 1280
-    height: 600
+    height: 800
 
     // Material 2 (Qt before 6.5, like the distro Qt the Linux builds use) uppercases
     // the text of buttons and tabs. Keep it as written, like Material 3 does. Only
@@ -42,6 +43,14 @@ ApplicationWindow {
     Component.onCompleted: {
         // Show the window according to the user's preferences
         if (SystemProperties.hasDesktopEnvironment) {
+            // Come back where the window was last time, at the same size. A maximized
+            // window keeps this as the size it goes back to when it's restored.
+            var geometry = StreamingPreferences.uiWindowGeometry()
+            window.x = geometry.x
+            window.y = geometry.y
+            window.width = geometry.width
+            window.height = geometry.height
+
             if (StreamingPreferences.uiDisplayMode == StreamingPreferences.UI_MAXIMIZED) {
                 window.showMaximized()
             }

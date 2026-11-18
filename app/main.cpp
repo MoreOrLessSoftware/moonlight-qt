@@ -4,6 +4,7 @@
 #include <QQmlContext>
 #include <QIcon>
 #include <QQuickStyle>
+#include <QQuickWindow>
 #include <QMutex>
 #include <QtDebug>
 #include <QNetworkProxyFactory>
@@ -1047,6 +1048,16 @@ int main(int argc, char *argv[])
     }
 
     int err = app.exec();
+
+    // Remember where the window was and how big it was for next time. Only a plain
+    // window counts: a maximized or full-screen window isn't the size it'll come back
+    // as (that's the UI display mode setting's job), and a minimized one isn't anywhere.
+    if (hasGUI && commandLineParserResult == GlobalCommandLineParser::NormalStartRequested) {
+        QQuickWindow* window = qobject_cast<QQuickWindow*>(engine.rootObjects().value(0));
+        if (window != nullptr && window->windowStates() == Qt::WindowNoState) {
+            StreamingPreferences::saveUiWindowGeometry(window->geometry());
+        }
+    }
 
     // Give worker tasks time to properly exit. Fixes PendingQuitTask
     // sometimes freezing and blocking process exit.

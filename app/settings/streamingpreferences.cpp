@@ -4,6 +4,8 @@
 #include <QSettings>
 #include <QTranslator>
 #include <QCoreApplication>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QLocale>
 #include <QReadWriteLock>
 #include <QtMath>
@@ -42,6 +44,7 @@
 #define SER_CONNWARNINGS "connwarnings"
 #define SER_CONFWARNINGS "confwarnings"
 #define SER_UIDISPLAYMODE "uidisplaymode"
+#define SER_UIWINDOWGEOMETRY "uiwindowgeometry"
 #define SER_RICHPRESENCE "richpresence"
 #define SER_GAMEPADMOUSE "gamepadmouse"
 #define SER_DEFAULTVER "defaultver"
@@ -780,4 +783,46 @@ bool StreamingPreferences::moveVideoPresetTo(const QString& name, int newIndex)
     storeVideoPresets(presets);
     emit videoPresetsChanged();
     return true;
+}
+
+QRect StreamingPreferences::uiWindowGeometry()
+{
+    QSettings settings;
+    QRect saved = settings.value(SER_UIWINDOWGEOMETRY).toRect();
+
+    if (saved.isValid()) {
+        for (QScreen* screen : QGuiApplication::screens()) {
+            QRect available = screen->availableGeometry();
+
+            // The top of the window (where the title bar goes) has to be on this screen
+            // enough to grab, or a screen that's since been removed or rearranged could
+            // leave the window somewhere it can't be reached
+            QRect top(saved.x(), saved.y(), saved.width(), 1);
+            if (saved.y() < available.top() || top.intersected(available).width() < 100) {
+                continue;
+            }
+
+            // Don't come back bigger than the screen, if its resolution has gone down
+            saved.setWidth(qMin(saved.width(), available.width()));
+            saved.setHeight(qMin(saved.height(), available.height()));
+            return saved;
+        }
+    }
+
+    // Nothing usable was saved, so start centred on the primary screen
+    // at a default size, made smaller if the screen is
+    QRect available(0, 0, 1280, 800);
+    if (QScreen* screen = QGuiApplication::primaryScreen()) {
+        available = screen->availableGeometry();
+    }
+
+    QRect geometry(0, 0, qMin(1280, available.width() * 9 / 10), qMin(800, available.height() * 9 / 10));
+    geometry.moveCenter(available.center());
+    return geometry;
+}
+
+void StreamingPreferences::saveUiWindowGeometry(const QRect& geometry)
+{
+    QSettings settings;
+    settings.setValue(SER_UIWINDOWGEOMETRY, geometry);
 }
