@@ -305,12 +305,14 @@ CenteredGridView {
                     title: qsTr("Launch Game with Preset")
                     initiator: appContextMenuLoader.parent
 
+                    // The items are created under the menu's content item, since the menu
+                    // itself isn't an Item, and addItem() then moves them into the menu
                     function addPlaceholder(text) {
-                        addItem(presetMenuItemComponent.createObject(presetSubMenu, {"text": text, "enabled": false}))
+                        addItem(presetMenuItemComponent.createObject(presetSubMenu.contentItem, {"text": text, "enabled": false}))
                     }
 
                     function addPreset(name) {
-                        var item = presetMenuItemComponent.createObject(presetSubMenu, {"text": name})
+                        var item = presetMenuItemComponent.createObject(presetSubMenu.contentItem, {"text": name})
                         item.triggered.connect(function() { launchWithPreset(name) })
                         addItem(item)
                     }

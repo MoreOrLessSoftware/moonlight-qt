@@ -79,20 +79,29 @@ AutoResizingComboBox {
         }
     }
 
+    property bool initialized: false
+
     function initialize() {
         reload("")
+        initialized = true
+    }
 
-        // Fall back to the unsaved entry as soon as a setting no
-        // longer matches the selected preset
-        StreamingPreferences.displayModeChanged.connect(updateSelection)
-        StreamingPreferences.bitrateChanged.connect(updateSelection)
-        StreamingPreferences.unlockBitrateChanged.connect(updateSelection)
-        StreamingPreferences.enableVsyncChanged.connect(updateSelection)
-        StreamingPreferences.framePacingChanged.connect(updateSelection)
-        StreamingPreferences.videoCodecConfigChanged.connect(updateSelection)
-        StreamingPreferences.enableHdrChanged.connect(updateSelection)
-        StreamingPreferences.enableYUV444Changed.connect(updateSelection)
-        StreamingPreferences.windowModeChanged.connect(updateSelection)
+    // Fall back to the unsaved entry as soon as a setting no longer matches the
+    // selected preset. Connections (rather than connect()) lets go of the signals
+    // when this box is destroyed, like when the settings page is closed.
+    Connections {
+        target: StreamingPreferences
+        enabled: initialized
+
+        function onDisplayModeChanged() { updateSelection("") }
+        function onBitrateChanged() { updateSelection("") }
+        function onUnlockBitrateChanged() { updateSelection("") }
+        function onEnableVsyncChanged() { updateSelection("") }
+        function onFramePacingChanged() { updateSelection("") }
+        function onVideoCodecConfigChanged() { updateSelection("") }
+        function onEnableHdrChanged() { updateSelection("") }
+        function onEnableYUV444Changed() { updateSelection("") }
+        function onWindowModeChanged() { updateSelection("") }
     }
 
     // ::onActivated must be used, as it only listens for when the index is changed by a human
