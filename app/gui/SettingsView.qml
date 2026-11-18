@@ -4,6 +4,9 @@ import QtQuick.Controls.Material 2.2
 import QtQuick.Layouts 1.2
 import QtQuick.Window 2.2
 
+// For Binding.restoreMode
+import QtQml 2.15
+
 import StreamingPreferences 1.0
 import ComputerManager 1.0
 import SdlGamepadKeyNavigation 1.0
@@ -230,7 +233,13 @@ Item {
         Item {
             id: videoTab
             visible: tabBar.currentIndex === 0
-            width: parent.width
+            // A tab only follows the page's width while it's showing. Hidden tabs keep
+            // the width they had, so resizing the window only lays out the one tab.
+            Binding on width {
+                value: settingsFlickable.width
+                when: videoTab.visible
+                restoreMode: Binding.RestoreNone
+            }
             height: Math.max(videoColumn1.height, videoColumn2.height)
 
             Column {
@@ -2100,7 +2109,11 @@ Item {
         Item {
             id: audioTab
             visible: tabBar.currentIndex === 1
-            width: parent.width
+            Binding on width {
+                value: settingsFlickable.width
+                when: audioTab.visible
+                restoreMode: Binding.RestoreNone
+            }
             height: audioColumn1.height
 
             Column {
@@ -2208,7 +2221,11 @@ Item {
         Item {
             id: inputTab
             visible: tabBar.currentIndex === 2
-            width: parent.width
+            Binding on width {
+                value: settingsFlickable.width
+                when: inputTab.visible
+                restoreMode: Binding.RestoreNone
+            }
             height: Math.max(inputColumn1.height, inputColumn2.height)
 
             Column {
@@ -2596,7 +2613,11 @@ Item {
         Item {
             id: otherTab
             visible: tabBar.currentIndex === 3
-            width: parent.width
+            Binding on width {
+                value: settingsFlickable.width
+                when: otherTab.visible
+                restoreMode: Binding.RestoreNone
+            }
             height: Math.max(otherColumn1.height, otherColumn2.height)
 
             Column {
