@@ -120,6 +120,13 @@ ApplicationWindow {
         }
     }
 
+    // Same as the toolbar's back arrow, which only shows once there's somewhere to go back to
+    function goBackWithMouse() {
+        if (stackView.depth > 1) {
+            goBack()
+        }
+    }
+
     StackView {
         id: stackView
         anchors.fill: parent
@@ -167,6 +174,16 @@ ApplicationWindow {
         Keys.onHangupPressed: {
             settingsButton.clicked()
         }
+    }
+
+    // The mouse's back button goes back, like the toolbar's back arrow. It only
+    // takes that button, so every other click, scroll and hover gets through to
+    // the page underneath.
+    MouseArea {
+        anchors.fill: stackView
+        z: 1
+        acceptedButtons: Qt.BackButton
+        onClicked: goBackWithMouse()
     }
 
     // This timer keeps us polling for 5 minutes of inactivity
@@ -503,6 +520,13 @@ ApplicationWindow {
                 ToolTip.visible: hovered
                 ToolTip.text: qsTr("Settings") + (settingsShortcut.nativeText ? (" ("+settingsShortcut.nativeText+")") : "")
             }
+        }
+
+        // The mouse's back button works over the toolbar too
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.BackButton
+            onClicked: goBackWithMouse()
         }
     }
 
