@@ -27,6 +27,10 @@ public:
 
     Q_INVOKABLE int getConnectedGamepads();
 
+signals:
+    // LB (-1) or RB (+1) was pressed, to move to the previous or next tab of a page
+    void tabSwitchRequested(int delta);
+
 private:
     void sendKey(QEvent::Type type, Qt::Key key, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
 

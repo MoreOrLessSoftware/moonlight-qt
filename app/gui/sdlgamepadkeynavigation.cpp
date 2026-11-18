@@ -196,6 +196,14 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
                 // by the control in focus.
                 sendKey(type, Qt::Key_Hangup);
                 break;
+            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                // Sent as a signal rather than a key so the focused control
+                // can't swallow it before the page sees it
+                if (type == QEvent::Type::KeyPress) {
+                    emit tabSwitchRequested(event.cbutton.button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER ? -1 : 1);
+                }
+                break;
             default:
                 break;
             }
