@@ -253,9 +253,14 @@ ApplicationWindow {
         anchors.topMargin: 5
         anchors.bottomMargin: 5
 
+        // On the apps screen and in settings the title sits beside the back arrow,
+        // rather than centred across the toolbar
+        readonly property bool titleBesideBackButton: stackView.currentItem instanceof AppView ||
+                                                      stackView.currentItem instanceof SettingsView
+
         Label {
             id: titleLabel
-            visible: toolBar.width > 700 && !(stackView.currentItem instanceof AppView)
+            visible: toolBar.width > 700 && !toolBar.titleBesideBackButton
             anchors.fill: parent
             text: stackView.currentItem.objectName
             font.pointSize: 20
@@ -290,8 +295,7 @@ ApplicationWindow {
                 font.pointSize: titleLabel.font.pointSize
                 elide: Label.ElideRight
 
-                // On the apps screen the computer name sits beside the back arrow
-                horizontalAlignment: stackView.currentItem instanceof AppView ? Qt.AlignLeft : Qt.AlignHCenter
+                horizontalAlignment: toolBar.titleBesideBackButton ? Qt.AlignLeft : Qt.AlignHCenter
                 verticalAlignment: Qt.AlignVCenter
                 Layout.fillWidth: true
 
