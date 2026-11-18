@@ -23,7 +23,7 @@ An in-stream menu, drawn over the stream without interrupting it.
 
 Save the Video Settings (resolution, frame rate, codec, bitrate, display mode, V-Sync, frame pacing, HDR and 4:4:4) as named presets, then switch between them from the settings page or the toolbar, or launch an app with a preset from its context menu. Presets can be renamed, reordered and deleted, and `--preset <name>` selects one from the command line.
 
-[![Settings](./screenshots/v1.0.0/settings.webp)](https://raw.githubusercontent.com/MoreOrLessSoftware/moonlight-qt/mlsoft-custom2/screenshots/v1.0.0/settings.webp)
+[![Settings](./screenshots/v1.0.4/settings.webp)](https://raw.githubusercontent.com/MoreOrLessSoftware/moonlight-qt/mlsoft-custom2/screenshots/v1.0.4/settings.webp)
 
 ### Frame Pacing
 
