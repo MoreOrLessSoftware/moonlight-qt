@@ -638,6 +638,17 @@ int main(int argc, char *argv[])
     qputenv("QSG_RENDER_LOOP", "basic");
 #endif
 
+#if defined(Q_OS_WIN32) && QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    if (!qEnvironmentVariableIsSet("QT_D3D_MAX_FRAME_LATENCY")) {
+        // Don't have Qt's D3D11 swapchain wait on its frame latency waitable object.
+        // With the basic render loop, that wait often runs into its one second
+        // timeout while the window is being resized, so dragging the window's edge
+        // stalls for a second at a time every couple of seconds. Without it, the
+        // GUI is throttled by Present() instead.
+        qputenv("QT_D3D_MAX_FRAME_LATENCY", "0");
+    }
+#endif
+
 #if defined(Q_OS_DARWIN) && defined(QT_DEBUG) && !defined(HAVE_LIBPLACEBO_VULKAN)
     // Enable Metal valiation for debug builds without libplacebo
     //
