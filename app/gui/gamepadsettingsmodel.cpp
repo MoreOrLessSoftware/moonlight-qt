@@ -1,5 +1,7 @@
 #include "gamepadsettingsmodel.h"
 
+#include <algorithm>
+
 // How often to look for gamepads that came or went
 #define REFRESH_INTERVAL_MS 1000
 
@@ -85,6 +87,41 @@ void GamepadSettingsModel::refresh()
     }
 
     loadCurrent();
+    loadSaved();
+}
+
+void GamepadSettingsModel::loadSaved()
+{
+    QStringList connected;
+    for (const Gamepad& gamepad : std::as_const(m_Gamepads)) {
+        connected.append(GamepadSettings::storedKey(gamepad.key));
+    }
+
+    QVariantList saved;
+    const QStringList keys = GamepadSettings::savedDeviceKeys();
+    for (const QString& key : keys) {
+        QVariantMap entry;
+        entry["key"] = key;
+        entry["name"] = GamepadSettings::savedDisplayName(key);
+        entry["connected"] = connected.contains(key);
+        saved.append(entry);
+    }
+    std::sort(saved.begin(), saved.end(), [](const QVariant& a, const QVariant& b) {
+        return QString::localeAwareCompare(a.toMap()["name"].toString(), b.toMap()["name"].toString()) < 0;
+    });
+
+    if (saved != m_SavedGamepads) {
+        m_SavedGamepads = saved;
+        emit savedGamepadsChanged();
+    }
+}
+
+void GamepadSettingsModel::forgetSaved(const QString& key)
+{
+    GamepadSettings::remove(key);
+
+    // It may be connected, so its name and settings shown here change too
+    refresh();
 }
 
 void GamepadSettingsModel::loadCurrent()

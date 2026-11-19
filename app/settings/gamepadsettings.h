@@ -4,6 +4,7 @@
 #include "streaming/input/gyrofilter.h"
 
 #include <QString>
+#include <QStringList>
 
 // Settings kept for each gamepad, stored under gamepads/<device key>/, with a group per kind of
 // setting where there are several (gyro/). A gamepad that has never been set up gets the defaults.
@@ -28,6 +29,17 @@ namespace GamepadSettings
 
     // Forgets everything saved for the gamepad, including its name
     void remove(const QString& deviceKey);
+
+    // Every gamepad with something saved, connected or not. These are keys as stored (see
+    // storedKey()), which work as keys for everything here.
+    QStringList savedDeviceKeys();
+
+    // A device key as it's stored: any '/' or '\' becomes '_', since those would split it into
+    // more settings groups
+    QString storedKey(const QString& deviceKey);
+
+    // The name to show for a saved gamepad, without it connected
+    QString savedDisplayName(const QString& deviceKey);
 
     // Swap A/B and X/Y (a Nintendo-style layout). Until it's set for a gamepad, it follows what
     // was once a setting for all gamepads, so turning that on carries over.

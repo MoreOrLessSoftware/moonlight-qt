@@ -2590,6 +2590,16 @@ Item {
                             ToolTip.visible: hovered
                             ToolTip.text: qsTr("Reads Xbox controllers through GameInput for lower input latency, Guide/Share buttons and impulse trigger rumble. Requires the GameInput runtime; falls back to the standard gamepad support when it is unavailable.")
                         }
+
+                        Button {
+                            text: qsTr("Saved Gamepads…")
+                            onClicked: savedGamepadsDialog.open()
+
+                            ToolTip.delay: 1000
+                            ToolTip.timeout: 5000
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("See which gamepads have settings kept for them, and forget any of them")
+                        }
                     }
                 }
 
@@ -2642,6 +2652,59 @@ Item {
                         text: qsTr("Forget the name and all settings of '%1'? It goes back to the defaults.").arg(perGamepadModel.currentName)
                         standardButtons: Dialog.Yes | Dialog.No
                         onAccepted: perGamepadModel.forgetCurrent()
+                    }
+
+                    // Every gamepad with saved settings, connected or not, to forget one at a time
+                    // (opened from Gamepad Settings)
+                    NavigableDialog {
+                        id: savedGamepadsDialog
+                        title: qsTr("Saved Gamepads")
+                        standardButtons: Dialog.Close
+
+                        onOpened: {
+                            // Give the dialog focus so gamepad and keyboard navigation work in it
+                            standardButton(Dialog.Close).forceActiveFocus(Qt.TabFocus)
+                        }
+
+                        ColumnLayout {
+                            spacing: 5
+
+                            Label {
+                                Layout.maximumWidth: 400
+                                wrapMode: Text.Wrap
+                                text: perGamepadModel.savedGamepads.length > 0 ?
+                                          qsTr("Gamepads with settings kept for them:") :
+                                          qsTr("No gamepads have settings kept for them.")
+                            }
+
+                            Repeater {
+                                model: perGamepadModel.savedGamepads
+
+                                RowLayout {
+                                    spacing: 10
+                                    Layout.fillWidth: true
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        Layout.maximumWidth: 300
+                                        text: modelData.name
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Label {
+                                        text: qsTr("Connected")
+                                        font.italic: true
+                                        opacity: 0.7
+                                        visible: modelData.connected
+                                    }
+
+                                    Button {
+                                        text: qsTr("Forget")
+                                        onClicked: perGamepadModel.forgetSaved(modelData.key)
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     Column {
@@ -2718,25 +2781,29 @@ Item {
                             visible: perGamepadModel.hasGyro
                         }
 
-                        CheckBox {
-                            width: parent.width
-                            text: qsTr("Filter gyro and accelerometer readings")
-                            font.pointSize: 12
-                            visible: perGamepadModel.hasGyro
-                            checked: perGamepadModel.gyroFilterEnabled
-                            onClicked: perGamepadModel.gyroFilterEnabled = checked
-
-                            ToolTip.delay: 1000
-                            ToolTip.timeout: 5000
-                            ToolTip.visible: hovered
-                            ToolTip.text: qsTr("For gamepads whose gyro drifts or jitters at rest. Off sends the readings to the host as they are.")
-                        }
-
                         Row {
+                            id: gyroFilterRow
+                            width: parent.width
                             spacing: 5
                             visible: perGamepadModel.hasGyro
 
+                            CheckBox {
+                                // Leave room for the button, shortening the text if it must
+                                width: Math.min(implicitWidth, gyroFilterRow.width - gyroCalibrateButton.width - gyroFilterRow.spacing)
+                                text: qsTr("Filter gyro and accelerometer readings")
+                                font.pointSize: 12
+                                anchors.verticalCenter: gyroCalibrateButton.verticalCenter
+                                checked: perGamepadModel.gyroFilterEnabled
+                                onClicked: perGamepadModel.gyroFilterEnabled = checked
+
+                                ToolTip.delay: 1000
+                                ToolTip.timeout: 5000
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("For gamepads whose gyro drifts or jitters at rest. Off sends the readings to the host as they are.")
+                            }
+
                             Button {
+                                id: gyroCalibrateButton
                                 text: qsTr("Calibrate…")
                                 onClicked: stackView.push("qrc:/gui/GyroTestView.qml", { "initialIndex": perGamepadModel.currentIndex })
 
@@ -2744,16 +2811,6 @@ Item {
                                 ToolTip.timeout: 5000
                                 ToolTip.visible: hovered
                                 ToolTip.text: qsTr("Adjust the filtering live, with a crosshair and the gyro's readings")
-                            }
-
-                            Button {
-                                text: qsTr("Reset")
-                                onClicked: perGamepadModel.resetGyroSettings()
-
-                                ToolTip.delay: 1000
-                                ToolTip.timeout: 5000
-                                ToolTip.visible: hovered
-                                ToolTip.text: qsTr("Put the gyro filtering back to its defaults")
                             }
                         }
                     }

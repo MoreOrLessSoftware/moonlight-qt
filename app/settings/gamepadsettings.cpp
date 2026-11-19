@@ -1,5 +1,6 @@
 #include "gamepadsettings.h"
 
+#include <QObject>
 #include <QRegularExpression>
 #include <QSettings>
 
@@ -19,12 +20,10 @@
 
 namespace {
 
-// A QSettings group for the device: '/' and '\' would split it into more groups
+// The QSettings group for the device
 QString deviceGroup(const QString& deviceKey)
 {
-    QString group = deviceKey;
-    group.replace('/', '_').replace('\\', '_');
-    return QStringLiteral(SER_GAMEPADS "/") + group;
+    return QStringLiteral(SER_GAMEPADS "/") + GamepadSettings::storedKey(deviceKey);
 }
 
 }
@@ -100,6 +99,30 @@ void GamepadSettings::saveCustomName(const QString& deviceKey, const QString& sd
         store.setValue(SER_CUSTOMNAME, name.trimmed());
     }
     store.endGroup();
+}
+
+QString GamepadSettings::storedKey(const QString& deviceKey)
+{
+    QString key = deviceKey;
+    key.replace('/', '_').replace('\\', '_');
+    return key;
+}
+
+QStringList GamepadSettings::savedDeviceKeys()
+{
+    QSettings store;
+    store.beginGroup(SER_GAMEPADS);
+    return store.childGroups();
+}
+
+QString GamepadSettings::savedDisplayName(const QString& deviceKey)
+{
+    QSettings store;
+    QString sdlName = store.value(deviceGroup(deviceKey) + "/" SER_NAME).toString();
+    if (sdlName.isEmpty()) {
+        sdlName = QObject::tr("Gamepad");
+    }
+    return displayName(deviceKey, sdlName);
 }
 
 void GamepadSettings::remove(const QString& deviceKey)

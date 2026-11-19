@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QStringList>
 #include <QTimer>
+#include <QVariantList>
 #include <QVector>
 
 // The connected gamepads and the settings of the one selected (see GamepadSettings), for the
@@ -20,6 +21,9 @@ class GamepadSettingsModel : public QObject
     Q_PROPERTY(QString currentName READ currentName NOTIFY currentChanged)
     Q_PROPERTY(QString currentDefaultName READ currentDefaultName NOTIFY currentChanged)
     Q_PROPERTY(bool hasGyro READ hasGyro NOTIFY currentChanged)
+
+    // Every gamepad with saved settings, connected or not: [{ key, name, connected }], by name
+    Q_PROPERTY(QVariantList savedGamepads READ savedGamepads NOTIFY savedGamepadsChanged)
 
     Q_PROPERTY(bool swapFaceButtons READ swapFaceButtons WRITE setSwapFaceButtons NOTIFY swapFaceButtonsChanged)
 
@@ -46,6 +50,11 @@ public:
 
     // Forgets everything saved for the selected gamepad, its name included
     Q_INVOKABLE void forgetCurrent();
+
+    // The same for any gamepad in savedGamepads
+    Q_INVOKABLE void forgetSaved(const QString& key);
+
+    QVariantList savedGamepads() const { return m_SavedGamepads; }
 
     QStringList gamepadNames() const;
     int currentIndex() const { return m_CurrentIndex; }
@@ -78,6 +87,7 @@ signals:
     void currentChanged();
     void swapFaceButtonsChanged();
     void gyroSettingsChanged();
+    void savedGamepadsChanged();
 
 private:
     struct Gamepad {
@@ -93,11 +103,13 @@ private:
 
     static QVector<Gamepad> connectedGamepads();
     void loadCurrent();
+    void loadSaved();
     void saveGyro();
 
     QVector<Gamepad> m_Gamepads;
     int m_CurrentIndex;
     bool m_SwapFaceButtons;
     GyroFilterSettings m_Gyro;
+    QVariantList m_SavedGamepads;
     QTimer m_RefreshTimer;
 };
