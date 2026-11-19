@@ -62,6 +62,28 @@ Support for [PyroWave](https://github.com/Themaister/pyrowave), an experimental 
 - GameInput support for Xbox controllers on Windows, for lower input latency, the Guide and Share buttons, Elite paddles and impulse trigger rumble.
 - Ctrl+Alt+Shift+W disconnects without quitting the host app.
 
+### Per-Gamepad Settings
+
+Settings for each gamepad, on the Input tab. Gamepads are remembered by their serial (a Bluetooth controller's address), so two of the same model keep separate settings.
+
+- Rename a gamepad; default names include the end of its address.
+- Swap A/B and X/Y (a Nintendo-style layout) for each gamepad.
+- Forget a gamepad's settings, or open **Saved Gamepads…** to forget any gamepad with saved settings, connected or not.
+
+[![Input Settings](./screenshots/v1.1.0/input_settings.webp)](https://raw.githubusercontent.com/MoreOrLessSoftware/moonlight-qt/mlsoft-custom2/screenshots/v1.1.0/input_settings.webp)
+
+### Gyro Filtering
+
+Optional filtering of gyro and accelerometer readings for gamepads with a gyro, for controllers too noisy or drifty to use (or for Steam to calibrate) as they are. Off unless turned on for a gamepad.
+
+- Removes drift while the gamepad is held still.
+- Smooths small movements and applies a small deadzone, leaving fast movements untouched.
+- Corrects the accelerometer's scale.
+
+**Calibrate…** opens a live view with a crosshair and graphs of raw and filtered readings, to tune the smoothing and deadzone while moving the gamepad.
+
+[![Gyro Calibration](./screenshots/v1.1.0/gyro_calibration.webp)](https://raw.githubusercontent.com/MoreOrLessSoftware/moonlight-qt/mlsoft-custom2/screenshots/v1.1.0/gyro_calibration.webp)
+
 ### Other
 
 - Reorganized settings page.
