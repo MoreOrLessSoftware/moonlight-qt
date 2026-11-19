@@ -10,6 +10,11 @@
 #define AXIS_NAVIGATION_THRESHOLD 30000
 #define AXIS_CENTERED_THRESHOLD 8000
 
+#define POLLING_INTERVAL_MS 50
+#define SENSOR_POLLING_INTERVAL_MS 5
+
+SdlGamepadKeyNavigation* SdlGamepadKeyNavigation::s_Instance = nullptr;
+
 SdlGamepadKeyNavigation::SdlGamepadKeyNavigation(StreamingPreferences* prefs)
     : m_Prefs(prefs),
       m_Enabled(false),
@@ -20,10 +25,15 @@ SdlGamepadKeyNavigation::SdlGamepadKeyNavigation(StreamingPreferences* prefs)
 {
     m_PollingTimer = new QTimer(this);
     connect(m_PollingTimer, &QTimer::timeout, this, &SdlGamepadKeyNavigation::onPollingTimerFired);
+
+    s_Instance = this;
 }
 
 SdlGamepadKeyNavigation::~SdlGamepadKeyNavigation()
 {
+    if (s_Instance == this) {
+        s_Instance = nullptr;
+    }
     disable();
 }
 
@@ -209,6 +219,13 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
             }
             break;
         }
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+        case SDL_CONTROLLERSENSORUPDATE:
+            if (m_SensorListener) {
+                m_SensorListener(event.csensor);
+            }
+            break;
+#endif
         case SDL_CONTROLLERDEVICEADDED:
             SDL_GameController* gc = SDL_GameControllerOpen(event.cdevice.which);
             if (gc != nullptr) {
@@ -312,9 +329,15 @@ void SdlGamepadKeyNavigation::updateTimerState()
         // Flush events on the first poll
         m_FirstPoll = true;
 
-        // Poll every 50 ms for a new joystick event
-        m_PollingTimer->start(50);
+        // Poll every 50 ms for a new joystick event (more often for a sensor listener)
+        m_PollingTimer->start(m_SensorListener ? SENSOR_POLLING_INTERVAL_MS : POLLING_INTERVAL_MS);
     }
+}
+
+void SdlGamepadKeyNavigation::setSensorListener(std::function<void(const SDL_ControllerSensorEvent&)> listener)
+{
+    m_SensorListener = std::move(listener);
+    m_PollingTimer->setInterval(m_SensorListener ? SENSOR_POLLING_INTERVAL_MS : POLLING_INTERVAL_MS);
 }
 
 void SdlGamepadKeyNavigation::setUiNavMode(bool uiNavMode)

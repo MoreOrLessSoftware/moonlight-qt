@@ -11,6 +11,7 @@ import StreamingPreferences 1.0
 import ComputerManager 1.0
 import SdlGamepadKeyNavigation 1.0
 import SystemProperties 1.0
+import GamepadSettingsModel 1.0
 
 Item {
     id: settingsPage
@@ -2604,6 +2605,77 @@ Item {
                             ToolTip.timeout: 5000
                             ToolTip.visible: hovered
                             ToolTip.text: qsTr("Reads Xbox controllers through GameInput for lower input latency, Guide/Share buttons and impulse trigger rumble. Requires the GameInput runtime; falls back to the standard gamepad support when it is unavailable.")
+                        }
+                    }
+                }
+
+                // Settings kept for each gamepad (by its serial where it has one), for the
+                // gamepad picked here. Gyro is the only kind so far.
+                GroupBox {
+                    id: perGamepadSettingsGroupBox
+                    width: (parent.width - (parent.leftPadding + parent.rightPadding))
+                    padding: 12
+                    title: "<font color=\"skyblue\">" + qsTr("Per-Gamepad Settings") + "</font>"
+                    font.pointSize: 12
+
+                    GamepadSettingsModel {
+                        id: perGamepadModel
+                    }
+
+                    Column {
+                        anchors.fill: parent
+                        spacing: 5
+
+                        Label {
+                            width: parent.width
+                            wrapMode: Text.Wrap
+                            font.pointSize: 9
+                            text: qsTr("Connect a gamepad to change its settings.")
+                            visible: perGamepadModel.gamepadNames.length === 0
+                        }
+
+                        AutoResizingComboBox {
+                            id: perGamepadComboBox
+                            model: perGamepadModel.gamepadNames
+                            currentIndex: perGamepadModel.currentIndex
+                            visible: perGamepadModel.gamepadNames.length > 0
+                            // Also covers the arrow keys, which change the selection without activating
+                            onCurrentIndexChanged: perGamepadModel.currentIndex = currentIndex
+                            onCountChanged: recalculateWidth()
+                            Component.onCompleted: recalculateWidth()
+                        }
+
+                        Label {
+                            width: parent.width
+                            text: qsTr("Gyro")
+                            font.pointSize: 12
+                            font.bold: true
+                            topPadding: 10
+                            visible: perGamepadModel.gamepadNames.length > 0
+                        }
+
+                        Label {
+                            width: parent.width
+                            wrapMode: Text.Wrap
+                            text: qsTr("This gamepad has no gyro.")
+                            visible: perGamepadModel.gamepadNames.length > 0 && !perGamepadModel.hasGyro
+                        }
+
+                        GyroSettingsControls {
+                            width: parent.width
+                            gamepadModel: perGamepadModel
+                            visible: perGamepadModel.hasGyro
+                        }
+
+                        Button {
+                            text: qsTr("Test Gyro…")
+                            visible: perGamepadModel.hasGyro
+                            onClicked: stackView.push("qrc:/gui/GyroTestView.qml", { "initialIndex": perGamepadModel.currentIndex })
+
+                            ToolTip.delay: 1000
+                            ToolTip.timeout: 5000
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("Try these settings live, with a crosshair and the gyro's readings")
                         }
                     }
                 }

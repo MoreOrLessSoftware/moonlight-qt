@@ -3,9 +3,12 @@
 #include <Limelight.h>
 #include "SDL_compat.h"
 #include "settings/mappingmanager.h"
+#include "settings/gamepadsettings.h"
 #include "utils.h"
 
 #include <QtMath>
+
+#include <cfloat>
 
 #ifdef HAVE_GAMEINPUT
 #include "gameinput.h"
@@ -490,6 +493,60 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
 
 #if SDL_VERSION_ATLEAST(2, 0, 14)
 
+// GYRO_DEBUG=1 logs, once a second, what was sent to the host for each gamepad's motion sensors,
+// and every request from the host to change their reporting
+static bool motionDebugEnabled()
+{
+    static const bool enabled = qEnvironmentVariableIntValue("GYRO_DEBUG") != 0;
+    return enabled;
+}
+
+static void debugMotion(GamepadState* state, uint32_t timestamp, int sensor, bool sent, const float data[3])
+{
+    MotionDebugState& d = state->motionDebug;
+
+    if (d.start == 0 || SDL_TICKS_PASSED(timestamp, d.start + 1000)) {
+        if (d.start != 0) {
+            int n = qMax(d.gyroSent, 1);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Gamepad %d motion sent/s: gyro %d of %d samples, mean %.2f %.2f %.2f, max |gyro| %.2f deg/s | "
+                        "accel %d, range %.2f %.2f %.2f m/s2",
+                        state->index, d.gyroSent, d.gyroSamples,
+                        d.gyroSum[0] / n, d.gyroSum[1] / n, d.gyroSum[2] / n, d.gyroMax,
+                        d.accelSent,
+                        d.accelSent ? d.accelMax[0] - d.accelMin[0] : 0,
+                        d.accelSent ? d.accelMax[1] - d.accelMin[1] : 0,
+                        d.accelSent ? d.accelMax[2] - d.accelMin[2] : 0);
+        }
+        d.start = timestamp ? timestamp : 1;
+        d.gyroSent = d.accelSent = d.gyroSamples = 0;
+        d.gyroMax = 0;
+        for (int i = 0; i < 3; i++) {
+            d.gyroSum[i] = 0;
+            d.accelMin[i] = FLT_MAX;
+            d.accelMax[i] = -FLT_MAX;
+        }
+    }
+
+    if (sensor == SDL_SENSOR_GYRO) {
+        d.gyroSamples++;
+        if (sent) {
+            d.gyroSent++;
+            d.gyroMax = qMax(d.gyroMax, SDL_sqrtf(data[0] * data[0] + data[1] * data[1] + data[2] * data[2]));
+            for (int i = 0; i < 3; i++) {
+                d.gyroSum[i] += data[i];
+            }
+        }
+    }
+    else if (sent) {
+        d.accelSent++;
+        for (int i = 0; i < 3; i++) {
+            d.accelMin[i] = qMin(d.accelMin[i], data[i]);
+            d.accelMax[i] = qMax(d.accelMax[i], data[i]);
+        }
+    }
+}
+
 void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* event)
 {
     GamepadState* state = findStateForGamepad(event->which);
@@ -497,31 +554,45 @@ void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* eve
         return;
     }
 
+    // Every reading goes through the gamepad's filter, including the ones not sent: they all
+    // feed its calibration and smoothing. With filtering off it only converts units.
     switch (event->sensor) {
-    case SDL_SENSOR_ACCEL:
+    case SDL_SENSOR_ACCEL: {
+        float accel[3];
+        state->gyroFilter.processAccel(event->data, accel);
+
         if (state->accelReportPeriodMs &&
                 SDL_TICKS_PASSED(event->timestamp, state->lastAccelEventTime + state->accelReportPeriodMs) &&
                 memcmp(event->data, state->lastAccelEventData, sizeof(event->data)) != 0) {
             memcpy(state->lastAccelEventData, event->data, sizeof(event->data));
             state->lastAccelEventTime = event->timestamp;
 
-            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_ACCEL, event->data[0], event->data[1], event->data[2]);
+            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_ACCEL, accel[0], accel[1], accel[2]);
+            if (motionDebugEnabled()) {
+                debugMotion(state, event->timestamp, SDL_SENSOR_ACCEL, true, accel);
+            }
         }
         break;
-    case SDL_SENSOR_GYRO:
+    }
+    case SDL_SENSOR_GYRO: {
+        float dps[3];
+        state->gyroFilter.processGyro(event->timestamp, event->data, dps);
+
+        bool sent = false;
         if (state->gyroReportPeriodMs &&
                 SDL_TICKS_PASSED(event->timestamp, state->lastGyroEventTime + state->gyroReportPeriodMs) &&
                 memcmp(event->data, state->lastGyroEventData, sizeof(event->data)) != 0) {
             memcpy(state->lastGyroEventData, event->data, sizeof(event->data));
             state->lastGyroEventTime = event->timestamp;
 
-            // Convert rad/s to deg/s
-            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_GYRO,
-                                        event->data[0] * 57.2957795f,
-                                        event->data[1] * 57.2957795f,
-                                        event->data[2] * 57.2957795f);
+            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_GYRO, dps[0], dps[1], dps[2]);
+            sent = true;
+        }
+        if (motionDebugEnabled()) {
+            debugMotion(state, event->timestamp, SDL_SENSOR_GYRO, sent, dps);
         }
         break;
+    }
     }
 }
 
@@ -663,6 +734,22 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
 
         state->controller = controller;
         state->jsId = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(state->controller));
+
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+        if (SDL_GameControllerHasSensor(controller, SDL_SENSOR_GYRO)) {
+            GyroFilterSettings gyroSettings = GamepadSettings::loadGyro(GamepadSettings::deviceKey(controller));
+            state->gyroFilter.reset(gyroSettings);
+            state->gyroFilter.setLogIndex(state->index);
+            if (gyroSettings.enabled) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "Gamepad %d gyro filter: offset removal %s, smoothing below %d deg/s over %d samples, "
+                            "soft deadzone %d deg/s, accelerometer correction %s",
+                            state->index, gyroSettings.removeOffset ? "on" : "off",
+                            gyroSettings.smoothBelowDps, gyroSettings.smoothSamples, gyroSettings.deadzoneDps,
+                            gyroSettings.correctAccel ? "on" : "off");
+            }
+        }
+#endif
 
         hapticCaps = 0;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
@@ -1016,8 +1103,17 @@ void SdlInputHandler::setMotionEventState(uint16_t controllerNumber, uint8_t mot
     }
 
 #if SDL_VERSION_ATLEAST(2, 0, 14)
+    if (motionDebugEnabled()) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Gamepad %u: host set %s reporting to %u Hz",
+                    controllerNumber, motionType == LI_MOTION_TYPE_GYRO ? "gyro" : "accel", reportRateHz);
+    }
+
     if (m_GamepadState[controllerNumber].controller != nullptr) {
         uint8_t reportPeriodMs = reportRateHz ? (1000 / reportRateHz) : 0;
+
+        // Keep the filter's offset and scale, but don't let its windows and averages span the gap
+        m_GamepadState[controllerNumber].gyroFilter.restart();
 
         switch (motionType) {
         case LI_MOTION_TYPE_ACCEL:

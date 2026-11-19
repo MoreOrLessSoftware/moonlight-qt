@@ -186,11 +186,15 @@ SOURCES += \
     settings/mappingfetcher.cpp \
     settings/streamingpreferences.cpp \
     settings/overlaymenucommands.cpp \
+    settings/gamepadsettings.cpp \
     materialsymbols.cpp \
     gui/overlaymenucommandmodel.cpp \
     gui/keyrecorder.cpp \
+    gui/gamepadsettingsmodel.cpp \
+    gui/gyrotester.cpp \
     streaming/input/abstouch.cpp \
     streaming/input/gamepad.cpp \
+    streaming/input/gyrofilter.cpp \
     streaming/input/input.cpp \
     streaming/input/keyboard.cpp \
     streaming/input/mouse.cpp \
@@ -235,10 +239,14 @@ HEADERS += \
     cli/startstream.h \
     settings/streamingpreferences.h \
     settings/overlaymenucommands.h \
+    settings/gamepadsettings.h \
     materialsymbols.h \
     gui/overlaymenucommandmodel.h \
     gui/keyrecorder.h \
+    gui/gamepadsettingsmodel.h \
+    gui/gyrotester.h \
     streaming/input/input.h \
+    streaming/input/gyrofilter.h \
     streaming/session.h \
     streaming/audio/renderers/renderer.h \
     streaming/audio/renderers/sdl.h \

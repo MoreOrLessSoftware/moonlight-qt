@@ -51,6 +51,8 @@
 #include "gui/appmodel.h"
 #include "gui/overlaymenucommandmodel.h"
 #include "gui/keyrecorder.h"
+#include "gui/gamepadsettingsmodel.h"
+#include "gui/gyrotester.h"
 #include "backend/autoupdatechecker.h"
 #include "backend/computermanager.h"
 #include "backend/systemproperties.h"
@@ -949,6 +951,8 @@ int main(int argc, char *argv[])
     qmlRegisterType<AppModel>("AppModel", 1, 0, "AppModel");
     qmlRegisterType<OverlayMenuCommandModel>("OverlayMenuCommandModel", 1, 0, "OverlayMenuCommandModel");
     qmlRegisterType<KeyRecorder>("KeyRecorder", 1, 0, "KeyRecorder");
+    qmlRegisterType<GamepadSettingsModel>("GamepadSettingsModel", 1, 0, "GamepadSettingsModel");
+    qmlRegisterType<GyroTester>("GyroTester", 1, 0, "GyroTester");
     qmlRegisterUncreatableType<Session>("Session", 1, 0, "Session", "Session cannot be created from QML");
     qmlRegisterSingletonType<ComputerManager>("ComputerManager", 1, 0,
                                               "ComputerManager",

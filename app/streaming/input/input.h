@@ -17,6 +17,16 @@
 class GameInputGamepads;
 #endif
 
+#include "gyrofilter.h"
+
+// GYRO_DEBUG=1: what was sent to the host over the last second (see debugMotion() in gamepad.cpp)
+struct MotionDebugState {
+    uint32_t start;
+    int gyroSent, accelSent, gyroSamples;
+    float gyroMax, gyroSum[3];
+    float accelMin[3], accelMax[3];
+};
+
 struct GamepadState {
     SDL_GameController* controller;
     SDL_JoystickID jsId;
@@ -45,6 +55,9 @@ struct GamepadState {
     uint8_t accelReportPeriodMs;
     float lastAccelEventData[SDL_arraysize(SDL_ControllerSensorEvent::data)];
     uint32_t lastAccelEventTime;
+
+    GyroFilter gyroFilter;       // set up from the gamepad's settings when it arrives
+    MotionDebugState motionDebug;
 #endif
 
     int buttons;

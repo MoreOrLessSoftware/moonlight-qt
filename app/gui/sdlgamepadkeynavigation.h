@@ -4,6 +4,8 @@
 #include <QTimer>
 #include <QEvent>
 
+#include <functional>
+
 #include "SDL_compat.h"
 
 #include "settings/streamingpreferences.h"
@@ -26,6 +28,14 @@ public:
     Q_INVOKABLE void setUiNavMode(bool settingsMode);
 
     Q_INVOKABLE int getConnectedGamepads();
+
+    // The instance QML uses, for C++ objects created from QML (null before it exists)
+    static SdlGamepadKeyNavigation* instance() { return s_Instance; }
+
+    // Gamepad sensor readings, which are otherwise discarded, go to this listener (one at a time;
+    // an empty function removes it). While one is set, gamepads are polled every few ms instead of
+    // every 50 ms so the readings arrive steadily. They only arrive while the window has focus.
+    void setSensorListener(std::function<void(const SDL_ControllerSensorEvent&)> listener);
 
 signals:
     // LB (-1) or RB (+1) was pressed, to move to the previous or next tab of a page
@@ -55,4 +65,7 @@ private:
     bool m_FirstPoll;
     bool m_HasFocus;
     Uint32 m_LastAxisNavigationEventTime;
+    std::function<void(const SDL_ControllerSensorEvent&)> m_SensorListener;
+
+    static SdlGamepadKeyNavigation* s_Instance;
 };

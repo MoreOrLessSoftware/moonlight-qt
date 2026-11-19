@@ -21,6 +21,8 @@
         <file>gui/CenteredGridView.qml</file>
         <file>gui/CliPair.qml</file>
         <file>gui/OverlayMenuCommandsView.qml</file>
+        <file>gui/GyroSettingsControls.qml</file>
+        <file>gui/GyroTestView.qml</file>
         <file>gui/IconFileDialog.qml</file>
     </qresource>
 </RCC>
