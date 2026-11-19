@@ -25,6 +25,8 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+
+#include <QString>
 #include <mutex>
 
 class SdlInputHandler;
@@ -38,7 +40,7 @@ struct GamepadState;
 class GameInputGamepads
 {
 public:
-    GameInputGamepads(SdlInputHandler& handler, bool backgroundInput, bool swapFaceButtons);
+    GameInputGamepads(SdlInputHandler& handler, bool backgroundInput);
     ~GameInputGamepads();
 
     // True when the GameInput runtime is present and device enumeration is running
@@ -83,6 +85,7 @@ private:
         GameInput::v4::GameInputCallbackToken systemButtonToken = 0;
         int gamepadButtons = 0;             // Moonlight flags from the gamepad reading
         int systemButtons = 0;              // SPECIAL_FLAG / MISC_FLAG from the system button reading
+        bool swapFaceButtons = false;       // the gamepad's setting (see GamepadSettings)
         GameInput::v4::GameInputRumbleParams rumble {};
     };
 
@@ -96,6 +99,9 @@ private:
 
     static bool isClaimedDevice(GameInput::v4::IGameInputDevice* device);
 
+    // The GamepadSettings key for a GameInput device: that of the SDL gamepad it stands in for
+    static QString settingsKey(GameInput::v4::IGameInputDevice* device);
+
     // Main thread
     void connectDevice(GameInput::v4::IGameInputDevice* device);
     void disconnectDevice(GameInput::v4::IGameInputDevice* device);
@@ -106,7 +112,6 @@ private:
     void postAction(int slot, Action action);
 
     SdlInputHandler& m_Handler;
-    bool m_SwapFaceButtons;
     bool m_BackgroundInput;
     GameInput::v4::IGameInput* m_GameInput;
     GameInput::v4::GameInputCallbackToken m_DeviceToken;

@@ -85,6 +85,17 @@ public:
         return intValue;
     }
 
+    // 1 for --name, 0 for --no-name (the last one given wins), -1 if neither was given
+    int getToggleOptionState(QString name) const
+    {
+        QRegularExpression re(QString("^(%1|no-%1)$").arg(name));
+        QStringList options = optionNames().filter(re);
+        if (options.isEmpty()) {
+            return -1;
+        }
+        return options.last() == name ? 1 : 0;
+    }
+
     bool getToggleOptionValue(QString name, bool defaultValue) const
     {
         QRegularExpression re(QString("^(%1|no-%1)$").arg(name));
@@ -364,7 +375,7 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     parser.addToggleOption("mute-on-focus-loss", "mute audio when Moonlight window loses focus");
     parser.addToggleOption("background-gamepad", "background gamepad input");
     parser.addToggleOption("reverse-scroll-direction", "inverted scroll direction");
-    parser.addToggleOption("swap-gamepad-buttons", "swap A/B and X/Y gamepad buttons (Nintendo-style)");
+    parser.addToggleOption("swap-gamepad-buttons", "swap A/B and X/Y gamepad buttons (Nintendo-style) on every gamepad, instead of each gamepad's own setting");
     parser.addToggleOption("keep-awake", "prevent display sleep while streaming");
     parser.addToggleOption("performance-overlay", "show performance overlay");
     parser.addToggleOption("hdr", "HDR streaming");
@@ -510,8 +521,9 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     // Resolve --reverse-scroll-direction and --no-reverse-scroll-direction options
     preferences->reverseScrollDirection = parser.getToggleOptionValue("reverse-scroll-direction", preferences->reverseScrollDirection);
 
-    // Resolve --swap-gamepad-buttons and --no-swap-gamepad-buttons options
-    preferences->swapFaceButtons = parser.getToggleOptionValue("swap-gamepad-buttons", preferences->swapFaceButtons);
+    // Resolve --swap-gamepad-buttons and --no-swap-gamepad-buttons options. Swapping is set per
+    // gamepad; either option overrides that for every gamepad in this session.
+    preferences->swapFaceButtonsOverride = parser.getToggleOptionState("swap-gamepad-buttons");
 
     // Resolve --keep-awake and --no-keep-awake options
     preferences->keepAwake = parser.getToggleOptionValue("keep-awake", preferences->keepAwake);

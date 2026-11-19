@@ -5,6 +5,7 @@
 #include <QWindow>
 
 #include "settings/mappingmanager.h"
+#include "settings/gamepadsettings.h"
 
 #define AXIS_NAVIGATION_REPEAT_DELAY 150
 #define AXIS_NAVIGATION_THRESHOLD 30000
@@ -143,8 +144,10 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
                     event.type == SDL_CONTROLLERBUTTONDOWN ?
                         QEvent::Type::KeyPress : QEvent::Type::KeyRelease;
 
-            // Swap face buttons if needed
-            if (m_Prefs->swapFaceButtons) {
+            // Swap face buttons if that gamepad has them swapped. Read on each press (they're
+            // few), so changing the setting takes effect at once.
+            SDL_GameController* gamepad = SDL_GameControllerFromInstanceID(event.cbutton.which);
+            if (gamepad != nullptr && GamepadSettings::loadSwapFaceButtons(GamepadSettings::deviceKey(gamepad))) {
                 switch (event.cbutton.button) {
                 case SDL_CONTROLLER_BUTTON_A:
                     event.cbutton.button = SDL_CONTROLLER_BUTTON_B;

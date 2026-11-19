@@ -20,6 +20,8 @@ class GamepadSettingsModel : public QObject
     Q_PROPERTY(QString currentName READ currentName NOTIFY currentChanged)
     Q_PROPERTY(bool hasGyro READ hasGyro NOTIFY currentChanged)
 
+    Q_PROPERTY(bool swapFaceButtons READ swapFaceButtons WRITE setSwapFaceButtons NOTIFY swapFaceButtonsChanged)
+
     Q_PROPERTY(bool gyroFilterEnabled READ gyroFilterEnabled WRITE setGyroFilterEnabled NOTIFY gyroSettingsChanged)
     Q_PROPERTY(bool gyroRemoveOffset READ gyroRemoveOffset WRITE setGyroRemoveOffset NOTIFY gyroSettingsChanged)
     Q_PROPERTY(int gyroSmoothSamples READ gyroSmoothSamples WRITE setGyroSmoothSamples NOTIFY gyroSettingsChanged)
@@ -45,6 +47,9 @@ public:
     QString currentName() const;
     bool hasGyro() const;
 
+    bool swapFaceButtons() const { return m_SwapFaceButtons; }
+    void setSwapFaceButtons(bool value);
+
     bool gyroFilterEnabled() const { return m_Gyro.enabled; }
     bool gyroRemoveOffset() const { return m_Gyro.removeOffset; }
     int gyroSmoothSamples() const { return m_Gyro.smoothSamples; }
@@ -63,6 +68,7 @@ public:
 signals:
     void gamepadsChanged();
     void currentChanged();
+    void swapFaceButtonsChanged();
     void gyroSettingsChanged();
 
 private:
@@ -82,6 +88,7 @@ private:
 
     QVector<Gamepad> m_Gamepads;
     int m_CurrentIndex;
+    bool m_SwapFaceButtons;
     GyroFilterSettings m_Gyro;
     QTimer m_RefreshTimer;
 };

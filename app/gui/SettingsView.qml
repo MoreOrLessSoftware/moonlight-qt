@@ -2529,22 +2529,6 @@ Item {
                         spacing: 5
 
                         CheckBox {
-                            id: swapFaceButtonsCheck
-                            width: parent.width
-                            text: qsTr("Swap A/B and X/Y gamepad buttons")
-                            font.pointSize: 12
-                            checked: StreamingPreferences.swapFaceButtons
-                            onCheckedChanged: {
-                                StreamingPreferences.swapFaceButtons = checked
-                            }
-
-                            ToolTip.delay: 1000
-                            ToolTip.timeout: 5000
-                            ToolTip.visible: hovered
-                            ToolTip.text: qsTr("This switches gamepads into a Nintendo-style button layout")
-                        }
-
-                        CheckBox {
                             id: singleControllerCheck
                             width: parent.width
                             text: qsTr("Force gamepad #1 always connected")
@@ -2643,6 +2627,20 @@ Item {
                             onCurrentIndexChanged: perGamepadModel.currentIndex = currentIndex
                             onCountChanged: recalculateWidth()
                             Component.onCompleted: recalculateWidth()
+                        }
+
+                        CheckBox {
+                            width: parent.width
+                            text: qsTr("Swap A/B and X/Y buttons")
+                            font.pointSize: 12
+                            visible: perGamepadModel.gamepadNames.length > 0
+                            checked: perGamepadModel.swapFaceButtons
+                            onClicked: perGamepadModel.swapFaceButtons = checked
+
+                            ToolTip.delay: 1000
+                            ToolTip.timeout: 5000
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("This switches the gamepad into a Nintendo-style button layout")
                         }
 
                         Label {

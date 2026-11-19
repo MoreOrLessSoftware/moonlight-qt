@@ -6,6 +6,7 @@
 GamepadSettingsModel::GamepadSettingsModel(QObject* parent)
     : QObject(parent),
       m_CurrentIndex(-1),
+      m_SwapFaceButtons(false),
       m_Gyro(GyroFilterSettings::defaults())
 {
     connect(&m_RefreshTimer, &QTimer::timeout, this, &GamepadSettingsModel::refresh);
@@ -87,6 +88,12 @@ void GamepadSettingsModel::refresh()
 
 void GamepadSettingsModel::loadCurrent()
 {
+    bool swap = m_CurrentIndex >= 0 && GamepadSettings::loadSwapFaceButtons(m_Gamepads[m_CurrentIndex].key);
+    if (swap != m_SwapFaceButtons) {
+        m_SwapFaceButtons = swap;
+        emit swapFaceButtonsChanged();
+    }
+
     GyroFilterSettings settings = m_CurrentIndex >= 0 ?
                 GamepadSettings::loadGyro(m_Gamepads[m_CurrentIndex].key) :
                 GyroFilterSettings::defaults();
@@ -149,6 +156,17 @@ QString GamepadSettingsModel::currentName() const
 bool GamepadSettingsModel::hasGyro() const
 {
     return m_CurrentIndex >= 0 && m_Gamepads[m_CurrentIndex].hasGyro;
+}
+
+void GamepadSettingsModel::setSwapFaceButtons(bool value)
+{
+    if (m_SwapFaceButtons != value) {
+        m_SwapFaceButtons = value;
+        if (m_CurrentIndex >= 0) {
+            GamepadSettings::saveSwapFaceButtons(m_Gamepads[m_CurrentIndex].key, m_Gamepads[m_CurrentIndex].name, value);
+        }
+        emit swapFaceButtonsChanged();
+    }
 }
 
 void GamepadSettingsModel::setGyroFilterEnabled(bool value)

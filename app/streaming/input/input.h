@@ -44,6 +44,9 @@ struct GamepadState {
     SDL_TimerID mouseEmulationTimer;
     uint32_t lastStartDownTime;
 
+    // A/B and X/Y swapped (the gamepad's own setting, or the command line's for all of them)
+    bool swapFaceButtons;
+
     bool clickpadButtonEmulationEnabled;
     bool emulatedClickpadButtonDown;
 
@@ -297,7 +300,7 @@ private:
     bool m_GamepadMouse;
     bool m_SwapMouseButtons;
     bool m_ReverseScrollDirection;
-    bool m_SwapFaceButtons;
+    int m_SwapFaceButtonsOverride;     // StreamingPreferences::swapFaceButtonsOverride
 
     bool m_NeedsManualCaptureOnLeave;
     bool m_MouseWasInVideoRegion;

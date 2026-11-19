@@ -2,6 +2,7 @@
 
 #include "input.h"
 #include "streaming/session.h"
+#include "settings/gamepadsettings.h"
 
 #include <Limelight.h>
 
@@ -62,9 +63,8 @@ static int mapGamepadButtons(GameInputGamepadButtons buttons, bool swapFaceButto
     return flags;
 }
 
-GameInputGamepads::GameInputGamepads(SdlInputHandler& handler, bool backgroundInput, bool swapFaceButtons)
+GameInputGamepads::GameInputGamepads(SdlInputHandler& handler, bool backgroundInput)
     : m_Handler(handler),
-      m_SwapFaceButtons(swapFaceButtons),
       m_BackgroundInput(backgroundInput),
       m_GameInput(nullptr),
       m_DeviceToken(0)
@@ -138,6 +138,34 @@ bool GameInputGamepads::isClaimedDevice(IGameInputDevice* device)
     return device->GetVendorId() == k_MicrosoftVendorId &&
            (device->GetSupportedInput() & GameInputKindGamepad) &&
            (family == GameInputFamilyXboxOne || family == GameInputFamilyXbox360);
+}
+
+QString GameInputGamepads::settingsKey(IGameInputDevice* device)
+{
+    // Per-gamepad settings are set up against SDL's view of the gamepad (the settings page only
+    // has SDL), so use the key of the SDL device this one keeps SDL from using. Two identical
+    // pads can't be told apart this way, but SDL gives Xbox controllers no serial on Windows,
+    // so they share a key anyway.
+    int numJoysticks = SDL_NumJoysticks();
+    for (int i = 0; i < numJoysticks; i++) {
+        if (claimsSdlDevice(i) &&
+                SDL_JoystickGetDeviceVendor(i) == device->GetVendorId() &&
+                SDL_JoystickGetDeviceProduct(i) == device->GetProductId()) {
+            QString key = GamepadSettings::deviceKeyForIndex(i);
+            if (!key.isEmpty()) {
+                return key;
+            }
+        }
+    }
+
+    // No SDL device to match (this key won't match any the settings page saved, so the gamepad
+    // gets the defaults)
+    char name[256] = {};
+    device->GetDisplayName(sizeof(name), name);
+    return QStringLiteral("id:%1:%2:%3")
+            .arg(device->GetVendorId(), 4, 16, QChar('0'))
+            .arg(device->GetProductId(), 4, 16, QChar('0'))
+            .arg(QString::fromUtf8(name));
 }
 
 bool GameInputGamepads::claimsSdlDevice(int deviceIndex)
@@ -277,6 +305,11 @@ void GameInputGamepads::connectDevice(IGameInputDevice* device)
                 "Gamepad %d (player %d) is: %s via GameInput (VID/PID: 0x%.4x/0x%.4x) (rumble motors: 0x%x) (system buttons: 0x%x)",
                 i, state->index, name, device->GetVendorId(), device->GetProductId(), motors, systemButtons);
 
+    pad.swapFaceButtons = m_Handler.m_SwapFaceButtonsOverride >= 0 ?
+                m_Handler.m_SwapFaceButtonsOverride != 0 :
+                GamepadSettings::loadSwapFaceButtons(settingsKey(device));
+    state->swapFaceButtons = pad.swapFaceButtons;
+
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
         m_Pads[i] = pad;
@@ -368,7 +401,7 @@ void CALLBACK GameInputGamepads::onGamepadReading(GameInputCallbackToken, void* 
         for (auto& [slot, pad] : self->m_Pads) {
             if (pad.device == device) {
                 GamepadState* state = &self->m_Handler.m_GamepadState[slot];
-                pad.gamepadButtons = mapGamepadButtons(gamepad.buttons, self->m_SwapFaceButtons);
+                pad.gamepadButtons = mapGamepadButtons(gamepad.buttons, pad.swapFaceButtons);
                 state->lsX = stickToShort(gamepad.leftThumbstickX);
                 state->lsY = stickToShort(gamepad.leftThumbstickY);  // both positive-up
                 state->rsX = stickToShort(gamepad.rightThumbstickX);

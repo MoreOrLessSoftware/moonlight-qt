@@ -20,7 +20,7 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_GamepadMouse(prefs.gamepadMouse),
       m_SwapMouseButtons(prefs.swapMouseButtons),
       m_ReverseScrollDirection(prefs.reverseScrollDirection),
-      m_SwapFaceButtons(prefs.swapFaceButtons),
+      m_SwapFaceButtonsOverride(prefs.swapFaceButtonsOverride),
       m_MouseWasInVideoRegion(false),
       m_PendingMouseButtonsAllUpOnVideoRegionLeave(false),
       m_PointerRegionLockActive(false),
@@ -209,7 +209,7 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
     // Xbox controllers go through GameInput when enabled; SDL skips them on arrival.
     // This must exist before SDL starts reporting controllers below.
     if (prefs.gameInputGamepads) {
-        m_GameInput = std::make_unique<GameInputGamepads>(*this, prefs.backgroundGamepad, prefs.swapFaceButtons);
+        m_GameInput = std::make_unique<GameInputGamepads>(*this, prefs.backgroundGamepad);
         if (!m_GameInput->isAvailable()) {
             m_GameInput.reset();
         }

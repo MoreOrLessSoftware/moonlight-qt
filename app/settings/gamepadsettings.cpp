@@ -4,6 +4,9 @@
 
 #define SER_GAMEPADS        "gamepads"
 #define SER_NAME            "name"
+#define SER_SWAPFACEBUTTONS "swapFaceButtons"
+// The setting for all gamepads that swapping A/B and X/Y used to be (in StreamingPreferences)
+#define SER_LEGACY_SWAPFACEBUTTONS "swapfacebuttons"
 #define SER_GYRO            "gyro"
 #define SER_ENABLED         "enabled"
 #define SER_REMOVEOFFSET    "removeOffset"
@@ -38,6 +41,34 @@ QString GamepadSettings::deviceKey(SDL_GameController* gamepad)
             .arg(SDL_GameControllerGetVendor(gamepad), 4, 16, QChar('0'))
             .arg(SDL_GameControllerGetProduct(gamepad), 4, 16, QChar('0'))
             .arg(name != nullptr ? QString::fromUtf8(name) : QString());
+}
+
+QString GamepadSettings::deviceKeyForIndex(int deviceIndex)
+{
+    // SDL counts opens, so this doesn't disturb anyone who already has it open
+    SDL_GameController* gamepad = SDL_GameControllerOpen(deviceIndex);
+    if (gamepad == nullptr) {
+        return QString();
+    }
+    QString key = deviceKey(gamepad);
+    SDL_GameControllerClose(gamepad);
+    return key;
+}
+
+bool GamepadSettings::loadSwapFaceButtons(const QString& deviceKey)
+{
+    QSettings store;
+    bool legacy = store.value(SER_LEGACY_SWAPFACEBUTTONS, false).toBool();
+    return store.value(deviceGroup(deviceKey) + "/" SER_SWAPFACEBUTTONS, legacy).toBool();
+}
+
+void GamepadSettings::saveSwapFaceButtons(const QString& deviceKey, const QString& name, bool swap)
+{
+    QSettings store;
+    store.beginGroup(deviceGroup(deviceKey));
+    store.setValue(SER_NAME, name);
+    store.setValue(SER_SWAPFACEBUTTONS, swap);
+    store.endGroup();
 }
 
 GyroFilterSettings GamepadSettings::loadGyro(const QString& deviceKey)

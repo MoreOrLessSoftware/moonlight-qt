@@ -183,7 +183,6 @@ public:
     Q_PROPERTY(bool backgroundGamepad MEMBER backgroundGamepad NOTIFY backgroundGamepadChanged)
     Q_PROPERTY(bool gameInputGamepads MEMBER gameInputGamepads NOTIFY gameInputGamepadsChanged)
     Q_PROPERTY(bool reverseScrollDirection MEMBER reverseScrollDirection NOTIFY reverseScrollDirectionChanged)
-    Q_PROPERTY(bool swapFaceButtons MEMBER swapFaceButtons NOTIFY swapFaceButtonsChanged)
     Q_PROPERTY(bool keepAwake MEMBER keepAwake NOTIFY keepAwakeChanged)
     Q_PROPERTY(CaptureSysKeysMode captureSysKeysMode MEMBER captureSysKeysMode NOTIFY captureSysKeysModeChanged)
     Q_PROPERTY(OverlayMenuTrigger overlayMenuTrigger MEMBER overlayMenuTrigger NOTIFY overlayMenuTriggerChanged)
@@ -241,7 +240,9 @@ public:
     bool backgroundGamepad;
     bool gameInputGamepads;
     bool reverseScrollDirection;
-    bool swapFaceButtons;
+    // Swapping A/B and X/Y is a per-gamepad setting (see GamepadSettings). This forces it on (1)
+    // or off (0) for every gamepad for one run, from the command line; -1 = per gamepad.
+    int swapFaceButtonsOverride;
     bool keepAwake;
     int packetSize;
     AudioConfig audioConfig;
@@ -298,7 +299,6 @@ signals:
     void backgroundGamepadChanged();
     void gameInputGamepadsChanged();
     void reverseScrollDirectionChanged();
-    void swapFaceButtonsChanged();
     void captureSysKeysModeChanged();
     void overlayMenuTriggerChanged();
     void overlayMenuHoldMsChanged();

@@ -331,7 +331,7 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
         return;
     }
 
-    if (m_SwapFaceButtons) {
+    if (state->swapFaceButtons) {
         switch (event->button) {
         case SDL_CONTROLLER_BUTTON_A:
             event->button = SDL_CONTROLLER_BUTTON_B;
@@ -735,9 +735,13 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
         state->controller = controller;
         state->jsId = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(state->controller));
 
+        QString deviceKey = GamepadSettings::deviceKey(controller);
+        state->swapFaceButtons = m_SwapFaceButtonsOverride >= 0 ?
+                    m_SwapFaceButtonsOverride != 0 : GamepadSettings::loadSwapFaceButtons(deviceKey);
+
 #if SDL_VERSION_ATLEAST(2, 0, 14)
         if (SDL_GameControllerHasSensor(controller, SDL_SENSOR_GYRO)) {
-            GyroFilterSettings gyroSettings = GamepadSettings::loadGyro(GamepadSettings::deviceKey(controller));
+            GyroFilterSettings gyroSettings = GamepadSettings::loadGyro(deviceKey);
             state->gyroFilter.reset(gyroSettings);
             state->gyroFilter.setLogIndex(state->index);
             if (gyroSettings.enabled) {
