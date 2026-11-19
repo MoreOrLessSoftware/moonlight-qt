@@ -6,11 +6,11 @@ import GamepadSettingsModel 1.0
 import GyroTester 1.0
 import SdlGamepadKeyNavigation 1.0
 
-// A gamepad's gyro settings with a live test: a crosshair moved by the filtered gyro, like a game
+// Calibrating a gamepad's gyro filtering: its settings with a live test, a crosshair moved by the filtered gyro, like a game
 // camera, and raw vs filtered readings for each axis
 Item {
     id: gyroPage
-    objectName: qsTr("Gyro Test")
+    objectName: qsTr("Gyro Calibration")
 
     // The gamepad to select first (an index into the model's gamepads)
     property int initialIndex: 0

@@ -2606,6 +2606,44 @@ Item {
                         id: perGamepadModel
                     }
 
+                    NavigableDialog {
+                        id: renameGamepadDialog
+                        standardButtons: Dialog.Ok | Dialog.Cancel
+
+                        onOpened: {
+                            gamepadNameField.text = perGamepadModel.currentName === perGamepadModel.currentDefaultName ?
+                                        "" : perGamepadModel.currentName
+                            // Force keyboard focus on the textbox so keyboard navigation works
+                            gamepadNameField.forceActiveFocus()
+                        }
+
+                        onAccepted: perGamepadModel.renameCurrent(gamepadNameField.text)
+
+                        ColumnLayout {
+                            Label {
+                                text: qsTr("Enter the new name for this gamepad (leave it empty for the default):")
+                                font.bold: true
+                            }
+
+                            TextField {
+                                id: gamepadNameField
+                                placeholderText: perGamepadModel.currentDefaultName
+                                Layout.fillWidth: true
+                                focus: true
+
+                                Keys.onReturnPressed: renameGamepadDialog.accept()
+                                Keys.onEnterPressed: renameGamepadDialog.accept()
+                            }
+                        }
+                    }
+
+                    NavigableMessageDialog {
+                        id: forgetGamepadDialog
+                        text: qsTr("Forget the name and all settings of '%1'? It goes back to the defaults.").arg(perGamepadModel.currentName)
+                        standardButtons: Dialog.Yes | Dialog.No
+                        onAccepted: perGamepadModel.forgetCurrent()
+                    }
+
                     Column {
                         anchors.fill: parent
                         spacing: 5
@@ -2618,15 +2656,42 @@ Item {
                             visible: perGamepadModel.gamepadNames.length === 0
                         }
 
-                        AutoResizingComboBox {
-                            id: perGamepadComboBox
-                            model: perGamepadModel.gamepadNames
-                            currentIndex: perGamepadModel.currentIndex
+                        Row {
+                            id: perGamepadPickerRow
+                            width: parent.width
+                            spacing: 5
                             visible: perGamepadModel.gamepadNames.length > 0
-                            // Also covers the arrow keys, which change the selection without activating
-                            onCurrentIndexChanged: perGamepadModel.currentIndex = currentIndex
-                            onCountChanged: recalculateWidth()
-                            Component.onCompleted: recalculateWidth()
+
+                            AutoResizingComboBox {
+                                id: perGamepadComboBox
+                                model: perGamepadModel.gamepadNames
+                                currentIndex: perGamepadModel.currentIndex
+                                maximumWidth: perGamepadPickerRow.width - renameGamepadButton.width - forgetGamepadButton.width - 2 * perGamepadPickerRow.spacing
+                                // Also covers the arrow keys, which change the selection without activating
+                                onCurrentIndexChanged: perGamepadModel.currentIndex = currentIndex
+                                onCountChanged: recalculateWidth()
+                                onModelChanged: recalculateWidth()
+                                Component.onCompleted: recalculateWidth()
+                            }
+
+                            Button {
+                                id: renameGamepadButton
+                                text: qsTr("Rename…")
+                                anchors.verticalCenter: perGamepadComboBox.verticalCenter
+                                onClicked: renameGamepadDialog.open()
+                            }
+
+                            Button {
+                                id: forgetGamepadButton
+                                text: qsTr("Forget…")
+                                anchors.verticalCenter: perGamepadComboBox.verticalCenter
+                                onClicked: forgetGamepadDialog.open()
+
+                                ToolTip.delay: 1000
+                                ToolTip.timeout: 5000
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("Forget this gamepad's name and settings")
+                            }
                         }
 
                         CheckBox {
@@ -2643,37 +2708,53 @@ Item {
                             ToolTip.text: qsTr("This switches the gamepad into a Nintendo-style button layout")
                         }
 
+                        // Gyro: only whether it's filtered here; how is set while calibrating
                         Label {
                             width: parent.width
                             text: qsTr("Gyro")
                             font.pointSize: 12
                             font.bold: true
                             topPadding: 10
-                            visible: perGamepadModel.gamepadNames.length > 0
-                        }
-
-                        Label {
-                            width: parent.width
-                            wrapMode: Text.Wrap
-                            text: qsTr("This gamepad has no gyro.")
-                            visible: perGamepadModel.gamepadNames.length > 0 && !perGamepadModel.hasGyro
-                        }
-
-                        GyroSettingsControls {
-                            width: parent.width
-                            gamepadModel: perGamepadModel
                             visible: perGamepadModel.hasGyro
                         }
 
-                        Button {
-                            text: qsTr("Test Gyro…")
+                        CheckBox {
+                            width: parent.width
+                            text: qsTr("Filter gyro and accelerometer readings")
+                            font.pointSize: 12
                             visible: perGamepadModel.hasGyro
-                            onClicked: stackView.push("qrc:/gui/GyroTestView.qml", { "initialIndex": perGamepadModel.currentIndex })
+                            checked: perGamepadModel.gyroFilterEnabled
+                            onClicked: perGamepadModel.gyroFilterEnabled = checked
 
                             ToolTip.delay: 1000
                             ToolTip.timeout: 5000
                             ToolTip.visible: hovered
-                            ToolTip.text: qsTr("Try these settings live, with a crosshair and the gyro's readings")
+                            ToolTip.text: qsTr("For gamepads whose gyro drifts or jitters at rest. Off sends the readings to the host as they are.")
+                        }
+
+                        Row {
+                            spacing: 5
+                            visible: perGamepadModel.hasGyro
+
+                            Button {
+                                text: qsTr("Calibrate…")
+                                onClicked: stackView.push("qrc:/gui/GyroTestView.qml", { "initialIndex": perGamepadModel.currentIndex })
+
+                                ToolTip.delay: 1000
+                                ToolTip.timeout: 5000
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("Adjust the filtering live, with a crosshair and the gyro's readings")
+                            }
+
+                            Button {
+                                text: qsTr("Reset")
+                                onClicked: perGamepadModel.resetGyroSettings()
+
+                                ToolTip.delay: 1000
+                                ToolTip.timeout: 5000
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("Put the gyro filtering back to its defaults")
+                            }
                         }
                     }
                 }

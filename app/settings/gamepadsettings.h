@@ -17,6 +17,18 @@ namespace GamepadSettings
     // The same for a gamepad SDL hasn't opened (by device index), opening it briefly if need be
     QString deviceKeyForIndex(int deviceIndex);
 
+    // The name to show for a gamepad: the one it was given, or else SDL's name for it followed by
+    // the end of its serial (for a Bluetooth controller, the last two bytes of its address), so
+    // two of the same model can be told apart
+    QString displayName(const QString& deviceKey, const QString& sdlName);
+    QString defaultName(const QString& deviceKey, const QString& sdlName);
+
+    // An empty name goes back to the default
+    void saveCustomName(const QString& deviceKey, const QString& sdlName, const QString& name);
+
+    // Forgets everything saved for the gamepad, including its name
+    void remove(const QString& deviceKey);
+
     // Swap A/B and X/Y (a Nintendo-style layout). Until it's set for a gamepad, it follows what
     // was once a setting for all gamepads, so turning that on carries over.
     bool loadSwapFaceButtons(const QString& deviceKey);

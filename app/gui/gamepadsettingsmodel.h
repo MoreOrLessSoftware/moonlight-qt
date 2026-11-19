@@ -18,6 +18,7 @@ class GamepadSettingsModel : public QObject
     Q_PROPERTY(int currentIndex READ currentIndex WRITE setCurrentIndex NOTIFY currentChanged)
     Q_PROPERTY(QString currentKey READ currentKey NOTIFY currentChanged)
     Q_PROPERTY(QString currentName READ currentName NOTIFY currentChanged)
+    Q_PROPERTY(QString currentDefaultName READ currentDefaultName NOTIFY currentChanged)
     Q_PROPERTY(bool hasGyro READ hasGyro NOTIFY currentChanged)
 
     Q_PROPERTY(bool swapFaceButtons READ swapFaceButtons WRITE setSwapFaceButtons NOTIFY swapFaceButtonsChanged)
@@ -40,11 +41,18 @@ public:
     // Puts the selected gamepad's gyro settings back to the defaults, keeping it on or off
     Q_INVOKABLE void resetGyroSettings();
 
+    // Names the selected gamepad; an empty name goes back to the default
+    Q_INVOKABLE void renameCurrent(const QString& name);
+
+    // Forgets everything saved for the selected gamepad, its name included
+    Q_INVOKABLE void forgetCurrent();
+
     QStringList gamepadNames() const;
     int currentIndex() const { return m_CurrentIndex; }
     void setCurrentIndex(int index);
     QString currentKey() const;
     QString currentName() const;
+    QString currentDefaultName() const;
     bool hasGyro() const;
 
     bool swapFaceButtons() const { return m_SwapFaceButtons; }
@@ -74,7 +82,8 @@ signals:
 private:
     struct Gamepad {
         QString key;
-        QString name;
+        QString sdlName;    // SDL's name for it
+        QString name;       // the name to show (see GamepadSettings::displayName())
         bool hasGyro;
 
         bool operator==(const Gamepad& other) const {

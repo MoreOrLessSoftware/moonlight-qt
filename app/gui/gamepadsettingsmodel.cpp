@@ -38,7 +38,8 @@ QVector<GamepadSettingsModel::Gamepad> GamepadSettingsModel::connectedGamepads()
         Gamepad entry;
         entry.key = GamepadSettings::deviceKey(gamepad);
         const char* name = SDL_GameControllerName(gamepad);
-        entry.name = name != nullptr ? QString::fromUtf8(name) : QObject::tr("Gamepad");
+        entry.sdlName = name != nullptr ? QString::fromUtf8(name) : QObject::tr("Gamepad");
+        entry.name = GamepadSettings::displayName(entry.key, entry.sdlName);
 #if SDL_VERSION_ATLEAST(2, 0, 14)
         entry.hasGyro = SDL_GameControllerHasSensor(gamepad, SDL_SENSOR_GYRO);
 #else
@@ -111,7 +112,7 @@ void GamepadSettingsModel::loadCurrent()
 void GamepadSettingsModel::saveGyro()
 {
     if (m_CurrentIndex >= 0) {
-        GamepadSettings::saveGyro(m_Gamepads[m_CurrentIndex].key, m_Gamepads[m_CurrentIndex].name, m_Gyro);
+        GamepadSettings::saveGyro(m_Gamepads[m_CurrentIndex].key, m_Gamepads[m_CurrentIndex].sdlName, m_Gyro);
     }
     emit gyroSettingsChanged();
 }
@@ -122,6 +123,22 @@ void GamepadSettingsModel::resetGyroSettings()
     m_Gyro = GyroFilterSettings::defaults();
     m_Gyro.enabled = enabled;
     saveGyro();
+}
+
+void GamepadSettingsModel::renameCurrent(const QString& name)
+{
+    if (m_CurrentIndex >= 0) {
+        GamepadSettings::saveCustomName(m_Gamepads[m_CurrentIndex].key, m_Gamepads[m_CurrentIndex].sdlName, name);
+        refresh();
+    }
+}
+
+void GamepadSettingsModel::forgetCurrent()
+{
+    if (m_CurrentIndex >= 0) {
+        GamepadSettings::remove(m_Gamepads[m_CurrentIndex].key);
+        refresh();
+    }
 }
 
 QStringList GamepadSettingsModel::gamepadNames() const
@@ -148,6 +165,13 @@ QString GamepadSettingsModel::currentKey() const
     return m_CurrentIndex >= 0 ? m_Gamepads[m_CurrentIndex].key : QString();
 }
 
+QString GamepadSettingsModel::currentDefaultName() const
+{
+    return m_CurrentIndex >= 0 ?
+                GamepadSettings::defaultName(m_Gamepads[m_CurrentIndex].key, m_Gamepads[m_CurrentIndex].sdlName) :
+                QString();
+}
+
 QString GamepadSettingsModel::currentName() const
 {
     return m_CurrentIndex >= 0 ? m_Gamepads[m_CurrentIndex].name : QString();
@@ -163,7 +187,7 @@ void GamepadSettingsModel::setSwapFaceButtons(bool value)
     if (m_SwapFaceButtons != value) {
         m_SwapFaceButtons = value;
         if (m_CurrentIndex >= 0) {
-            GamepadSettings::saveSwapFaceButtons(m_Gamepads[m_CurrentIndex].key, m_Gamepads[m_CurrentIndex].name, value);
+            GamepadSettings::saveSwapFaceButtons(m_Gamepads[m_CurrentIndex].key, m_Gamepads[m_CurrentIndex].sdlName, value);
         }
         emit swapFaceButtonsChanged();
     }
