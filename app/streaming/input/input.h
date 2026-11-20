@@ -13,6 +13,9 @@
 #define SDL_CODE_OVERLAY_MENU_INPUT   131   // data1: gamepad slot, data2: menu buttons pressed
 #define SDL_CODE_OVERLAY_MENU_GUIDE_TAP_END 132   // data1: gamepad slot whose Guide tap ends
 
+// From the battery poll timer to the main loop: check the gamepads' battery state
+#define SDL_CODE_GAMECONTROLLER_POLL_BATTERY 133
+
 #ifdef HAVE_GAMEINPUT
 class GameInputGamepads;
 #endif
@@ -80,7 +83,16 @@ struct GamepadState {
     bool overlayMenuGuideWasHeld;
     bool overlayMenuGuideWithheld;
     bool overlayMenuGuideTap;
+
+    // The last battery state sent to the host, so a poll only sends changes
+    bool batteryStateSent;
+    uint8_t lastBatteryState;
+    uint8_t lastBatteryPercentage;
 };
+
+// DualSenseOutputReport valid flags for the LEDs
+#define DS_VALID_FLAG1_MIC_MUTE_LED 0x01
+#define DS_VALID_FLAG1_PLAYER_LEDS 0x10
 
 
 struct DualSenseOutputReport{
@@ -172,6 +184,11 @@ public:
 
     void setAdaptiveTriggers(uint16_t controllerNumber, DualSenseOutputReport *report);
 
+    // ds5Leds: the exact DualSense pattern with LI_DS5_PLAYER_LEDS_VALID, or 0
+    void setControllerPlayerLEDs(uint16_t controllerNumber, uint8_t solidMask, uint8_t flashingMask, uint8_t ds5Leds);
+
+    void setControllerMicLED(uint16_t controllerNumber, uint8_t state);
+
     // Handles input-related SDL user events (GameInput device arrival/removal and actions).
     // Returns false if the event code is not an input event.
     bool handleUserEvent(const SDL_UserEvent& event);
@@ -254,6 +271,19 @@ private:
     void endOverlayMenuGuideTap(GamepadState* state);
 
     void sendGamepadBatteryState(GamepadState* state, SDL_JoystickPowerLevel level);
+
+    // The exact battery state from SDL3 (under sdl2-compat); false when it isn't available
+    static
+    bool getPreciseBatteryState(const GamepadState* state, uint8_t* batteryState, uint8_t* batteryPercentage);
+
+    // Sends a battery state unless it's unknown or the host already has it
+    void sendBatteryEvent(GamepadState* state, uint8_t batteryState, uint8_t batteryPercentage);
+
+    // Main thread: send battery changes that SDL2's coarse battery events miss
+    void pollGamepadBatteryStates();
+
+    static
+    Uint32 batteryPollTimerCallback(Uint32 interval, void* param);
 
     void handleAbsoluteFingerEvent(SDL_TouchFingerEvent* event);
 
@@ -339,6 +369,7 @@ private:
     SDL_TimerID m_LeftButtonReleaseTimer;
     SDL_TimerID m_RightButtonReleaseTimer;
     SDL_TimerID m_DragTimer;
+    SDL_TimerID m_BatteryPollTimer;
     char m_DragButton;
     int m_NumFingersDown;
 

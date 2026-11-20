@@ -26,6 +26,9 @@
 // Determines the maximum motion amount before allowing movement
 #define MOUSE_EMULATION_DEADZONE 2
 
+// How often to look for battery changes that SDL2's battery events don't report
+#define BATTERY_POLL_INTERVAL_MS 10000
+
 // Haptic capabilities (in addition to those from SDL_HapticQuery())
 #define ML_HAPTIC_GC_RUMBLE         (1U << 16)
 #define ML_HAPTIC_SIMPLE_RUMBLE     (1U << 17)
@@ -139,10 +142,169 @@ void SdlInputHandler::sendGamepadState(GamepadState* state)
                                rsY);
 }
 
+namespace {
+
+// SDL3's power API, found when SDL2 is sdl2-compat on top of SDL3. SDL2's power levels are
+// four coarse steps plus "wired" (no level at all while charging); SDL3 has the percentage
+// and the charging state. sdl2-compat passes joystick instance IDs through unchanged.
+enum Sdl3PowerState {
+    SDL3_POWERSTATE_ERROR = -1,
+    SDL3_POWERSTATE_UNKNOWN,
+    SDL3_POWERSTATE_ON_BATTERY,
+    SDL3_POWERSTATE_NO_BATTERY,
+    SDL3_POWERSTATE_CHARGING,
+    SDL3_POWERSTATE_CHARGED,
+};
+
+typedef SDL_Joystick* (SDLCALL *Sdl3GetJoystickFromIdFn)(Uint32 instanceId);
+typedef int (SDLCALL *Sdl3GetJoystickPowerInfoFn)(SDL_Joystick* joystick, int* percent);
+
+struct Sdl3PowerApi {
+    Sdl3GetJoystickFromIdFn getJoystickFromId;
+    Sdl3GetJoystickPowerInfoFn getJoystickPowerInfo;
+};
+
+const Sdl3PowerApi& sdl3PowerApi()
+{
+    static const Sdl3PowerApi api = [] {
+        Sdl3PowerApi found = {};
+
+        // sdl2-compat reports patch levels from 50 up; a real SDL2 has no SDL3 underneath
+        SDL_version linked;
+        SDL_GetVersion(&linked);
+        if (linked.major != 2 || linked.patch < 50) {
+            return found;
+        }
+
+#if defined(Q_OS_WIN32)
+        const char* libraryName = "SDL3.dll";
+#elif defined(Q_OS_DARWIN)
+        const char* libraryName = "libSDL3.0.dylib";
+#else
+        const char* libraryName = "libSDL3.so.0";
+#endif
+        // sdl2-compat has already loaded it, so this only adds a reference, kept for the
+        // life of the process like sdl2-compat's own
+        void* library = SDL_LoadObject(libraryName);
+        if (library == nullptr) {
+            return found;
+        }
+
+        found.getJoystickFromId = (Sdl3GetJoystickFromIdFn)SDL_LoadFunction(library, "SDL_GetJoystickFromID");
+        found.getJoystickPowerInfo = (Sdl3GetJoystickPowerInfoFn)SDL_LoadFunction(library, "SDL_GetJoystickPowerInfo");
+        if (found.getJoystickFromId == nullptr || found.getJoystickPowerInfo == nullptr) {
+            found = {};
+        }
+        else {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Using SDL3 battery percentages for gamepads");
+        }
+        return found;
+    }();
+    return api;
+}
+
+// The DualSense player LED pattern (bits 0..4, left to right) for a Moonlight player mask
+uint8_t ds5PlayerLedsFromMask(uint8_t mask)
+{
+    // The patterns PlayStation uses for players 1 to 4
+    switch (mask & 0xF) {
+    case 0x1: return 0x04;
+    case 0x2: return 0x0A;
+    case 0x4: return 0x15;
+    case 0x8: return 0x1B;
+    default:
+        // Several players: the four outer LEDs
+        return (mask & 0x3) | ((mask & 0xC) << 1);
+    }
+}
+
+}
+
+bool SdlInputHandler::getPreciseBatteryState(const GamepadState* state, uint8_t* batteryState, uint8_t* batteryPercentage)
+{
+    const Sdl3PowerApi& api = sdl3PowerApi();
+    if (api.getJoystickPowerInfo == nullptr) {
+        return false;
+    }
+
+    SDL_Joystick* joystick = api.getJoystickFromId((Uint32)state->jsId);
+    if (joystick == nullptr) {
+        return false;
+    }
+
+    int percent = -1;
+    switch (api.getJoystickPowerInfo(joystick, &percent)) {
+    case SDL3_POWERSTATE_ON_BATTERY:
+        *batteryState = LI_BATTERY_STATE_DISCHARGING;
+        break;
+    case SDL3_POWERSTATE_CHARGING:
+        *batteryState = LI_BATTERY_STATE_CHARGING;
+        break;
+    case SDL3_POWERSTATE_CHARGED:
+        *batteryState = LI_BATTERY_STATE_FULL;
+        break;
+    case SDL3_POWERSTATE_NO_BATTERY:
+        *batteryState = LI_BATTERY_STATE_NOT_PRESENT;
+        break;
+    default:
+        *batteryState = LI_BATTERY_STATE_UNKNOWN;
+        break;
+    }
+    *batteryPercentage = (percent >= 0 && percent <= 100) ? (uint8_t)percent : LI_BATTERY_PERCENTAGE_UNKNOWN;
+    return true;
+}
+
+void SdlInputHandler::sendBatteryEvent(GamepadState* state, uint8_t batteryState, uint8_t batteryPercentage)
+{
+    if (batteryState == LI_BATTERY_STATE_UNKNOWN && batteryPercentage == LI_BATTERY_PERCENTAGE_UNKNOWN) {
+        return;
+    }
+    if (state->batteryStateSent &&
+            state->lastBatteryState == batteryState &&
+            state->lastBatteryPercentage == batteryPercentage) {
+        return;
+    }
+
+    state->batteryStateSent = true;
+    state->lastBatteryState = batteryState;
+    state->lastBatteryPercentage = batteryPercentage;
+    LiSendControllerBatteryEvent(state->index, batteryState, batteryPercentage);
+}
+
+void SdlInputHandler::pollGamepadBatteryStates()
+{
+    for (int i = 0; i < MAX_GAMEPADS; i++) {
+        GamepadState* state = &m_GamepadState[i];
+        uint8_t batteryState, batteryPercentage;
+        if (state->controller != nullptr && getPreciseBatteryState(state, &batteryState, &batteryPercentage)) {
+            sendBatteryEvent(state, batteryState, batteryPercentage);
+        }
+    }
+}
+
+Uint32 SdlInputHandler::batteryPollTimerCallback(Uint32 interval, void*)
+{
+    SDL_Event event = {};
+    event.type = SDL_USEREVENT;
+    event.user.code = SDL_CODE_GAMECONTROLLER_POLL_BATTERY;
+    SDL_PushEvent(&event);
+    return interval;
+}
+
 void SdlInputHandler::sendGamepadBatteryState(GamepadState* state, SDL_JoystickPowerLevel level)
 {
     uint8_t batteryPercentage;
     uint8_t batteryState;
+
+    if (getPreciseBatteryState(state, &batteryState, &batteryPercentage)) {
+        sendBatteryEvent(state, batteryState, batteryPercentage);
+
+        // SDL2's battery events only fire on coarse level changes, so poll for the rest
+        if (m_BatteryPollTimer == 0) {
+            m_BatteryPollTimer = SDL_AddTimer(BATTERY_POLL_INTERVAL_MS, batteryPollTimerCallback, nullptr);
+        }
+        return;
+    }
 
     // SDL's battery reporting capabilities are quite limited. Notably, we cannot
     // tell the battery level while charging (or even if a battery is present).
@@ -177,7 +339,7 @@ void SdlInputHandler::sendGamepadBatteryState(GamepadState* state, SDL_JoystickP
         return;
     }
 
-    LiSendControllerBatteryEvent(state->index, batteryState, batteryPercentage);
+    sendBatteryEvent(state, batteryState, batteryPercentage);
 }
 
 Uint32 SdlInputHandler::mouseEmulationTimerCallback(Uint32 interval, void *param)
@@ -933,10 +1095,8 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
         sendGamepadState(state);
 #endif
 
-        // Send a power level if it's known at this time
-        if (powerLevel != SDL_JOYSTICK_POWER_UNKNOWN) {
-            sendGamepadBatteryState(state, powerLevel);
-        }
+        // Send the battery state if it's known at this time (the poll catches up otherwise)
+        sendGamepadBatteryState(state, powerLevel);
     }
     else if (event->type == SDL_CONTROLLERDEVICEREMOVED) {
         state = findStateForGamepad(event->which);
@@ -1164,6 +1324,59 @@ void SdlInputHandler::setAdaptiveTriggers(uint16_t controllerNumber, DualSenseOu
     SDL_free(report);
 }
 
+void SdlInputHandler::setControllerPlayerLEDs(uint16_t controllerNumber, uint8_t solidMask, uint8_t flashingMask, uint8_t ds5Leds)
+{
+    if (controllerNumber >= MAX_GAMEPADS || m_GamepadState[controllerNumber].controller == nullptr) {
+        return;
+    }
+    SDL_GameController* controller = m_GamepadState[controllerNumber].controller;
+
+    // The LEDs can't flash on their own, so a flashing player shows as lit
+    uint8_t mask = solidMask | flashingMask;
+
+#if SDL_VERSION_ATLEAST(2, 0, 16)
+    if (SDL_GameControllerGetType(controller) == SDL_CONTROLLER_TYPE_PS5) {
+        DualSenseOutputReport report = {};
+        report.validFlag1 = DS_VALID_FLAG1_PLAYER_LEDS;
+        report.playerLeds = (ds5Leds & LI_DS5_PLAYER_LEDS_VALID) ? (ds5Leds & 0x1F) : ds5PlayerLedsFromMask(mask);
+        SDL_GameControllerSendEffect(controller, &report, sizeof(report));
+        return;
+    }
+#else
+    (void)ds5Leds;
+#endif
+
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    // Other controllers can only show a single player number
+    if (mask != 0 && (mask & (mask - 1)) == 0) {
+        int player = 0;
+        while (!(mask & (1 << player))) {
+            player++;
+        }
+        SDL_GameControllerSetPlayerIndex(controller, player);
+    }
+#else
+    (void)mask;
+#endif
+}
+
+void SdlInputHandler::setControllerMicLED(uint16_t controllerNumber, uint8_t state)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 16)
+    if (controllerNumber < MAX_GAMEPADS &&
+            m_GamepadState[controllerNumber].controller != nullptr &&
+            SDL_GameControllerGetType(m_GamepadState[controllerNumber].controller) == SDL_CONTROLLER_TYPE_PS5) {
+        DualSenseOutputReport report = {};
+        report.validFlag1 = DS_VALID_FLAG1_MIC_MUTE_LED;
+        report.muteButtonLed = state > LI_MIC_LED_PULSE ? LI_MIC_LED_PULSE : state;
+        SDL_GameControllerSendEffect(m_GamepadState[controllerNumber].controller, &report, sizeof(report));
+    }
+#else
+    (void)controllerNumber;
+    (void)state;
+#endif
+}
+
 bool SdlInputHandler::handleUserEvent(const SDL_UserEvent& event)
 {
     switch (event.code) {
@@ -1203,6 +1416,10 @@ bool SdlInputHandler::handleUserEvent(const SDL_UserEvent& event)
 
     case SDL_CODE_OVERLAY_MENU_INPUT:
         Session::get()->handleOverlayMenuInput((int)(intptr_t)event.data2, (int)(intptr_t)event.data1);
+        return true;
+
+    case SDL_CODE_GAMECONTROLLER_POLL_BATTERY:
+        pollGamepadBatteryStates();
         return true;
     }
 

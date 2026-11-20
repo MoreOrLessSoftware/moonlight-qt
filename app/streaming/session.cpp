@@ -29,6 +29,8 @@
 #define SDL_CODE_GAMECONTROLLER_SET_CONTROLLER_LED 104
 #define SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS 105
 #define SDL_CODE_OVERLAY_MENU_TEST_MOVE 106
+#define SDL_CODE_GAMECONTROLLER_SET_PLAYER_LEDS 112
+#define SDL_CODE_GAMECONTROLLER_SET_MIC_LED 113
 
 #include <openssl/rand.h>
 
@@ -61,7 +63,9 @@ CONNECTION_LISTENER_CALLBACKS Session::k_ConnCallbacks = {
     Session::clRumbleTriggers,
     Session::clSetMotionEventState,
     Session::clSetControllerLED,
-    Session::clSetAdaptiveTriggers
+    Session::clSetAdaptiveTriggers,
+    Session::clSetControllerPlayerLEDs,
+    Session::clSetControllerMicLED
 };
 
 Session* Session::s_ActiveSession;
@@ -278,6 +282,28 @@ void Session::clSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlag
 
     setControllerLEDEvent.user.data2 = (void *) state;
     SDL_PushEvent(&setControllerLEDEvent);
+}
+
+void Session::clSetControllerPlayerLEDs(uint16_t controllerNumber, uint8_t solidMask, uint8_t flashingMask, uint8_t ds5Leds)
+{
+    // Handled on the main thread, like the other controller callbacks, so the controller
+    // can't go away underneath it
+    SDL_Event event = {};
+    event.type = SDL_USEREVENT;
+    event.user.code = SDL_CODE_GAMECONTROLLER_SET_PLAYER_LEDS;
+    event.user.data1 = (void*)(uintptr_t)controllerNumber;
+    event.user.data2 = (void*)(uintptr_t)(solidMask << 16 | flashingMask << 8 | ds5Leds);
+    SDL_PushEvent(&event);
+}
+
+void Session::clSetControllerMicLED(uint16_t controllerNumber, uint8_t state)
+{
+    SDL_Event event = {};
+    event.type = SDL_USEREVENT;
+    event.user.code = SDL_CODE_GAMECONTROLLER_SET_MIC_LED;
+    event.user.data1 = (void*)(uintptr_t)controllerNumber;
+    event.user.data2 = (void*)(uintptr_t)state;
+    SDL_PushEvent(&event);
 }
 
 
@@ -2207,6 +2233,16 @@ void Session::exec()
             case SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS:
                 m_InputHandler->setAdaptiveTriggers((uint16_t)(uintptr_t)event.user.data1,
                                                     (DualSenseOutputReport *)event.user.data2);
+                break;
+            case SDL_CODE_GAMECONTROLLER_SET_PLAYER_LEDS:
+                m_InputHandler->setControllerPlayerLEDs((uint16_t)(uintptr_t)event.user.data1,
+                                                        (uint8_t)((uintptr_t)event.user.data2 >> 16),
+                                                        (uint8_t)((uintptr_t)event.user.data2 >> 8),
+                                                        (uint8_t)((uintptr_t)event.user.data2));
+                break;
+            case SDL_CODE_GAMECONTROLLER_SET_MIC_LED:
+                m_InputHandler->setControllerMicLED((uint16_t)(uintptr_t)event.user.data1,
+                                                    (uint8_t)(uintptr_t)event.user.data2);
                 break;
             default:
                 // GameInput gamepad events (device arrival/removal, combos) on Windows
