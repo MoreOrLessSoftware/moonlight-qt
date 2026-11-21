@@ -61,6 +61,7 @@ Support for [PyroWave](https://github.com/Themaister/pyrowave), an experimental 
 ### Input
 
 - GameInput support for Xbox controllers on Windows, for lower input latency, the Guide and Share buttons, Elite paddles and impulse trigger rumble.
+- Player LEDs set by the host are shown on the controller (and the mic mute LED on DualSense), and the controller's exact battery level and charging state are sent to the host.
 - Ctrl+Alt+Shift+W disconnects without quitting the host app.
 
 ### Per-Gamepad Settings
