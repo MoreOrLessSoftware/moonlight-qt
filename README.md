@@ -53,7 +53,8 @@ Support for [PyroWave](https://github.com/Themaister/pyrowave), an experimental 
 
 - Capture-to-present latency (using the host's clock, which MoreOrLessSoftware Sunshine [answers sync requests for](https://github.com/MoreOrLessSoftware/Sunshine#latency-and-frame-pacing)), frame receive time, and video and network bitrates.
 - Decode and render times measured to when the GPU finishes, so the latency figures add up.
-- A choice of text color, and a latency measurement mode (Ctrl+Alt+Shift+S cycles off, on, latency mode) that moves the overlay for camera-based latency tests. Sunshine's *Latency Test* plugin shows the test pattern for these, and its per-frame latency trace and CSV can be matched against this client's traces.
+- A choice of layouts: Minimal and Compact (one line, optionally with total latency), Basic and Detailed. Pick one in the settings or from the overlay menu; Ctrl+Alt+Shift+S toggles it.
+- A choice of text color, and a *Detailed (offset from top)* layout that moves the overlay for camera-based latency tests. Sunshine's *Latency Test* plugin shows the test pattern for these, and its per-frame latency trace and CSV can be matched against this client's traces.
 
 [![Stats](./screenshots/v1.0.0/stats.webp)](https://raw.githubusercontent.com/MoreOrLessSoftware/moonlight-qt/mlsoft-custom2/screenshots/v1.0.0/stats.webp)
 
