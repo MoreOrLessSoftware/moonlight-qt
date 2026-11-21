@@ -1,10 +1,13 @@
 #include "overlaymanager.h"
 #include "path.h"
+#include "settings/streamingpreferences.h"
 
 using namespace Overlay;
 
 OverlayManager::OverlayManager() :
     m_Renderer(nullptr),
+    m_Window(nullptr),
+    m_DebugOverlayMode(StreamingPreferences::POM_DETAILED),
     m_FontData(Path::readDataFile("ModeSeven.ttf"))
 {
     memset(m_Overlays, 0, sizeof(m_Overlays));
@@ -103,26 +106,36 @@ void OverlayManager::setOverlayState(OverlayType type, bool enabled)
         if (!enabled) {
             // Set the text to empty string on disable
             m_Overlays[type].text[0] = 0;
-
-            // Latency measurement mode goes with it, so the next enable starts without it
-            m_Overlays[type].latencyMeasurement = false;
         }
 
         notifyOverlayUpdated(type);
     }
 }
 
-bool OverlayManager::isOverlayLatencyMeasurementEnabled(OverlayType type)
+int OverlayManager::getDebugOverlayMode()
 {
-    return m_Overlays[type].latencyMeasurement;
+    return m_DebugOverlayMode;
 }
 
-void OverlayManager::setOverlayLatencyMeasurement(OverlayType type, bool enabled)
+void OverlayManager::setDebugOverlayMode(int mode)
 {
-    if (m_Overlays[type].latencyMeasurement != enabled) {
-        m_Overlays[type].latencyMeasurement = enabled;
-        setOverlayTextUpdated(type);
+    if (mode <= StreamingPreferences::POM_OFF || mode > StreamingPreferences::POM_DETAILED_OFFSET) {
+        mode = StreamingPreferences::POM_DETAILED;
     }
+
+    if (m_DebugOverlayMode != mode) {
+        m_DebugOverlayMode = mode;
+
+        // The old layout's text is dropped rather than drawn in the new place. The stats
+        // are written in the new layout with the next stats window, within a second.
+        m_Overlays[OverlayDebug].text[0] = 0;
+        setOverlayTextUpdated(OverlayDebug);
+    }
+}
+
+bool OverlayManager::isOverlayLatencyMeasurementEnabled(OverlayType type)
+{
+    return type == OverlayDebug && m_DebugOverlayMode == StreamingPreferences::POM_DETAILED_OFFSET;
 }
 
 SDL_Color OverlayManager::getOverlayColor(OverlayType type)
@@ -168,6 +181,11 @@ void OverlayManager::setOverlayRenderer(IOverlayRenderer* renderer)
             }
         }
     }
+}
+
+void OverlayManager::setOverlayWindow(SDL_Window* window)
+{
+    m_Window = window;
 }
 
 bool OverlayManager::isImageOverlay(OverlayType type)
@@ -222,6 +240,22 @@ void OverlayManager::notifyOverlayUpdated(OverlayType type)
         }
     }
 
+    // Lines wrap at the window's width, in the pixels the renderers draw overlays in, so the
+    // compact stats can run along the top in one line where they fit. The wrap length must be
+    // more than 0 for line breaks to work with SDL_ttf before 2.0.18.
+    int wrapLength = 1024;
+    if (m_Window != nullptr) {
+        int windowWidth, windowHeight;
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+        SDL_GetWindowSizeInPixels(m_Window, &windowWidth, &windowHeight);
+#else
+        SDL_GetWindowSize(m_Window, &windowWidth, &windowHeight);
+#endif
+        if (windowWidth > 0) {
+            wrapLength = windowWidth;
+        }
+    }
+
     // Exchange the old surface with the new one
     SDL_Surface* oldSurface = (SDL_Surface*)SDL_AtomicSetPtr(
         (void**)&m_Overlays[type].surface,
@@ -230,7 +264,7 @@ void OverlayManager::notifyOverlayUpdated(OverlayType type)
             TTF_RenderText_Blended_Wrapped(m_Overlays[type].font,
                                            m_Overlays[type].text,
                                            m_Overlays[type].color,
-                                           1024)
+                                           wrapLength)
             : nullptr);
 
     // Notify the renderer

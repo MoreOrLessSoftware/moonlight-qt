@@ -882,7 +882,7 @@ void FFmpegVideoDecoder::addVideoStats(VIDEO_STATS& src, VIDEO_STATS& dst)
     dst.renderedFps     = (double)dst.renderedFrames / timeDiffSecs;
 }
 
-void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, int length)
+void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, int length, int mode)
 {
     int offset = 0;
     const char* codecString;
@@ -985,16 +985,90 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
         break;
     }
 
+    // PyroWave decodes without an FFmpeg codec context
+    bool haveDimensions = m_VideoDecoderCtx != nullptr || m_Pyrowave != nullptr;
+    int videoWidth = m_VideoDecoderCtx != nullptr ? m_VideoDecoderCtx->width : m_OriginalVideoWidth;
+    int videoHeight = m_VideoDecoderCtx != nullptr ? m_VideoDecoderCtx->height : m_OriginalVideoHeight;
+
+    // The four parts of a frame's time on the client, over the same frames so they
+    // add up to it. See Pacer::countFrameStats().
+    double clientFrames = qMax<uint32_t>(1, stats.framesWithClientLatency);
+
+    double captureToPresentMs = 0;
+    if (stats.framesWithCaptureToPresent != 0) {
+        // Frames measured with clock sync include the network transit. For the rest, from
+        // hosts that don't answer it, the transit can only be estimated as half the round
+        // trip, which assumes the path is symmetric, at enet's 1 ms resolution. Present to
+        // photons is not in it at all.
+        double networkMs = stats.lastRtt != 0 ? stats.lastRtt / 2.0 : 0.0;
+        double totalMs = (double)stats.totalCaptureToPresentUs / 1000.0 + networkMs * stats.framesWithoutNetworkTransit;
+        captureToPresentMs = totalMs / stats.framesWithCaptureToPresent;
+    }
+
+    if (mode == StreamingPreferences::POM_MINIMAL || mode == StreamingPreferences::POM_MINIMAL_LATENCY ||
+            mode == StreamingPreferences::POM_COMPACT || mode == StreamingPreferences::POM_COMPACT_LATENCY) {
+        // The main stats along one line, with the Android client's short labels. The overlay's
+        // font has no bullet, so they're separated with spaces.
+        bool minimal = mode == StreamingPreferences::POM_MINIMAL || mode == StreamingPreferences::POM_MINIMAL_LATENCY;
+        bool latency = mode == StreamingPreferences::POM_MINIMAL_LATENCY || mode == StreamingPreferences::POM_COMPACT_LATENCY;
+        QStringList items;
+
+        if (stats.receivedFps > 0) {
+            if (haveDimensions) {
+                items.append(QString::asprintf("%dx%d @ %.2f FPS", videoWidth, videoHeight, stats.totalFps));
+            }
+            if (minimal) {
+                items.append(QString::asprintf("Render: %.2f FPS", stats.renderedFps));
+            }
+            else {
+                items.append(QString::asprintf("In/render: %.2f/%.2f FPS", stats.receivedFps, stats.renderedFps));
+            }
+            if (haveDimensions) {
+                items.append(QString::asprintf("%.0f Mbps", m_BwTracker.GetAverageMbps()));
+            }
+        }
+
+        if (!minimal && stats.renderedFrames != 0) {
+            items.append(QString::asprintf("Drop/jitter: %.2f%%/%.2f%%",
+                                           (float)stats.networkDroppedFrames / stats.totalFrames * 100,
+                                           (float)stats.pacerDroppedFrames / stats.decodedFrames * 100));
+            if (stats.lastRtt != 0) {
+                items.append(QString::asprintf("Net: %u/%u", stats.lastRtt, stats.lastRttVariance));
+            }
+            else {
+                items.append(QStringLiteral("Net: N/A"));
+            }
+        }
+
+        if (!minimal && stats.framesWithHostProcessingLatency > 0) {
+            items.append(QString::asprintf("Host: %.1f",
+                                           (float)stats.totalHostProcessingLatency / 10 / stats.framesWithHostProcessingLatency));
+        }
+
+        if (!minimal && stats.renderedFrames != 0) {
+            items.append(QString::asprintf("%s: %.1f", codecString, (double)(stats.totalDecodeTimeUs / 1000.0) / clientFrames));
+        }
+
+        if (latency && stats.framesWithCaptureToPresent != 0) {
+            items.append(QString::asprintf("Capture to present: %.0f ms", captureToPresentMs));
+        }
+
+        SDL_strlcpy(output, items.join(QStringLiteral("   ")).toLatin1().constData(), length);
+        return;
+    }
+
+    // Basic leaves out decoded FPS and the client's per-stage times
+    bool basic = mode == StreamingPreferences::POM_BASIC;
+
     if (stats.receivedFps > 0) {
-        // PyroWave decodes without an FFmpeg codec context
-        if (m_VideoDecoderCtx != nullptr || m_Pyrowave != nullptr) {
+        if (haveDimensions) {
             ret = snprintf(&output[offset],
                            length - offset,
                            "Video stream: %.2f FPS (%dx%d %s)\n"
                            "Video bitrate: %.0f Mbps (network: %.0f Mbps)\n",
                            stats.totalFps,
-                           m_VideoDecoderCtx != nullptr ? m_VideoDecoderCtx->width : m_OriginalVideoWidth,
-                           m_VideoDecoderCtx != nullptr ? m_VideoDecoderCtx->height : m_OriginalVideoHeight,
+                           videoWidth,
+                           videoHeight,
                            codecString,
                            // Frame data as it arrives, without FEC or packet headers
                            m_BwTracker.GetAverageMbps(),
@@ -1008,14 +1082,24 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
             offset += ret;
         }
 
-        ret = snprintf(&output[offset],
-                       length - offset,
-                       "FPS incoming: %.2f FPS\n"
-                       "FPS decoded:  %.2f FPS\n"
-                       "FPS rendered: %.2f FPS\n",
-                       stats.receivedFps,
-                       stats.decodedFps,
-                       stats.renderedFps);
+        if (basic) {
+            ret = snprintf(&output[offset],
+                           length - offset,
+                           "FPS incoming: %.2f FPS\n"
+                           "FPS rendered: %.2f FPS\n",
+                           stats.receivedFps,
+                           stats.renderedFps);
+        }
+        else {
+            ret = snprintf(&output[offset],
+                           length - offset,
+                           "FPS incoming: %.2f FPS\n"
+                           "FPS decoded:  %.2f FPS\n"
+                           "FPS rendered: %.2f FPS\n",
+                           stats.receivedFps,
+                           stats.decodedFps,
+                           stats.renderedFps);
+        }
         if (ret < 0 || ret >= length - offset) {
             SDL_assert(false);
             return;
@@ -1048,10 +1132,6 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
     if (stats.renderedFrames != 0) {
         char rttString[32];
 
-        // The four parts of a frame's time on the client, over the same frames so they
-        // add up to it. See Pacer::countFrameStats().
-        double clientFrames = qMax<uint32_t>(1, stats.framesWithClientLatency);
-
         if (stats.lastRtt != 0) {
             snprintf(rttString, sizeof(rttString), "%u ms (variance: %u ms)", stats.lastRtt, stats.lastRttVariance);
         }
@@ -1059,24 +1139,37 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
             snprintf(rttString, sizeof(rttString), "N/A");
         }
 
-        ret = snprintf(&output[offset],
-                       length - offset,
-                       "Network drop/jitter: %.2f%% / %.2f%%\n"
-                       "Network latency: %s\n"
-                       "Frame receive time: %.2f ms%s\n"
-                       "Decoding time: %.2f ms\n"
-                       "Frame queue/render: %.2f / %.2f ms\n",
-                       (float)stats.networkDroppedFrames / stats.totalFrames * 100,
-                       (float)stats.pacerDroppedFrames / stats.decodedFrames * 100,
-                       rttString,
-                       // From the host's finish to the last packet, or first packet to last
-                       // without clock sync. See Pacer::countFrameStats().
-                       (double)(stats.totalReassemblyTimeUs / 1000.0) / clientFrames,
-                       // Named for what most of the frames were measured from
-                       stats.framesReceivedAfterHost * 2 > stats.framesWithClientLatency ? " (after host)" : "",
-                       (double)(stats.totalDecodeTimeUs / 1000.0) / clientFrames,
-                       (double)(stats.totalPacerTimeUs / 1000.0) / clientFrames,
-                       (double)(stats.totalRenderTimeUs / 1000.0) / clientFrames);
+        if (basic) {
+            ret = snprintf(&output[offset],
+                           length - offset,
+                           "Network drop/jitter: %.2f%% / %.2f%%\n"
+                           "Network latency: %s\n"
+                           "Decoding time: %.2f ms\n",
+                           (float)stats.networkDroppedFrames / stats.totalFrames * 100,
+                           (float)stats.pacerDroppedFrames / stats.decodedFrames * 100,
+                           rttString,
+                           (double)(stats.totalDecodeTimeUs / 1000.0) / clientFrames);
+        }
+        else {
+            ret = snprintf(&output[offset],
+                           length - offset,
+                           "Network drop/jitter: %.2f%% / %.2f%%\n"
+                           "Network latency: %s\n"
+                           "Frame receive time: %.2f ms%s\n"
+                           "Decoding time: %.2f ms\n"
+                           "Frame queue/render: %.2f / %.2f ms\n",
+                           (float)stats.networkDroppedFrames / stats.totalFrames * 100,
+                           (float)stats.pacerDroppedFrames / stats.decodedFrames * 100,
+                           rttString,
+                           // From the host's finish to the last packet, or first packet to last
+                           // without clock sync. See Pacer::countFrameStats().
+                           (double)(stats.totalReassemblyTimeUs / 1000.0) / clientFrames,
+                           // Named for what most of the frames were measured from
+                           stats.framesReceivedAfterHost * 2 > stats.framesWithClientLatency ? " (after host)" : "",
+                           (double)(stats.totalDecodeTimeUs / 1000.0) / clientFrames,
+                           (double)(stats.totalPacerTimeUs / 1000.0) / clientFrames,
+                           (double)(stats.totalRenderTimeUs / 1000.0) / clientFrames);
+        }
         if (ret < 0 || ret >= length - offset) {
             SDL_assert(false);
             return;
@@ -1086,17 +1179,10 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
     }
 
     if (stats.framesWithCaptureToPresent != 0) {
-        // Frames measured with clock sync include the network transit. For the rest, from
-        // hosts that don't answer it, the transit can only be estimated as half the round
-        // trip, which assumes the path is symmetric, at enet's 1 ms resolution. Present to
-        // photons is not in it at all.
-        double networkMs = stats.lastRtt != 0 ? stats.lastRtt / 2.0 : 0.0;
-        double totalMs = (double)stats.totalCaptureToPresentUs / 1000.0 + networkMs * stats.framesWithoutNetworkTransit;
-
         ret = snprintf(&output[offset],
                        length - offset,
                        "Capture to present: %.1f ms\n",
-                       totalMs / stats.framesWithCaptureToPresent);
+                       captureToPresentMs);
         if (ret < 0 || ret >= length - offset) {
             SDL_assert(false);
             return;
@@ -1110,7 +1196,7 @@ void FFmpegVideoDecoder::logVideoStats(VIDEO_STATS& stats, const char* title)
 {
     if (stats.renderedFps > 0 || stats.renderedFrames != 0) {
         char videoStatsStr[1024];
-        stringifyVideoStats(stats, videoStatsStr, sizeof(videoStatsStr));
+        stringifyVideoStats(stats, videoStatsStr, sizeof(videoStatsStr), StreamingPreferences::POM_DETAILED);
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "\n%s\n------------------\n%s",
@@ -2662,7 +2748,8 @@ void FFmpegVideoDecoder::recordReceivedFrame(PDECODE_UNIT du)
 
             stringifyVideoStats(lastTwoWndStats,
                                 Session::get()->getOverlayManager().getOverlayText(Overlay::OverlayDebug),
-                                Session::get()->getOverlayManager().getOverlayMaxTextLength());
+                                Session::get()->getOverlayManager().getOverlayMaxTextLength(),
+                                Session::get()->getOverlayManager().getDebugOverlayMode());
             Session::get()->getOverlayManager().setOverlayTextUpdated(Overlay::OverlayDebug);
         }
 

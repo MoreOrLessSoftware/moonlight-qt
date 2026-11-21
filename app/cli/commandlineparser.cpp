@@ -529,7 +529,13 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     preferences->keepAwake = parser.getToggleOptionValue("keep-awake", preferences->keepAwake);
 
     // Resolve --performance-overlay and --no-performance-overlay options
-    preferences->showPerformanceOverlay = parser.getToggleOptionValue("performance-overlay", preferences->showPerformanceOverlay);
+    // On is the detailed layout, unless another layout is already chosen in the settings.
+    if (!parser.getToggleOptionValue("performance-overlay", preferences->perfOverlayMode != StreamingPreferences::POM_OFF)) {
+        preferences->perfOverlayMode = StreamingPreferences::POM_OFF;
+    }
+    else if (preferences->perfOverlayMode == StreamingPreferences::POM_OFF) {
+        preferences->perfOverlayMode = StreamingPreferences::POM_DETAILED;
+    }
 
     // Resolve --hdr and --no-hdr options
     preferences->enableHdr = parser.getToggleOptionValue("hdr", preferences->enableHdr);

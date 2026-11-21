@@ -1988,6 +1988,7 @@ void Session::exec()
     }
 
     m_InputHandler->setWindow(m_Window);
+    m_OverlayManager.setOverlayWindow(m_Window);
 
     QSvgRenderer svgIconRenderer(QString(":/res/moonlight.svg"));
     QImage svgImage(ICON_SIZE, ICON_SIZE, QImage::Format_RGBA8888);
@@ -2079,7 +2080,11 @@ void Session::exec()
         overlayColor = StreamingPreferences::OC_YELLOW;
     }
     m_OverlayManager.setOverlayColor(Overlay::OverlayDebug, k_OverlayColors[overlayColor]);
-    m_OverlayManager.setOverlayState(Overlay::OverlayDebug, m_Preferences->showPerformanceOverlay);
+    // Off keeps the detailed layout for turning it on while streaming
+    if (m_Preferences->perfOverlayMode != StreamingPreferences::POM_OFF) {
+        m_OverlayManager.setDebugOverlayMode(m_Preferences->perfOverlayMode);
+    }
+    m_OverlayManager.setOverlayState(Overlay::OverlayDebug, m_Preferences->perfOverlayMode != StreamingPreferences::POM_OFF);
 
     // Network jitter tolerance only applies with frame pacing
     m_OverlayMenu.setShowJitterTolerance(m_Preferences->enableVsync && m_Preferences->framePacing);
@@ -2608,6 +2613,7 @@ DispatchDeferredCleanup:
 
     // This must be called after the decoder is deleted, because
     // the renderer may want to interact with the window
+    m_OverlayManager.setOverlayWindow(nullptr);
     SDL_DestroyWindow(m_Window);
 
     if (iconSurface != nullptr) {

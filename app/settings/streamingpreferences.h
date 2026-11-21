@@ -132,6 +132,21 @@ public:
     };
     Q_ENUM(OverlayColor);
 
+    // The stats overlay's layouts, as on the Android client, in the order the settings list them
+    enum PerfOverlayMode
+    {
+        POM_OFF,
+        POM_MINIMAL,
+        POM_MINIMAL_LATENCY,
+        POM_COMPACT,
+        POM_COMPACT_LATENCY,
+        POM_BASIC,
+        POM_DETAILED,
+        // Detailed, drawn a third of the way down for latency measurement (see the renderers)
+        POM_DETAILED_OFFSET,
+    };
+    Q_ENUM(PerfOverlayMode);
+
     // The gamepad buttons held to open the in-stream menu
     enum OverlayMenuTrigger
     {
@@ -167,7 +182,7 @@ public:
     Q_PROPERTY(bool richPresence MEMBER richPresence NOTIFY richPresenceChanged)
     Q_PROPERTY(bool gamepadMouse MEMBER gamepadMouse NOTIFY gamepadMouseChanged)
     Q_PROPERTY(bool detectNetworkBlocking MEMBER detectNetworkBlocking NOTIFY detectNetworkBlockingChanged)
-    Q_PROPERTY(bool showPerformanceOverlay MEMBER showPerformanceOverlay NOTIFY showPerformanceOverlayChanged)
+    Q_PROPERTY(PerfOverlayMode perfOverlayMode MEMBER perfOverlayMode NOTIFY perfOverlayModeChanged)
     Q_PROPERTY(OverlayColor overlayColor MEMBER overlayColor NOTIFY overlayColorChanged)
     Q_PROPERTY(AudioConfig audioConfig MEMBER audioConfig NOTIFY audioConfigChanged)
     Q_PROPERTY(VideoCodecConfig videoCodecConfig MEMBER videoCodecConfig NOTIFY videoCodecConfigChanged)
@@ -234,7 +249,6 @@ public:
     bool richPresence;
     bool gamepadMouse;
     bool detectNetworkBlocking;
-    bool showPerformanceOverlay;
     bool swapMouseButtons;
     bool muteOnFocusLoss;
     bool backgroundGamepad;
@@ -258,6 +272,7 @@ public:
     OverlayMenuTrigger overlayMenuTrigger;
     // How long the trigger is held to open the in-stream menu
     int overlayMenuHoldMs;
+    PerfOverlayMode perfOverlayMode;
     OverlayColor overlayColor;
     RendererSelection rendererSelection;
 
@@ -292,7 +307,7 @@ signals:
     void richPresenceChanged();
     void gamepadMouseChanged();
     void detectNetworkBlockingChanged();
-    void showPerformanceOverlayChanged();
+    void perfOverlayModeChanged();
     void overlayColorChanged();
     void mouseButtonsChanged();
     void muteOnFocusLossChanged();

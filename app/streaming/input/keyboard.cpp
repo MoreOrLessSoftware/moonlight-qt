@@ -64,18 +64,9 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Detected stats toggle combo");
 
-        // Cycle the stats overlay: off -> on -> latency measurement mode -> off
+        // Toggle the stats overlay, in the layout it last had (the overlay menu picks others)
         Overlay::OverlayManager& overlays = Session::get()->getOverlayManager();
-        if (!overlays.isOverlayEnabled(Overlay::OverlayDebug)) {
-            overlays.setOverlayState(Overlay::OverlayDebug, true);
-        }
-        else if (!overlays.isOverlayLatencyMeasurementEnabled(Overlay::OverlayDebug)) {
-            overlays.setOverlayLatencyMeasurement(Overlay::OverlayDebug, true);
-        }
-        else {
-            // Disabling also leaves latency measurement mode
-            overlays.setOverlayState(Overlay::OverlayDebug, false);
-        }
+        overlays.setOverlayState(Overlay::OverlayDebug, !overlays.isOverlayEnabled(Overlay::OverlayDebug));
         break;
     }
 

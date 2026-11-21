@@ -2027,17 +2027,71 @@ Item {
                             ToolTip.text: qsTr("This unlocks extremely high video bitrates for use with Sunshine hosts. It should only be used when streaming over an Ethernet LAN connection.")
                         }
 
-                        Row {
+                        Label {
+                            width: parent.width
+                            text: qsTr("Performance stats")
+                            font.pointSize: 12
+                            wrapMode: Text.Wrap
+                        }
+
+                        // The color goes below the mode where the two don't fit side by side
+                        Flow {
                             spacing: 5
                             width: parent.width
 
-                            CheckBox {
-                                id: showPerformanceOverlay
-                                text: qsTr("Show performance stats while streaming")
-                                font.pointSize: 12
-                                checked: StreamingPreferences.showPerformanceOverlay
-                                onCheckedChanged: {
-                                    StreamingPreferences.showPerformanceOverlay = checked
+                            AutoResizingComboBox {
+                                id: perfOverlayModeComboBox
+                                textRole: "text"
+                                model: ListModel {
+                                    id: perfOverlayModeListModel
+                                    ListElement {
+                                        text: qsTr("Off")
+                                        val: StreamingPreferences.POM_OFF
+                                    }
+                                    ListElement {
+                                        text: qsTr("Minimal")
+                                        val: StreamingPreferences.POM_MINIMAL
+                                    }
+                                    ListElement {
+                                        text: qsTr("Minimal (with total latency)")
+                                        val: StreamingPreferences.POM_MINIMAL_LATENCY
+                                    }
+                                    ListElement {
+                                        text: qsTr("Compact")
+                                        val: StreamingPreferences.POM_COMPACT
+                                    }
+                                    ListElement {
+                                        text: qsTr("Compact (with total latency)")
+                                        val: StreamingPreferences.POM_COMPACT_LATENCY
+                                    }
+                                    ListElement {
+                                        text: qsTr("Basic")
+                                        val: StreamingPreferences.POM_BASIC
+                                    }
+                                    ListElement {
+                                        text: qsTr("Detailed")
+                                        val: StreamingPreferences.POM_DETAILED
+                                    }
+                                    ListElement {
+                                        text: qsTr("Detailed (offset from top)")
+                                        val: StreamingPreferences.POM_DETAILED_OFFSET
+                                    }
+                                }
+
+                                Component.onCompleted: {
+                                    currentIndex = 0
+                                    for (var i = 0; i < perfOverlayModeListModel.count; i++) {
+                                        if (perfOverlayModeListModel.get(i).val === StreamingPreferences.perfOverlayMode) {
+                                            currentIndex = i
+                                            break
+                                        }
+                                    }
+                                    recalculateWidth()
+                                }
+
+                                // ::onActivated must be used, as it only listens for when the index is changed by a human
+                                onActivated: {
+                                    StreamingPreferences.perfOverlayMode = perfOverlayModeListModel.get(currentIndex).val
                                 }
 
                                 ToolTip.delay: 1000
@@ -2050,7 +2104,6 @@ Item {
 
                             AutoResizingComboBox {
                                 id: overlayColorComboBox
-                                anchors.verticalCenter: parent.verticalCenter
                                 textRole: "text"
                                 model: ListModel {
                                     id: overlayColorListModel

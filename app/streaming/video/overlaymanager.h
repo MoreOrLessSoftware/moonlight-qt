@@ -42,8 +42,12 @@ public:
     int getOverlayMaxTextLength();
     void setOverlayTextUpdated(OverlayType type);
     void setOverlayState(OverlayType type, bool enabled);
+    // The stats overlay's layout, a StreamingPreferences::PerfOverlayMode other than POM_OFF.
+    // It stays as set while the overlay is off, for the next time it's turned on.
+    int getDebugOverlayMode();
+    void setDebugOverlayMode(int mode);
+    // The stats overlay drawn a third of the way down instead of at the top (the renderers)
     bool isOverlayLatencyMeasurementEnabled(OverlayType type);
-    void setOverlayLatencyMeasurement(OverlayType type, bool enabled);
     SDL_Color getOverlayColor(OverlayType type);
     void setOverlayColor(OverlayType type, SDL_Color color);
     int getOverlayFontSize(OverlayType type);
@@ -56,6 +60,8 @@ public:
     bool isOverlaySupported(OverlayType type);
 
     void setOverlayRenderer(IOverlayRenderer* renderer);
+    // The window text overlays are drawn in, for lines as wide as it to wrap at
+    void setOverlayWindow(SDL_Window* window);
 
 private:
     static bool isImageOverlay(OverlayType type);
@@ -63,7 +69,6 @@ private:
 
     struct {
         bool enabled;
-        bool latencyMeasurement;
         int fontSize;
         SDL_Color color;
         char text[1024];
@@ -75,6 +80,8 @@ private:
         SDL_Surface* image;
     } m_Overlays[OverlayMax];
     IOverlayRenderer* m_Renderer;
+    SDL_Window* m_Window;
+    int m_DebugOverlayMode;
     QByteArray m_FontData;
 };
 

@@ -55,7 +55,8 @@ private:
                                 TestMode testMode,
                                 bool useAlternateFrontend);
 
-    void stringifyVideoStats(VIDEO_STATS& stats, char* output, int length);
+    // In a StreamingPreferences::PerfOverlayMode layout (the session log has the detailed one)
+    void stringifyVideoStats(VIDEO_STATS& stats, char* output, int length, int mode);
 
     void logVideoStats(VIDEO_STATS& stats, const char* title);
 

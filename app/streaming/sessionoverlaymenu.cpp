@@ -25,6 +25,20 @@ static QString defaultGroupIcon(const QString& kind)
     return "folder";
 }
 
+// The stats overlay's choices, as in the settings. The option's index is the mode.
+static const char* const k_PerfOverlayModeNames[] = {
+    QT_TRANSLATE_NOOP("OverlayMenu", "Off"),
+    QT_TRANSLATE_NOOP("OverlayMenu", "Minimal"),
+    QT_TRANSLATE_NOOP("OverlayMenu", "Minimal (with total latency)"),
+    QT_TRANSLATE_NOOP("OverlayMenu", "Compact"),
+    QT_TRANSLATE_NOOP("OverlayMenu", "Compact (with total latency)"),
+    QT_TRANSLATE_NOOP("OverlayMenu", "Basic"),
+    QT_TRANSLATE_NOOP("OverlayMenu", "Detailed"),
+    QT_TRANSLATE_NOOP("OverlayMenu", "Detailed (offset from top)"),
+};
+static_assert(SDL_arraysize(k_PerfOverlayModeNames) == StreamingPreferences::POM_DETAILED_OFFSET + 1,
+              "A name for each stats overlay mode");
+
 // Network jitter tolerance's choices, as in the settings
 static const int k_JitterTolerancePercentiles[] = { 90, 97, 99 };
 
@@ -179,14 +193,14 @@ void Session::activateOverlayMenuAction(int action)
         break;
 
     case OverlayMenu::ActionStats: {
-        // The stats overlay's three modes, as the shortcut cycles through them
-        int mode = !m_OverlayManager.isOverlayEnabled(Overlay::OverlayDebug) ? 0 :
-                   !m_OverlayManager.isOverlayLatencyMeasurementEnabled(Overlay::OverlayDebug) ? 1 : 2;
-        m_OverlayMenu.showOptions(action,
-                                  { QCoreApplication::translate("OverlayMenu", "Off"),
-                                    QCoreApplication::translate("OverlayMenu", "Stats"),
-                                    QCoreApplication::translate("OverlayMenu", "Latency Measurement") },
-                                  mode);
+        // For the rest of this session only, as on the Android client
+        int mode = m_OverlayManager.isOverlayEnabled(Overlay::OverlayDebug) ?
+                    m_OverlayManager.getDebugOverlayMode() : (int)StreamingPreferences::POM_OFF;
+        QStringList labels;
+        for (const char* name : k_PerfOverlayModeNames) {
+            labels.append(QCoreApplication::translate("OverlayMenu", name));
+        }
+        m_OverlayMenu.showOptions(action, labels, mode);
         break;
     }
 
@@ -498,10 +512,10 @@ void Session::pickOverlayMenuOption(int option)
 
     switch (optionsAction) {
     case OverlayMenu::ActionStats:
-        m_OverlayManager.setOverlayState(Overlay::OverlayDebug, option != 0);
-        if (option != 0) {
-            m_OverlayManager.setOverlayLatencyMeasurement(Overlay::OverlayDebug, option == 2);
+        if (option > StreamingPreferences::POM_OFF && option <= StreamingPreferences::POM_DETAILED_OFFSET) {
+            m_OverlayManager.setDebugOverlayMode(option);
         }
+        m_OverlayManager.setOverlayState(Overlay::OverlayDebug, option > StreamingPreferences::POM_OFF);
         break;
 
     case OverlayMenu::ActionJitterTolerance:

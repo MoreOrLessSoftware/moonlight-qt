@@ -51,6 +51,7 @@
 #define SER_PACKETSIZE "packetsize"
 #define SER_DETECTNETBLOCKING "detectnetblocking"
 #define SER_SHOWPERFOVERLAY "showperfoverlay"
+#define SER_PERFOVERLAYMODE "perfoverlaymode"
 #define SER_OVERLAYCOLOR "overlaycolor"
 #define SER_SWAPMOUSEBUTTONS "swapmousebuttons"
 #define SER_MUTEONFOCUSLOSS "muteonfocusloss"
@@ -164,7 +165,13 @@ void StreamingPreferences::reload()
     richPresence = settings.value(SER_RICHPRESENCE, true).toBool();
     gamepadMouse = settings.value(SER_GAMEPADMOUSE, true).toBool();
     detectNetworkBlocking = settings.value(SER_DETECTNETBLOCKING, true).toBool();
-    showPerformanceOverlay = settings.value(SER_SHOWPERFOVERLAY, false).toBool();
+    // From the old on/off setting the first time, where on was the detailed layout
+    perfOverlayMode = static_cast<PerfOverlayMode>(settings.value(SER_PERFOVERLAYMODE,
+                                                   static_cast<int>(settings.value(SER_SHOWPERFOVERLAY, false).toBool() ?
+                                                                        PerfOverlayMode::POM_DETAILED : PerfOverlayMode::POM_OFF)).toInt());
+    if (perfOverlayMode < POM_OFF || perfOverlayMode > POM_DETAILED_OFFSET) {
+        perfOverlayMode = POM_OFF;
+    }
     overlayColor = static_cast<OverlayColor>(settings.value(SER_OVERLAYCOLOR,
                                              static_cast<int>(OverlayColor::OC_YELLOW)).toInt());
     packetSize = settings.value(SER_PACKETSIZE, 0).toInt();
@@ -375,7 +382,8 @@ void StreamingPreferences::save()
     settings.setValue(SER_GAMEPADMOUSE, gamepadMouse);
     settings.setValue(SER_PACKETSIZE, packetSize);
     settings.setValue(SER_DETECTNETBLOCKING, detectNetworkBlocking);
-    settings.setValue(SER_SHOWPERFOVERLAY, showPerformanceOverlay);
+    settings.setValue(SER_PERFOVERLAYMODE, static_cast<int>(perfOverlayMode));
+    settings.remove(SER_SHOWPERFOVERLAY);
     settings.setValue(SER_OVERLAYCOLOR, static_cast<int>(overlayColor));
     settings.setValue(SER_AUDIOCFG, static_cast<int>(audioConfig));
     settings.setValue(SER_HDR, enableHdr);
