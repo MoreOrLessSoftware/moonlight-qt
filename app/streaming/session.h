@@ -18,6 +18,9 @@
 #define SDL_CODE_OVERLAY_MENU_COMMAND_DONE 108
 // A message on one of the overlay menu's buttons timing out (data1: which one)
 #define SDL_CODE_OVERLAY_MENU_MESSAGE_TIMEOUT 111
+// Time to turn the spinner on a busy overlay menu button (data1: the session's token, data2:
+// which run of a host command)
+#define SDL_CODE_OVERLAY_MENU_SPINNER 114
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -206,6 +209,9 @@ private:
     void runHostCommand(const HostCommand& command, int action);
     void handleHostCommandRan(const SDL_UserEvent& event);
     void showOverlayMenuMessage(int action, const QString& message);
+    // Redraws the menu after a while, turning the spinner of the host command running
+    void scheduleHostCommandSpinner(int delayMs);
+    void handleHostCommandSpinner(const SDL_UserEvent& event);
 
     void updateOptimalWindowDisplayMode();
 
@@ -354,6 +360,11 @@ private:
     QString m_HostCommandRunningId;
     int m_HostCommandRunningAction = OverlayMenu::ActionNone;
     bool m_HostCommandRunningCloses = false;
+    // Counts the host commands run, so a spinner's redraws stop with the run they're for
+    int m_HostCommandRuns = 0;
+    // A command that keeps the menu open ran, and its spinner turns until the reloaded commands
+    // arrive
+    bool m_HostCommandAwaitingReload = false;
     // Counts the menu's messages, so only the latest one's timeout clears it
     int m_OverlayMenuMessages = 0;
 

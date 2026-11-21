@@ -349,6 +349,11 @@ void Session::handleHostCommandsFetched(const SDL_UserEvent& event)
     }
 
     m_HostCommandsFetching = false;
+    // The reload after a command that keeps the menu open is in, however it went: its spinner stops
+    if (m_HostCommandAwaitingReload) {
+        m_HostCommandAwaitingReload = false;
+        m_OverlayMenu.setBusy(OverlayMenu::ActionNone);
+    }
     if (result->unsupported) {
         m_HostCommandsSupported = false;
         m_HostCommands = {};
@@ -386,10 +391,15 @@ void Session::runHostCommand(const HostCommand& command, int action)
                 "Running the host's command: %s",
                 qPrintable(command.label));
 
-    // The menu stays open until the host answers, so a failure can show on the button
+    // The menu stays open until the host answers, so a failure can show on the button. Until
+    // then, its button shows a spinner.
     m_HostCommandRunningId = command.id;
     m_HostCommandRunningAction = action;
     m_HostCommandRunningCloses = command.closeMenu;
+    m_HostCommandAwaitingReload = false;
+    m_HostCommandRuns++;
+    m_OverlayMenu.setBusy(action);
+    scheduleHostCommandSpinner(OverlayMenu::BusySpinnerDelayMs);
     HostCommandsClient::run(m_HostCommandsTarget, command.id, m_OverlayMenuCommandToken);
 }
 
@@ -403,12 +413,57 @@ void Session::handleHostCommandRan(const SDL_UserEvent& event)
     m_HostCommandRunningId.clear();
     if (result->ok) {
         if (m_HostCommandRunningCloses) {
+            m_OverlayMenu.setBusy(OverlayMenu::ActionNone);
             closeOverlayMenu();
+        }
+        else {
+            // The menu stays open, so reload its commands: one may now show what it does next,
+            // such as Resume after Suspend. The host answers once that has changed. The spinner
+            // keeps turning until they arrive, so the old label doesn't flash back first.
+            fetchHostCommands();
+            if (m_HostCommandsFetching) {
+                m_HostCommandAwaitingReload = true;
+            }
+            else {
+                m_OverlayMenu.setBusy(OverlayMenu::ActionNone);
+            }
         }
     }
     else {
+        m_OverlayMenu.setBusy(OverlayMenu::ActionNone);
         showOverlayMenuMessage(m_HostCommandRunningAction, result->message);
     }
+}
+
+void Session::scheduleHostCommandSpinner(int delayMs)
+{
+    struct Tick {
+        int token;
+        int run;
+    };
+    SDL_AddTimer(delayMs, [](Uint32, void* param) -> Uint32 {
+        auto tick = (Tick*)param;
+        SDL_Event event = {};
+        event.type = SDL_USEREVENT;
+        event.user.code = SDL_CODE_OVERLAY_MENU_SPINNER;
+        event.user.data1 = (void*)(intptr_t)tick->token;
+        event.user.data2 = (void*)(intptr_t)tick->run;
+        SDL_PushEvent(&event);
+        delete tick;
+        return 0;
+    }, new Tick { m_OverlayMenuCommandToken, m_HostCommandRuns });
+}
+
+void Session::handleHostCommandSpinner(const SDL_UserEvent& event)
+{
+    // Only while the run it's for is still waiting on the host, and the menu is open
+    if ((int)(intptr_t)event.data1 != m_OverlayMenuCommandToken || (int)(intptr_t)event.data2 != m_HostCommandRuns ||
+        (m_HostCommandRunningId.isEmpty() && !m_HostCommandAwaitingReload) || !m_OverlayMenu.isOpen()) {
+        return;
+    }
+
+    m_OverlayMenu.refresh();
+    scheduleHostCommandSpinner(OverlayMenu::BusySpinnerFrameMs);
 }
 
 void Session::showOverlayMenuMessage(int action, const QString& message)

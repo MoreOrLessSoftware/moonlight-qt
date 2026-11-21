@@ -2219,6 +2219,9 @@ void Session::exec()
             case SDL_CODE_HOST_COMMAND_RAN:
                 handleHostCommandRan(event.user);
                 break;
+            case SDL_CODE_OVERLAY_MENU_SPINNER:
+                handleHostCommandSpinner(event.user);
+                break;
             case SDL_CODE_OVERLAY_MENU_TEST_MOVE:
                 switch ((char)(intptr_t)event.user.data1) {
                 case 'U': handleOverlayMenuInput(UP_FLAG, -1); break;

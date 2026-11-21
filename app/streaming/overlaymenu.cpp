@@ -36,6 +36,7 @@ OverlayMenu::OverlayMenu(Overlay::OverlayManager& overlays) :
     m_OptionChecked(-1),
     m_Group(-1),
     m_MessageAction(ActionNone),
+    m_BusyAction(ActionNone),
     m_Region(RegionColumn),
     m_ColumnIndex(0),
     m_RowIndex(0),
@@ -141,6 +142,33 @@ void OverlayMenu::setMessage(int action, const QString& message)
     draw();
 }
 
+void OverlayMenu::setBusy(int action)
+{
+    if (action == m_BusyAction) {
+        return;
+    }
+
+    const bool wasShowing = m_BusyAction != ActionNone && m_BusyTimer.isValid() && m_BusyTimer.elapsed() >= BusySpinnerDelayMs;
+    m_BusyAction = action;
+    if (action != ActionNone) {
+        m_BusyTimer.start();
+    }
+    else {
+        m_BusyTimer.invalidate();
+    }
+
+    // A spinner only shows after a moment, so only one that was showing needs drawing away now
+    if (m_Open && wasShowing) {
+        draw();
+    }
+}
+
+bool OverlayMenu::showsSpinner(const Item& item) const
+{
+    return item.action != ActionNone && item.action == m_BusyAction &&
+           m_BusyTimer.isValid() && m_BusyTimer.elapsed() >= BusySpinnerDelayMs;
+}
+
 bool OverlayMenu::open(SDL_Window* window)
 {
     if (m_Open) {
@@ -187,6 +215,8 @@ void OverlayMenu::close()
     }
 
     m_Open = false;
+    m_BusyAction = ActionNone;
+    m_BusyTimer.invalidate();
     m_Overlays.setOverlayState(Overlay::OverlayMenu, false);
 
     if (m_RedrawHandler) {
@@ -556,7 +586,7 @@ void OverlayMenu::draw()
 
     auto buttonWidth = [&](const Item& item) {
         qreal width = 2 * scale * MENU_PADDING + labelMetrics.horizontalAdvance(item.label);
-        if (!item.icon.isEmpty()) {
+        if (!item.icon.isEmpty() || showsSpinner(item)) {
             width += scale * MENU_ICON_SIZE;
             if (!item.label.isEmpty()) {
                 width += scale * MENU_LABEL_GAP;
@@ -707,7 +737,24 @@ void OverlayMenu::drawButton(QPainter& painter, const QRectF& rect, const Item& 
 
     painter.setPen(contentColor);
 
-    if (!item.icon.isEmpty()) {
+    if (showsSpinner(item)) {
+        // A three-quarter ring in place of the icon, a turn a second, while its command runs
+        const qreal inset = iconSize * 0.15;
+        const QRectF ring = QRectF(x, contentRect.top(), iconSize, iconSize).adjusted(inset, inset, -inset, -inset);
+        QPen pen(contentColor, iconSize * 0.11);
+        pen.setCapStyle(Qt::RoundCap);
+        painter.setPen(pen);
+        const int degrees = (int)(m_BusyTimer.elapsed() % 1000 * 360 / 1000);
+        // Qt's angles are in sixteenths of a degree, counterclockwise: going down turns it clockwise
+        painter.drawArc(ring, -degrees * 16, 270 * 16);
+        painter.setPen(contentColor);
+
+        x += iconSize;
+        if (!item.label.isEmpty()) {
+            x += scale * MENU_LABEL_GAP;
+        }
+    }
+    else if (!item.icon.isEmpty()) {
         // Drawn once for each size and color, since an image icon is read from its file
         int iconPixels = qMax(1, qRound(iconSize));
         QString key = QString("%1|%2|%3").arg(item.icon).arg(iconPixels).arg(contentColor.rgba());

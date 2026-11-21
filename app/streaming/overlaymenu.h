@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QImage>
 #include <QString>
@@ -132,6 +133,16 @@ public:
     // it's cleared (with an empty message) or the selection moves
     void setMessage(int action, const QString& message);
 
+    // How long a button is busy before its spinner shows, so a command that's done at once
+    // doesn't flicker
+    static constexpr int BusySpinnerDelayMs = 150;
+    // How often a busy button's spinner should be redrawn (with refresh()) to turn
+    static constexpr int BusySpinnerFrameMs = 33;
+
+    // Marks a button busy while its command runs: from BusySpinnerDelayMs on, a spinner shows
+    // in place of its icon, turning as the menu is redrawn. ActionNone clears it.
+    void setBusy(int action);
+
     // The selected button's action, or ActionNone if the menu is closed
     int selectedAction() const;
 
@@ -179,6 +190,12 @@ private:
 
     int m_MessageAction;
     QString m_Message;
+
+    // The busy button (see setBusy()), and how long it has been busy
+    int m_BusyAction;
+    QElapsedTimer m_BusyTimer;
+    // Whether a button shows the busy spinner now
+    bool showsSpinner(const Item& item) const;
 
     // Icons as drawn, by icon, size and color. Cleared as the menu opens.
     QHash<QString, QImage> m_IconCache;
