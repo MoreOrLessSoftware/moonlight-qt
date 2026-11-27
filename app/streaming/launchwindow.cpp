@@ -45,6 +45,8 @@ LaunchWindow::LaunchWindow(QObject* parent)
     : QObject(parent),
       m_Window(nullptr),
       m_Suspended(false),
+      m_RendererUsedWindow(false),
+      m_NextWindow(nullptr),
       m_Mode(ModeStatus),
       m_Selected(0),
       m_Scale(1),
@@ -61,6 +63,9 @@ LaunchWindow::~LaunchWindow()
 {
     setGamepadInput(false);
 
+    if (m_NextWindow != nullptr) {
+        SDL_DestroyWindow(m_NextWindow);
+    }
     if (m_Window != nullptr) {
         SDL_DestroyWindow(m_Window);
     }
@@ -81,22 +86,36 @@ bool LaunchWindow::create(StreamingPreferences* preferences, const QPoint* displ
         flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
     }
 
+    m_Window = createWindow("Moonlight", x, y, width, height, flags);
+    if (m_Window == nullptr) {
+        return false;
+    }
+
+    SDL_RaiseWindow(m_Window);
+
+    m_Timer.start();
+    tick();
+    return true;
+}
+
+SDL_Window* LaunchWindow::createWindow(const char* title, int x, int y, int width, int height, Uint32 flags)
+{
     // SDL starts text input on new windows, which can show the IME
     SDL_StopTextInput();
 
-    m_Window = SDL_CreateWindow("Moonlight", x, y, width, height,
-                                flags | StreamUtils::getPlatformWindowFlags());
-    if (m_Window == nullptr) {
+    SDL_Window* window = SDL_CreateWindow(title, x, y, width, height,
+                                          flags | StreamUtils::getPlatformWindowFlags());
+    if (window == nullptr) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "SDL_CreateWindow() failed with platform flags: %s",
                     SDL_GetError());
 
-        m_Window = SDL_CreateWindow("Moonlight", x, y, width, height, flags);
-        if (m_Window == nullptr) {
+        window = SDL_CreateWindow(title, x, y, width, height, flags);
+        if (window == nullptr) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                          "SDL_CreateWindow() failed: %s",
                          SDL_GetError());
-            return false;
+            return nullptr;
         }
     }
 
@@ -116,15 +135,89 @@ bool LaunchWindow::create(StreamingPreferences* preferences, const QPoint* displ
                                                                   4 * svgImage.width(),
                                                                   SDL_PIXELFORMAT_RGBA32);
     if (iconSurface != nullptr) {
-        SDL_SetWindowIcon(m_Window, iconSurface);
+        SDL_SetWindowIcon(window, iconSurface);
         SDL_FreeSurface(iconSurface);
     }
 
-    SDL_RaiseWindow(m_Window);
+    return window;
+}
 
-    m_Timer.start();
-    tick();
-    return true;
+void LaunchWindow::prepareWindowRelease()
+{
+    if (m_NextWindow != nullptr || m_Window == nullptr) {
+        return;
+    }
+
+    // The same place, size and full-screen state, but full-screen without changing the
+    // display mode, since the stream's mode is no use to us
+    Uint32 oldFlags = SDL_GetWindowFlags(m_Window);
+    Uint32 flags = SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE;
+    int x, y, width, height;
+    if (oldFlags & SDL_WINDOW_FULLSCREEN) {
+        int displayIndex = qMax(0, SDL_GetWindowDisplayIndex(m_Window));
+        SDL_Rect bounds;
+        SDL_GetDisplayBounds(displayIndex, &bounds);
+        x = y = SDL_WINDOWPOS_CENTERED_DISPLAY(displayIndex);
+        width = bounds.w;
+        height = bounds.h;
+        // Until it has the foreground, the taskbar and the active window would be over it
+        flags |= SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_ALWAYS_ON_TOP;
+    }
+    else {
+        SDL_GetWindowPosition(m_Window, &x, &y);
+        SDL_GetWindowSize(m_Window, &width, &height);
+        if (oldFlags & SDL_WINDOW_MAXIMIZED) {
+            flags |= SDL_WINDOW_MAXIMIZED;
+        }
+    }
+
+    // Blank until we know what to show, but drawn before the window appears, since an
+    // undrawn window shows what's behind it
+    m_Mode = ModeBlank;
+    m_Image = QImage(width, height, QImage::Format_RGB32);
+    m_Scale = height / REFERENCE_HEIGHT;
+    render();
+
+    m_NextWindow = createWindow(SDL_GetWindowTitle(m_Window), x, y, width, height, flags);
+    if (m_NextWindow == nullptr) {
+        return;
+    }
+
+    blit(m_Image.rect(), m_NextWindow);
+
+#ifdef Q_OS_WIN32
+    // Showing it doesn't activate it, so it takes the foreground from the stream's window
+    // while we still have it
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (SDL_GetWindowWMInfo(m_NextWindow, &info)) {
+        SetForegroundWindow(info.info.win.window);
+    }
+#endif
+    SDL_RaiseWindow(m_NextWindow);
+}
+
+void LaunchWindow::replaceWindow()
+{
+    if (m_NextWindow == nullptr) {
+        // We weren't told before the renderer went
+        prepareWindowRelease();
+        if (m_NextWindow == nullptr) {
+            return;
+        }
+    }
+
+    SDL_DestroyWindow(m_Window);
+    m_Window = m_NextWindow;
+    m_NextWindow = nullptr;
+
+    // It covered the stream's window, but the cards needn't stay on top of everything
+    SDL_SetWindowAlwaysOnTop(m_Window, SDL_FALSE);
+
+    // The old window's events, which nothing else will take now
+    SDL_PumpEvents();
+    SDL_FlushEvent(SDL_WINDOWEVENT);
+    m_QueuedWindowEvents = 0;
 }
 
 SDL_Window* LaunchWindow::getWindow() const
@@ -161,8 +254,12 @@ void LaunchWindow::showQuestion(const QString& text)
     setMode(ModeQuestion);
 }
 
-void LaunchWindow::suspend()
+void LaunchWindow::suspend(bool forRenderer)
 {
+    if (forRenderer) {
+        m_RendererUsedWindow = true;
+    }
+
     // Draw the card we were asked to show last, since nothing draws it while suspended
     if (!m_Suspended && m_Window != nullptr && m_NeedsRender) {
         updateSize();
@@ -182,7 +279,14 @@ void LaunchWindow::resume()
     }
 
     m_Suspended = false;
-    m_NeedsRender = true;
+
+    // Once a renderer has presented to the window with a flip model swap chain, what we
+    // draw with GDI doesn't show, so the cards after the stream need a new window
+    if (m_RendererUsedWindow) {
+        m_RendererUsedWindow = false;
+        replaceWindow();
+    }
+
     setMode(m_Mode);
     m_Timer.start();
     tick();
@@ -195,7 +299,7 @@ void LaunchWindow::setMode(Mode mode)
 
     // Gamepads answer the cards, but the session's input handler opens them for the
     // stream, and it has to be the one to start SDL's gamepad support
-    setGamepadInput(!m_Suspended && mode != ModeStatus);
+    setGamepadInput(!m_Suspended && mode != ModeStatus && mode != ModeBlank);
 }
 
 void LaunchWindow::setGamepadInput(bool enabled)
@@ -381,7 +485,7 @@ void LaunchWindow::processEvents()
 
 void LaunchWindow::activate(Choice choice)
 {
-    if (m_Mode == ModeStatus) {
+    if (m_Mode == ModeStatus || m_Mode == ModeBlank) {
         // Only backing out does anything while we wait
         emit canceled();
     }
@@ -446,6 +550,11 @@ void LaunchWindow::render()
     QPainter painter(&m_Image);
     painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
     painter.fillRect(m_Image.rect(), k_BackgroundColor);
+
+    if (m_Mode == ModeBlank) {
+        m_SpinnerRect = QRect();
+        return;
+    }
 
     QFont textFont = QGuiApplication::font();
     textFont.setPixelSize(qMax(1, qRound(TEXT_SIZE * s)));
@@ -578,7 +687,7 @@ void LaunchWindow::drawSpinner(QPainter& painter)
     painter.drawArc(QRectF(m_SpinnerRect).adjusted(inset, inset, -inset, -inset), -degrees * 16, 270 * 16);
 }
 
-void LaunchWindow::blit(const QRect& rect)
+void LaunchWindow::blit(const QRect& rect, SDL_Window* window)
 {
 #ifdef Q_OS_WIN32
     if (m_Image.isNull() || rect.isEmpty()) {
@@ -587,7 +696,7 @@ void LaunchWindow::blit(const QRect& rect)
 
     SDL_SysWMinfo info;
     SDL_VERSION(&info.version);
-    if (!SDL_GetWindowWMInfo(m_Window, &info)) {
+    if (!SDL_GetWindowWMInfo(window != nullptr ? window : m_Window, &info)) {
         return;
     }
 
@@ -616,5 +725,6 @@ void LaunchWindow::blit(const QRect& rect)
     ReleaseDC(hwnd, dc);
 #else
     Q_UNUSED(rect);
+    Q_UNUSED(window);
 #endif
 }

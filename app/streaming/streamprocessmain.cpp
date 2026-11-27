@@ -140,8 +140,9 @@ void StreamProcessController::onSessionCreated(QString appName, Session* session
     m_Window.showStatus(isResume ? tr("Resuming %1...").arg(appName) : tr("Starting %1...").arg(appName),
                         QStringList(), streamHint());
 
-    // The session streams in our window
+    // The session streams in our window, and tells us before it lets go of it
     session->setWindow(m_Window.getWindow());
+    session->setWindowReleaseHandler([this] { m_Window.prepareWindowRelease(); });
     if (!session->initialize(nullptr)) {
         // It emitted displayLaunchError() with the reason
         onSessionFinished(0);
@@ -195,14 +196,16 @@ void StreamProcessController::onConnectionStarted()
 {
     // The session's renderer takes the window over
     m_State = StateStreaming;
-    m_Window.suspend();
+    m_Window.suspend(true);
 }
 
 void StreamProcessController::onQuitStarting()
 {
     m_State = StateEnding;
-    m_Window.resume();
+
+    // The card first, so the window shows it as soon as we have it back
     m_Window.showStatus(tr("Quitting %1...").arg(m_AppName));
+    m_Window.resume();
 }
 
 void StreamProcessController::onSessionFinished(int portTestResult)
@@ -215,7 +218,6 @@ void StreamProcessController::onSessionFinished(int portTestResult)
     }
 
     m_State = StateEnding;
-    m_Window.resume();
 
     if (portTestResult != 0 && portTestResult != -1 && !m_ErrorText.isEmpty()) {
         m_ErrorText += "\n\n" + tr("This PC's Internet connection is blocking Moonlight. Streaming over the Internet may not work while connected to this network.");
@@ -262,6 +264,7 @@ void StreamProcessController::finishWithError(const QString& text)
 
     m_State = StateFinishing;
     m_Window.showMessage(text);
+    m_Window.resume();
 }
 
 void StreamProcessController::finish()

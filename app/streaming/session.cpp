@@ -2591,6 +2591,11 @@ DispatchDeferredCleanup:
     // Switch back to synchronous logging mode
     StreamUtils::exitAsyncLoggingMode();
 
+    // While the last frame is still on the window
+    if (m_WindowReleaseHandler) {
+        m_WindowReleaseHandler();
+    }
+
     // Uncapture the mouse and hide the window immediately,
     // so we can return to the Qt GUI ASAP.
     m_InputHandler->setCaptureActive(false);

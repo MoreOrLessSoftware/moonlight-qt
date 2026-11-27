@@ -2,6 +2,8 @@
 
 #include <QSemaphore>
 #include <QPoint>
+
+#include <functional>
 #include <QWindow>
 
 #include <Limelight.h>
@@ -127,6 +129,13 @@ public:
     // Streams in this window instead of creating one, and leaves it open afterwards.
     // Set before initialize().
     void setWindow(SDL_Window* window);
+
+    // Called on the main thread when the stream ends, before the renderer lets go of the
+    // window, so the stream process can cover it
+    void setWindowReleaseHandler(std::function<void()> handler)
+    {
+        m_WindowReleaseHandler = std::move(handler);
+    }
 
     // Whether the user asked to exit Moonlight after this session (Ctrl+Alt+Shift+E)
     bool isExitRequested() const
@@ -338,6 +347,7 @@ private:
     NvApp m_App;
     SDL_Window* m_Window;
     bool m_OwnsWindow = true;
+    std::function<void()> m_WindowReleaseHandler;
     IVideoDecoder* m_VideoDecoder;
     SDL_mutex* m_DecoderLock;
     bool m_AudioDisabled;

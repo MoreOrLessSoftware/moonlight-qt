@@ -50,9 +50,17 @@ public:
     // The text with Yes and No buttons. Emits finished() with the choice.
     void showQuestion(const QString& text);
 
-    // While the session's renderer owns the window, we neither draw nor take its events
-    void suspend();
+    // While the session's renderer owns the window (forRenderer), or the session is
+    // ending, we neither draw nor take its events. After a renderer, resume() replaces the
+    // window, since we can't draw on it anymore.
+    void suspend(bool forRenderer = false);
     void resume();
+
+    // Called while the session still has the window, before its renderer goes: puts the
+    // window resume() will use over it, blank, so there's no moment with nothing on the
+    // screen (a window a renderer has let go of shows what's behind it). It takes the
+    // foreground too, while we still have it.
+    void prepareWindowRelease();
 
 signals:
     void canceled();
@@ -63,6 +71,7 @@ private:
         ModeStatus,
         ModeMessage,
         ModeQuestion,
+        ModeBlank,          // Nothing yet (see prepareWindowRelease())
     };
 
     struct Button {
@@ -70,6 +79,9 @@ private:
         Choice choice;
         QRect rect;
     };
+
+    SDL_Window* createWindow(const char* title, int x, int y, int width, int height, Uint32 flags);
+    void replaceWindow();
 
     void tick();
     void setMode(Mode mode);
@@ -81,11 +93,13 @@ private:
     bool updateSize();
     void render();
     void drawSpinner(QPainter& painter);
-    void blit(const QRect& rect);
+    void blit(const QRect& rect, SDL_Window* window = nullptr);
 
     SDL_Window* m_Window;
     QTimer m_Timer;
     bool m_Suspended;
+    bool m_RendererUsedWindow;
+    SDL_Window* m_NextWindow;
 
     Mode m_Mode;
     QString m_Text;
