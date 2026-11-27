@@ -120,7 +120,7 @@ Item {
         SdlGamepadKeyNavigation.setUiNavMode(true)
 
         // Highlight the first item if a gamepad is connected
-        if (SdlGamepadKeyNavigation.getConnectedGamepads() > 0) {
+        if (StreamingPreferences.uiGamepadNavigation && SdlGamepadKeyNavigation.getConnectedGamepads() > 0) {
             focusFirstItemOnTab()
         }
     }
@@ -3260,6 +3260,22 @@ Item {
                             ToolTip.timeout: 5000
                             ToolTip.visible: hovered
                             ToolTip.text: qsTr("Prevents the screensaver from starting or the display from going to sleep while streaming.")
+                        }
+
+                        CheckBox {
+                            id: uiGamepadNavigationCheck
+                            width: parent.width
+                            text: qsTr("Navigate the UI with a gamepad")
+                            font.pointSize: 12
+                            checked: StreamingPreferences.uiGamepadNavigation
+                            onCheckedChanged: {
+                                StreamingPreferences.uiGamepadNavigation = checked
+                            }
+
+                            ToolTip.delay: 1000
+                            ToolTip.timeout: 5000
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("Lets a gamepad move around and select things in Moonlight's windows. Gamepads still work while streaming when this is off.")
                         }
                     }
                 }

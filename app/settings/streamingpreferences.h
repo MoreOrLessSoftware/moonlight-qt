@@ -199,6 +199,7 @@ public:
     Q_PROPERTY(bool gameInputGamepads MEMBER gameInputGamepads NOTIFY gameInputGamepadsChanged)
     Q_PROPERTY(bool reverseScrollDirection MEMBER reverseScrollDirection NOTIFY reverseScrollDirectionChanged)
     Q_PROPERTY(bool keepAwake MEMBER keepAwake NOTIFY keepAwakeChanged)
+    Q_PROPERTY(bool uiGamepadNavigation MEMBER uiGamepadNavigation NOTIFY uiGamepadNavigationChanged)
     Q_PROPERTY(CaptureSysKeysMode captureSysKeysMode MEMBER captureSysKeysMode NOTIFY captureSysKeysModeChanged)
     Q_PROPERTY(OverlayMenuTrigger overlayMenuTrigger MEMBER overlayMenuTrigger NOTIFY overlayMenuTriggerChanged)
     Q_PROPERTY(int overlayMenuHoldMs MEMBER overlayMenuHoldMs NOTIFY overlayMenuHoldMsChanged)
@@ -258,6 +259,7 @@ public:
     // or off (0) for every gamepad for one run, from the command line; -1 = per gamepad.
     int swapFaceButtonsOverride;
     bool keepAwake;
+    bool uiGamepadNavigation;
     int packetSize;
     AudioConfig audioConfig;
     VideoCodecConfig videoCodecConfig;
@@ -318,6 +320,7 @@ signals:
     void overlayMenuTriggerChanged();
     void overlayMenuHoldMsChanged();
     void keepAwakeChanged();
+    void uiGamepadNavigationChanged();
     void languageChanged();
     void rendererSelectionChanged();
     void videoPresetsChanged();

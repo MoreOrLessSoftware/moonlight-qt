@@ -62,6 +62,7 @@
 #define SER_OVERLAYMENUTRIGGER "overlaymenutrigger"
 #define SER_OVERLAYMENUHOLDMS "overlaymenuholdms"
 #define SER_KEEPAWAKE "keepawake"
+#define SER_UIGAMEPADNAV "uigamepadnav"
 #define SER_LANGUAGE "language"
 #define SER_RENDERER "renderer"
 #define SER_VIDEOPRESETS "videopresets"
@@ -182,6 +183,7 @@ void StreamingPreferences::reload()
     reverseScrollDirection = settings.value(SER_REVERSESCROLL, false).toBool();
     swapFaceButtonsOverride = -1;
     keepAwake = settings.value(SER_KEEPAWAKE, true).toBool();
+    uiGamepadNavigation = settings.value(SER_UIGAMEPADNAV, true).toBool();
     enableHdr = settings.value(SER_HDR, false).toBool();
     captureSysKeysMode = static_cast<CaptureSysKeysMode>(settings.value(SER_CAPTURESYSKEYS,
                                                          static_cast<int>(CaptureSysKeysMode::CSK_OFF)).toInt());
@@ -404,6 +406,7 @@ void StreamingPreferences::save()
     settings.setValue(SER_OVERLAYMENUTRIGGER, static_cast<int>(overlayMenuTrigger));
     settings.setValue(SER_OVERLAYMENUHOLDMS, overlayMenuHoldMs);
     settings.setValue(SER_KEEPAWAKE, keepAwake);
+    settings.setValue(SER_UIGAMEPADNAV, uiGamepadNavigation);
 }
 
 int StreamingPreferences::getDefaultBitrate(int width, int height, int fps, bool yuv444)

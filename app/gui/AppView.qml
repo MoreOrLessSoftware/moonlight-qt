@@ -39,7 +39,7 @@ CenteredGridView {
         activated = true
 
         // Highlight the first item if a gamepad is connected
-        if (currentIndex === -1 && SdlGamepadKeyNavigation.getConnectedGamepads() > 0) {
+        if (currentIndex === -1 && StreamingPreferences.uiGamepadNavigation && SdlGamepadKeyNavigation.getConnectedGamepads() > 0) {
             currentIndex = 0
         }
 

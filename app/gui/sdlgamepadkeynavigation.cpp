@@ -140,6 +140,12 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
         case SDL_CONTROLLERBUTTONDOWN:
         case SDL_CONTROLLERBUTTONUP:
         {
+            // The gamepad stays open with navigation turned off (for the sensor
+            // listener), but its buttons do nothing in the UI
+            if (!m_Prefs->uiGamepadNavigation) {
+                break;
+            }
+
             QEvent::Type type =
                     event.type == SDL_CONTROLLERBUTTONDOWN ?
                         QEvent::Type::KeyPress : QEvent::Type::KeyRelease;
@@ -250,6 +256,10 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
 
     // Handle analog sticks by polling
     for (auto gc : std::as_const(m_Gamepads)) {
+        if (!m_Prefs->uiGamepadNavigation) {
+            break;
+        }
+
         short leftX = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX);
         short leftY = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY);
 
