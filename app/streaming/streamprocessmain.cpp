@@ -144,6 +144,9 @@ void StreamProcessController::onSessionCreated(QString appName, Session* session
     m_Window.showStatus(isResume ? tr("Resuming %1...").arg(appName) : tr("Starting %1...").arg(appName),
                         QStringList(), streamHint());
 
+    // Checking the decoders keeps the main thread busy for a moment, so the card goes up first
+    m_Window.paintNow();
+
     // The session streams in our window, and tells us before it lets go of it
     session->setWindow(m_Window.getWindow());
     session->setWindowReleaseHandler([this] { m_Window.prepareWindowRelease(); });
@@ -253,8 +256,12 @@ void StreamProcessController::onCanceled()
             }
         }
         break;
+    case StateQuitting:
+        // The host quits the app anyway, and we're done
+        finish();
+        break;
     default:
-        // Quitting the host's app, or the session ending: wait for it
+        // The session ending: wait for it
         break;
     }
 }

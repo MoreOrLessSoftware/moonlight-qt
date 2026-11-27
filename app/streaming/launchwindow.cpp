@@ -52,7 +52,8 @@ LaunchWindow::LaunchWindow(QObject* parent)
       m_Scale(1),
       m_NeedsRender(true),
       m_QueuedWindowEvents(0),
-      m_GamepadInput(false)
+      m_GamepadInput(false),
+      m_SpinnerThreadRunning(false)
 {
     m_Timer.setInterval(16);
     connect(&m_Timer, &QTimer::timeout, this, &LaunchWindow::tick);
@@ -61,6 +62,11 @@ LaunchWindow::LaunchWindow(QObject* parent)
 
 LaunchWindow::~LaunchWindow()
 {
+    if (m_SpinnerThread.joinable()) {
+        m_SpinnerThreadRunning = false;
+        m_SpinnerThread.join();
+    }
+
     setGamepadInput(false);
 
     // The stream's window first, since the window behind it is what shows when it goes
@@ -111,6 +117,9 @@ bool LaunchWindow::create(StreamingPreferences* preferences, const QPoint* displ
 
     m_Timer.start();
     tick();
+
+    m_SpinnerThreadRunning = true;
+    m_SpinnerThread = std::thread(&LaunchWindow::runSpinnerThread, this);
     return true;
 }
 
@@ -160,6 +169,8 @@ SDL_Window* LaunchWindow::createWindow(const char* title, int x, int y, int widt
 
 void LaunchWindow::prepareWindowRelease()
 {
+    QMutexLocker lock(&m_DrawLock);
+
     if (m_NextWindow != nullptr || m_Window == nullptr) {
         return;
     }
@@ -222,6 +233,8 @@ void LaunchWindow::prepareWindowRelease()
 
 void LaunchWindow::replaceWindow()
 {
+    QMutexLocker lock(&m_DrawLock);
+
     if (m_NextWindow == nullptr) {
         // We weren't told before the renderer went
         prepareWindowRelease();
@@ -288,6 +301,8 @@ void LaunchWindow::showQuestion(const QString& text)
 
 void LaunchWindow::suspend(bool forRenderer)
 {
+    QMutexLocker lock(&m_DrawLock);
+
     if (forRenderer) {
         m_RendererUsedWindow = true;
     }
@@ -306,6 +321,8 @@ void LaunchWindow::suspend(bool forRenderer)
 
 void LaunchWindow::resume()
 {
+    QMutexLocker lock(&m_DrawLock);
+
     if (!m_Suspended) {
         return;
     }
@@ -326,6 +343,8 @@ void LaunchWindow::resume()
 
 void LaunchWindow::setMode(Mode mode)
 {
+    QMutexLocker lock(&m_DrawLock);
+
     m_Mode = mode;
     m_NeedsRender = true;
 
@@ -388,6 +407,8 @@ void LaunchWindow::tick()
     bool exposed = windowEvents != m_QueuedWindowEvents;
     m_QueuedWindowEvents = windowEvents;
 
+    // The spinner thread draws the spinner
+    QMutexLocker lock(&m_DrawLock);
     if (updateSize() || m_NeedsRender) {
         render();
         blit(m_Image.rect());
@@ -395,11 +416,35 @@ void LaunchWindow::tick()
     else if (exposed) {
         blit(m_Image.rect());
     }
-    else if (m_Mode == ModeStatus) {
-        QPainter painter(&m_Image);
-        drawSpinner(painter);
-        painter.end();
-        blit(m_SpinnerRect);
+}
+
+void LaunchWindow::paintNow()
+{
+    QMutexLocker lock(&m_DrawLock);
+    if (m_Window != nullptr && !m_Suspended) {
+        updateSize();
+        render();
+        blit(m_Image.rect());
+    }
+}
+
+void LaunchWindow::runSpinnerThread()
+{
+    // On its own thread, so it keeps turning while the main thread is busy, such as
+    // while the session checks the decoders
+    while (m_SpinnerThreadRunning) {
+        {
+            QMutexLocker lock(&m_DrawLock);
+            if (m_Window != nullptr && !m_Suspended && m_Mode == ModeStatus &&
+                    !m_SpinnerRect.isEmpty() && !m_Image.isNull()) {
+                QPainter painter(&m_Image);
+                drawSpinner(painter);
+                painter.end();
+                blit(m_SpinnerRect);
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
 }
 

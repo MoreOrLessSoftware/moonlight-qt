@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QElapsedTimer>
+#include <QRecursiveMutex>
 #include <QImage>
 #include <QObject>
 #include <QPoint>
@@ -10,6 +11,9 @@
 #include <QVector>
 
 #include "SDL_compat.h"
+
+#include <atomic>
+#include <thread>
 
 class StreamingPreferences;
 
@@ -61,6 +65,9 @@ public:
     // renderer lets go (a window a renderer has let go of shows what's behind it)
     void prepareWindowRelease();
 
+    // Draws the card now, rather than on the next tick, before the main thread is busy
+    void paintNow();
+
 signals:
     void canceled();
     void finished(LaunchWindow::Choice choice);
@@ -84,6 +91,7 @@ private:
     void destroyWindow(SDL_Window* window);
 
     void tick();
+    void runSpinnerThread();
     void setMode(Mode mode);
     void processEvents();
     void activate(Choice choice);
@@ -117,5 +125,10 @@ private:
     int m_QueuedWindowEvents;
 
     bool m_GamepadInput;
+
+    // Everything drawing uses, which the spinner thread draws with too
+    QRecursiveMutex m_DrawLock;
+    std::thread m_SpinnerThread;
+    std::atomic<bool> m_SpinnerThreadRunning;
     QVector<SDL_GameController*> m_Gamepads;
 };
