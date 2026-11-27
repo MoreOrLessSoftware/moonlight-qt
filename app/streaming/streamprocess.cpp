@@ -85,6 +85,42 @@ qint64 launchStream(NvComputer* computer, const NvApp& app, const QPoint& displa
     return startDetached(program, args);
 }
 
+QString streamEndingEventName(qint64 guiPid)
+{
+    return QString("Local\\MoonlightStreamEnding-%1").arg(guiPid);
+}
+
+#ifdef Q_OS_WIN32
+struct WindowSearch {
+    DWORD pid;
+    bool found;
+};
+
+static BOOL CALLBACK findVisibleWindow(HWND hwnd, LPARAM param)
+{
+    auto search = (WindowSearch*)param;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == search->pid && IsWindowVisible(hwnd)) {
+        search->found = true;
+        return FALSE;
+    }
+    return TRUE;
+}
+#endif
+
+bool hasVisibleWindow(qint64 pid)
+{
+#ifdef Q_OS_WIN32
+    WindowSearch search = { (DWORD)pid, false };
+    EnumWindows(findVisibleWindow, (LPARAM)&search);
+    return search.found;
+#else
+    Q_UNUSED(pid);
+    return true;
+#endif
+}
+
 bool forwardStream(const QStringList& arguments, int* exitCode)
 {
 #ifdef Q_OS_WIN32

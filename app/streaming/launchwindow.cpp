@@ -63,12 +63,28 @@ LaunchWindow::~LaunchWindow()
 {
     setGamepadInput(false);
 
-    if (m_NextWindow != nullptr) {
-        SDL_DestroyWindow(m_NextWindow);
-    }
+    // The stream's window first, since the window behind it is what shows when it goes
     if (m_Window != nullptr) {
-        SDL_DestroyWindow(m_Window);
+        destroyWindow(m_Window);
     }
+    if (m_NextWindow != nullptr) {
+        destroyWindow(m_NextWindow);
+    }
+}
+
+void LaunchWindow::destroyWindow(SDL_Window* window)
+{
+#ifdef Q_OS_WIN32
+    // SDL takes a full-screen window out of full screen before it hides it, which shows
+    // the window at its windowed size for a moment, with the desktop around it. Hidden
+    // first, that happens out of sight.
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (SDL_GetWindowWMInfo(window, &info)) {
+        ShowWindow(info.info.win.window, SW_HIDE);
+    }
+#endif
+    SDL_DestroyWindow(window);
 }
 
 bool LaunchWindow::create(StreamingPreferences* preferences, const QPoint* displayOrigin)
@@ -148,53 +164,60 @@ void LaunchWindow::prepareWindowRelease()
         return;
     }
 
-    // The same place, size and full-screen state, but full-screen without changing the
-    // display mode, since the stream's mode is no use to us
+    // The same place and size. In full screen, a borderless window over the display does,
+    // since it never changes the display mode. It's on top of everything but the stream
+    // until it has the foreground.
     Uint32 oldFlags = SDL_GetWindowFlags(m_Window);
-    Uint32 flags = SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE;
+    Uint32 flags = SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_HIDDEN;
     int x, y, width, height;
     if (oldFlags & SDL_WINDOW_FULLSCREEN) {
         int displayIndex = qMax(0, SDL_GetWindowDisplayIndex(m_Window));
         SDL_Rect bounds;
         SDL_GetDisplayBounds(displayIndex, &bounds);
-        x = y = SDL_WINDOWPOS_CENTERED_DISPLAY(displayIndex);
+        x = bounds.x;
+        y = bounds.y;
         width = bounds.w;
         height = bounds.h;
-        // Until it has the foreground, the taskbar and the active window would be over it
-        flags |= SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_ALWAYS_ON_TOP;
+        flags |= SDL_WINDOW_BORDERLESS | SDL_WINDOW_ALWAYS_ON_TOP;
     }
     else {
         SDL_GetWindowPosition(m_Window, &x, &y);
         SDL_GetWindowSize(m_Window, &width, &height);
+        flags |= SDL_WINDOW_RESIZABLE;
         if (oldFlags & SDL_WINDOW_MAXIMIZED) {
             flags |= SDL_WINDOW_MAXIMIZED;
         }
     }
-
-    // Blank until we know what to show, but drawn before the window appears, since an
-    // undrawn window shows what's behind it
-    m_Mode = ModeBlank;
-    m_Image = QImage(width, height, QImage::Format_RGB32);
-    m_Scale = height / REFERENCE_HEIGHT;
-    render();
 
     m_NextWindow = createWindow(SDL_GetWindowTitle(m_Window), x, y, width, height, flags);
     if (m_NextWindow == nullptr) {
         return;
     }
 
-    blit(m_Image.rect(), m_NextWindow);
-
 #ifdef Q_OS_WIN32
-    // Showing it doesn't activate it, so it takes the foreground from the stream's window
-    // while we still have it
-    SDL_SysWMinfo info;
+    // It goes just behind the stream's window, without the foreground. Anything over a
+    // full-screen stream makes the compositor take the screen back from it, which shows
+    // the desktop for a moment, but this doesn't. When the renderer lets go of the stream's
+    // window, it shows what's behind it, which is now this.
+    SDL_SysWMinfo streamInfo, info;
+    SDL_VERSION(&streamInfo.version);
     SDL_VERSION(&info.version);
-    if (SDL_GetWindowWMInfo(m_NextWindow, &info)) {
-        SetForegroundWindow(info.info.win.window);
+    if (SDL_GetWindowWMInfo(m_Window, &streamInfo) && SDL_GetWindowWMInfo(m_NextWindow, &info)) {
+        SetWindowPos(info.info.win.window, streamInfo.info.win.window, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
+
+    // It takes the foreground when it replaces the stream's window, but we can lose it
+    // when the renderer goes, so we keep the right to take it back while we have it
+    AllowSetForegroundWindow(GetCurrentProcessId());
 #endif
-    SDL_RaiseWindow(m_NextWindow);
+
+    // Blank until we know what to show. It's drawn while the stream still covers it.
+    m_Mode = ModeBlank;
+    m_Image = QImage(width, height, QImage::Format_RGB32);
+    m_Scale = height / REFERENCE_HEIGHT;
+    render();
+    blit(m_Image.rect(), m_NextWindow);
 }
 
 void LaunchWindow::replaceWindow()
@@ -207,7 +230,16 @@ void LaunchWindow::replaceWindow()
         }
     }
 
-    SDL_DestroyWindow(m_Window);
+#ifdef Q_OS_WIN32
+    // The stream's window had the foreground, so we can give it to this one before it goes
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (SDL_GetWindowWMInfo(m_NextWindow, &info)) {
+        SetForegroundWindow(info.info.win.window);
+    }
+#endif
+
+    destroyWindow(m_Window);
     m_Window = m_NextWindow;
     m_NextWindow = nullptr;
 

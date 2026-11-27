@@ -57,9 +57,8 @@ public:
     void resume();
 
     // Called while the session still has the window, before its renderer goes: puts the
-    // window resume() will use over it, blank, so there's no moment with nothing on the
-    // screen (a window a renderer has let go of shows what's behind it). It takes the
-    // foreground too, while we still have it.
+    // window resume() will use just behind it, blank, so that's what shows when the
+    // renderer lets go (a window a renderer has let go of shows what's behind it)
     void prepareWindowRelease();
 
 signals:
@@ -82,6 +81,7 @@ private:
 
     SDL_Window* createWindow(const char* title, int x, int y, int width, int height, Uint32 flags);
     void replaceWindow();
+    void destroyWindow(SDL_Window* window);
 
     void tick();
     void setMode(Mode mode);

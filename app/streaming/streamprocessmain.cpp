@@ -14,7 +14,11 @@
 
 #ifdef Q_OS_WIN32
 #include <Windows.h>
+#include <dwmapi.h>
 #endif
+
+// How long our window stays up for the GUI to show its own after the stream
+#define GUI_SHOW_TIMEOUT_MS 3000
 
 // Launch warnings are shown this long before the stream starts, like the GUI's toasts
 #define LAUNCH_WARNING_DELAY_MS 3500
@@ -274,17 +278,44 @@ void StreamProcessController::finish()
     }
     m_Finished = true;
 
+    // Quit and exit (Ctrl+Alt+Shift+E) closes the GUI too. From the command line, it's
+    // just the end of the stream.
+    int exitCode = m_ExitRequested && m_GuiPid != 0 ? StreamProcess::k_ExitCodeQuitAndExit : 0;
+
 #ifdef Q_OS_WIN32
-    // The GUI is waiting to show itself again. We still have the foreground, so we can
-    // give it to the GUI before our window goes.
-    if (m_GuiPid != 0) {
+    if (m_GuiPid != 0 && !m_ExitRequested) {
+        // The GUI is waiting to show itself again. We still have the foreground, so we
+        // can give it to the GUI, and our window stays up until the GUI's is, so there's
+        // no moment with neither.
         AllowSetForegroundWindow((DWORD)m_GuiPid);
+
+        HANDLE endingEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE,
+                                        (LPCWSTR)StreamProcess::streamEndingEventName(m_GuiPid).utf16());
+        if (endingEvent != nullptr) {
+            SetEvent(endingEvent);
+            CloseHandle(endingEvent);
+
+            auto waited = new QElapsedTimer();
+            waited->start();
+            auto timer = new QTimer(this);
+            connect(timer, &QTimer::timeout, this, [this, timer, waited, exitCode] {
+                if (StreamProcess::hasVisibleWindow(m_GuiPid) || waited->hasExpired(GUI_SHOW_TIMEOUT_MS)) {
+                    timer->stop();
+                    delete waited;
+
+                    // Shown isn't on the screen until the compositor's next frame
+                    DwmFlush();
+                    DwmFlush();
+                    QCoreApplication::exit(exitCode);
+                }
+            });
+            timer->start(10);
+            return;
+        }
     }
 #endif
 
-    // Quit and exit (Ctrl+Alt+Shift+E) closes the GUI too. From the command line, it's
-    // just the end of the stream.
-    QCoreApplication::exit(m_ExitRequested && m_GuiPid != 0 ? StreamProcess::k_ExitCodeQuitAndExit : 0);
+    QCoreApplication::exit(exitCode);
 }
 
 QString StreamProcessController::streamHint() const

@@ -25,14 +25,21 @@ public:
     Q_INVOKABLE bool launch(Session* session, QWindow* window);
 
 signals:
+    // The stream process is about to exit, after a stream that didn't quit Moonlight.
+    // Its window stays up until ours is, so we should show ours now.
+    void streamEnding();
+
     // The stream process exited. quitAndExit is set when the user quit Moonlight from the
     // stream, so the GUI should exit too.
     void streamFinished(bool quitAndExit);
 
 private:
     void onProcessExited();
+    void closeEndingEvent();
 
     bool m_Enabled;
     void* m_ProcessHandle;
     QWinEventNotifier* m_ProcessNotifier;
+    void* m_EndingEvent;
+    QWinEventNotifier* m_EndingNotifier;
 };

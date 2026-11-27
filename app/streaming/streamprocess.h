@@ -24,6 +24,13 @@ namespace StreamProcess
     // (Ctrl+Alt+Shift+E), so the GUI exits too
     const int k_ExitCodeQuitAndExit = 3;
 
+    // The event the stream process sets just before it exits, so the GUI with this process
+    // ID can show itself first, while the stream process's window still covers the screen
+    QString streamEndingEventName(qint64 guiPid);
+
+    // Whether the process has shown a window yet
+    bool hasVisibleWindow(qint64 pid);
+
     // Runs a command line stream in the stream executable, if there is one, waiting for
     // it to finish. Returns false without it.
     bool forwardStream(const QStringList& arguments, int* exitCode);

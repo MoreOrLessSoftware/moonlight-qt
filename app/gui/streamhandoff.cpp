@@ -4,6 +4,7 @@
 #include "streaming/session.h"
 #include "streaming/streamprocess.h"
 
+#include <QCoreApplication>
 #include <QScreen>
 
 #ifdef Q_OS_WIN32
@@ -15,7 +16,9 @@ StreamHandoff::StreamHandoff(bool allowed, QObject* parent)
     : QObject(parent),
       m_Enabled(allowed && StreamProcess::isHandoffEnabled()),
       m_ProcessHandle(nullptr),
-      m_ProcessNotifier(nullptr)
+      m_ProcessNotifier(nullptr),
+      m_EndingEvent(nullptr),
+      m_EndingNotifier(nullptr)
 {
 }
 
@@ -26,6 +29,7 @@ StreamHandoff::~StreamHandoff()
     if (m_ProcessHandle != nullptr) {
         CloseHandle(m_ProcessHandle);
     }
+    closeEndingEvent();
 #endif
 }
 
@@ -48,6 +52,18 @@ bool StreamHandoff::launch(Session* session, QWindow* window)
 
     // The stream process reads the settings from disk
     StreamingPreferences::get()->save();
+
+    // The stream process sets this when it's about to exit (see streamEnding())
+    closeEndingEvent();
+    m_EndingEvent = CreateEventW(nullptr, FALSE, FALSE,
+                                 (LPCWSTR)StreamProcess::streamEndingEventName(QCoreApplication::applicationPid()).utf16());
+    if (m_EndingEvent != nullptr) {
+        m_EndingNotifier = new QWinEventNotifier(m_EndingEvent, this);
+        connect(m_EndingNotifier, &QWinEventNotifier::activated, this, [this] {
+            m_EndingNotifier->setEnabled(false);
+            emit streamEnding();
+        });
+    }
 
     qint64 pid = StreamProcess::launchStream(session->getComputer(), session->getApp(), displayOrigin);
     if (pid == 0) {
@@ -75,6 +91,21 @@ bool StreamHandoff::launch(Session* session, QWindow* window)
 #endif
 }
 
+void StreamHandoff::closeEndingEvent()
+{
+#ifdef Q_OS_WIN32
+    if (m_EndingNotifier != nullptr) {
+        m_EndingNotifier->setEnabled(false);
+        m_EndingNotifier->deleteLater();
+        m_EndingNotifier = nullptr;
+    }
+    if (m_EndingEvent != nullptr) {
+        CloseHandle(m_EndingEvent);
+        m_EndingEvent = nullptr;
+    }
+#endif
+}
+
 void StreamHandoff::onProcessExited()
 {
 #ifdef Q_OS_WIN32
@@ -87,6 +118,7 @@ void StreamHandoff::onProcessExited()
     m_ProcessNotifier = nullptr;
     CloseHandle(m_ProcessHandle);
     m_ProcessHandle = nullptr;
+    closeEndingEvent();
 
     emit streamFinished(exitCode == (DWORD)StreamProcess::k_ExitCodeQuitAndExit);
 #endif

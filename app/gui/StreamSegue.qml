@@ -94,18 +94,34 @@ Item {
         }
     }
 
+    // The stream process is about to exit, and waits for us to show ourselves first
+    function handoffEnding()
+    {
+        showAfterHandoff()
+    }
+
     // The stream process has exited. It showed any errors itself.
     function handoffFinished(quitAndExit)
     {
-        StreamHandoff.streamFinished.disconnect(handoffFinished)
-
         if (quitAndExit) {
             Qt.quit()
             return
         }
 
+        // If it didn't tell us it was ending
+        showAfterHandoff()
+    }
+
+    function showAfterHandoff()
+    {
+        // This view goes, so nothing more comes to it
+        StreamHandoff.streamEnding.disconnect(handoffEnding)
+        StreamHandoff.streamFinished.disconnect(handoffFinished)
+
         SdlGamepadKeyNavigation.enable()
-        stackView.pop()
+
+        // Without the animation, so the window doesn't show this view on its way out
+        stackView.popCurrentItem(StackView.Immediate)
 
         // The stream process let us take the foreground back
         window.visible = true
@@ -140,6 +156,7 @@ Item {
 
             if (StreamHandoff.launch(session, window)) {
                 session = null
+                StreamHandoff.streamEnding.connect(handoffEnding)
                 StreamHandoff.streamFinished.connect(handoffFinished)
 
                 // Hiding also stops polling the hosts
