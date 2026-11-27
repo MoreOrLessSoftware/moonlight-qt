@@ -35,11 +35,6 @@ public:
 
     Q_INVOKABLE QString generatePinString();
 
-    // The index of the computer with this UUID, unless it's known to be unpaired, or -1
-    Q_INVOKABLE int findComputer(QString uuid);
-
-    Q_INVOKABLE QString getComputerName(int computerIndex);
-
     Q_INVOKABLE void pairComputer(int computerIndex, QString pin);
 
     Q_INVOKABLE void testConnectionForComputer(int computerIndex);

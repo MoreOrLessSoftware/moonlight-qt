@@ -128,6 +128,12 @@ public:
     // Set before initialize().
     void setWindow(SDL_Window* window);
 
+    // Whether the user asked to exit Moonlight after this session (Ctrl+Alt+Shift+Q)
+    bool isExitRequested() const
+    {
+        return m_ShouldExit;
+    }
+
     NvComputer* getComputer() const
     {
         return m_Computer;

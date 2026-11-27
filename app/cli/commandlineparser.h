@@ -21,12 +21,6 @@ public:
     virtual ~GlobalCommandLineParser();
 
     ParseResult parse(const QStringList &args);
-
-    // For a normal start: the host whose apps to show first (--select-host)
-    QString getSelectHost() const;
-
-private:
-    QString m_SelectHost;
 };
 
 class QuitCommandLineParser
@@ -70,10 +64,10 @@ public:
     QString getHost() const;
     QString getAppName() const;
 
-    // Set when the GUI hands the stream off: the app's ID (0 to find it by name),
-    // whether to start the GUI again afterwards, and the display the GUI was on
+    // Set when the GUI hands the stream off: the app's ID (0 to find it by name), the GUI's
+    // process (which waits for us, 0 if none) and the display the GUI was on
     int getAppId() const;
-    bool isReturnToGui() const;
+    qint64 getGuiPid() const;
 
     // Whether to stream without the QML GUI, as the stream process does
     bool isStreamProcess() const;
@@ -83,7 +77,7 @@ private:
     QString m_Host;
     QString m_AppName;
     int m_AppId = 0;
-    bool m_ReturnToGui = false;
+    qint64 m_GuiPid = 0;
     bool m_StreamProcess = false;
     QPoint m_DisplayOrigin;
     bool m_HasDisplayOrigin = false;

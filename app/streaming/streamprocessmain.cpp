@@ -12,8 +12,9 @@
 #include <QLocale>
 #include <QTimer>
 
-// How long the window stays up for the GUI to show its own after the stream
-#define GUI_WAIT_TIMEOUT_MS 10000
+#ifdef Q_OS_WIN32
+#include <Windows.h>
+#endif
 
 // Launch warnings are shown this long before the stream starts, like the GUI's toasts
 #define LAUNCH_WARNING_DELAY_MS 3500
@@ -29,7 +30,7 @@ int StreamProcessController::run(QGuiApplication& app)
 
     StreamProcessController controller(preferences, streamParser.getHost(), streamParser.getAppName(),
                                        streamParser.getAppId(), hasDisplayOrigin ? &displayOrigin : nullptr,
-                                       streamParser.isReturnToGui());
+                                       streamParser.getGuiPid());
     if (!controller.start()) {
         return -1;
     }
@@ -39,13 +40,14 @@ int StreamProcessController::run(QGuiApplication& app)
 
 StreamProcessController::StreamProcessController(StreamingPreferences* preferences, const QString& host,
                                                  const QString& appName, int appId, const QPoint* displayOrigin,
-                                                 bool returnToGui)
+                                                 qint64 guiPid)
     : m_Preferences(preferences),
       m_Host(host),
       m_AppName(appName),
       m_AppId(appId),
       m_HasDisplayOrigin(displayOrigin != nullptr),
-      m_ReturnToGui(returnToGui),
+      m_GuiPid(guiPid),
+      m_ExitRequested(false),
       m_State(StateLaunching),
       m_Launcher(nullptr),
       m_Session(nullptr),
@@ -205,6 +207,13 @@ void StreamProcessController::onQuitStarting()
 
 void StreamProcessController::onSessionFinished(int portTestResult)
 {
+    // The session quits the application itself right after this, but we exit first
+    if (m_Session != nullptr && m_Session->isExitRequested()) {
+        m_ExitRequested = true;
+        finish();
+        return;
+    }
+
     m_State = StateEnding;
     m_Window.resume();
 
@@ -262,31 +271,17 @@ void StreamProcessController::finish()
     }
     m_Finished = true;
 
-    if (!m_ReturnToGui) {
-        QCoreApplication::quit();
-        return;
+#ifdef Q_OS_WIN32
+    // The GUI is waiting to show itself again. We still have the foreground, so we can
+    // give it to the GUI before our window goes.
+    if (m_GuiPid != 0) {
+        AllowSetForegroundWindow((DWORD)m_GuiPid);
     }
+#endif
 
-    // Our window stays up until the GUI shows its own, so it can take the foreground from us
-    m_Window.showStatus(QString());
-
-    qint64 pid = StreamProcess::relaunchGui(m_Host);
-    if (pid == 0) {
-        QCoreApplication::quit();
-        return;
-    }
-
-    auto waited = new QElapsedTimer();
-    waited->start();
-    auto timer = new QTimer(this);
-    connect(timer, &QTimer::timeout, this, [timer, waited, pid] {
-        if (StreamProcess::hasVisibleWindow(pid) || waited->hasExpired(GUI_WAIT_TIMEOUT_MS)) {
-            timer->stop();
-            delete waited;
-            QCoreApplication::quit();
-        }
-    });
-    timer->start(50);
+    // Quit and exit (Ctrl+Alt+Shift+Q) closes the GUI too. From the command line, it's
+    // just the end of the stream.
+    QCoreApplication::exit(m_ExitRequested && m_GuiPid != 0 ? StreamProcess::k_ExitCodeQuitAndExit : 0);
 }
 
 QString StreamProcessController::streamHint() const

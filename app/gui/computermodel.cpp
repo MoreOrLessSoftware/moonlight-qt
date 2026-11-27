@@ -98,27 +98,6 @@ int ComputerModel::rowCount(const QModelIndex& parent) const
     return m_Computers.count();
 }
 
-int ComputerModel::findComputer(QString uuid)
-{
-    for (int i = 0; i < m_Computers.count(); i++) {
-        QReadLocker lock(&m_Computers[i]->lock);
-        // Saved hosts start out with an unknown pairing state until they're polled
-        if (m_Computers[i]->uuid == uuid && m_Computers[i]->pairState != NvComputer::PS_NOT_PAIRED) {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-QString ComputerModel::getComputerName(int computerIndex)
-{
-    Q_ASSERT(computerIndex < m_Computers.count());
-
-    QReadLocker lock(&m_Computers[computerIndex]->lock);
-    return m_Computers[computerIndex]->name;
-}
-
 QHash<int, QByteArray> ComputerModel::roleNames() const
 {
     QHash<int, QByteArray> names;

@@ -174,11 +174,6 @@ GlobalCommandLineParser::~GlobalCommandLineParser()
 {
 }
 
-QString GlobalCommandLineParser::getSelectHost() const
-{
-    return m_SelectHost;
-}
-
 GlobalCommandLineParser::ParseResult GlobalCommandLineParser::parse(const QStringList &args)
 {
     CommandLineParser parser;
@@ -196,7 +191,6 @@ GlobalCommandLineParser::ParseResult GlobalCommandLineParser::parse(const QStrin
         "See 'moonlight <action> --help' for help of specific action."
     );
     parser.addPositionalArgument("action", "Action to execute", "<action>");
-    parser.addHiddenValueOption("select-host");
     parser.parse(args);
     auto posArgs = parser.positionalArguments();
 
@@ -205,9 +199,6 @@ GlobalCommandLineParser::ParseResult GlobalCommandLineParser::parse(const QStrin
         // or --help is specified
         parser.handleHelpAndVersionOptions();
         parser.handleUnknownOptions();
-
-        // The stream process starting us again, to show the apps of the host it streamed from
-        m_SelectHost = parser.value("select-host");
         return NormalStartRequested;
     }
     else {
@@ -412,7 +403,7 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
                                         "name"));
     parser.addHiddenValueOption("app-id");
     parser.addHiddenValueOption("display-origin");
-    parser.addHiddenFlagOption("return-to-gui");
+    parser.addHiddenValueOption("gui-pid");
     parser.addHiddenFlagOption("stream-process");
 
     if (!parser.parse(args)) {
@@ -604,7 +595,7 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
 
     // Passed by the GUI when it hands a stream to the stream process
     m_AppId = parser.value("app-id").toInt();
-    m_ReturnToGui = parser.isSet("return-to-gui");
+    m_GuiPid = parser.value("gui-pid").toLongLong();
     m_StreamProcess = parser.isSet("stream-process");
     if (parser.isSet("display-origin")) {
         QStringList origin = parser.value("display-origin").split(',');
@@ -620,9 +611,9 @@ int StreamCommandLineParser::getAppId() const
     return m_AppId;
 }
 
-bool StreamCommandLineParser::isReturnToGui() const
+qint64 StreamCommandLineParser::getGuiPid() const
 {
-    return m_ReturnToGui;
+    return m_GuiPid;
 }
 
 bool StreamCommandLineParser::isStreamProcess() const

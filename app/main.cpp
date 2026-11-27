@@ -36,7 +36,7 @@
 #include "streaming/streamprocessmain.h"
 #include "settings/streamingpreferences.h"
 
-static int runGui(QGuiApplication& app, GlobalCommandLineParser& parser,
+static int runGui(QGuiApplication& app, GlobalCommandLineParser&,
                   GlobalCommandLineParser::ParseResult commandLineParserResult)
 {
     if (commandLineParserResult == GlobalCommandLineParser::StreamRequested) {
@@ -173,11 +173,7 @@ static int runGui(QGuiApplication& app, GlobalCommandLineParser& parser,
 
     if (hasGUI) {
         engine.rootContext()->setContextProperty("initialView", initialView);
-        // The stream process starting us again shouldn't repeat the configuration warnings
-        engine.rootContext()->setContextProperty("runConfigChecks",
-                                                 commandLineParserResult == GlobalCommandLineParser::NormalStartRequested &&
-                                                 parser.getSelectHost().isEmpty());
-        engine.rootContext()->setContextProperty("initialHostUuid", parser.getSelectHost());
+        engine.rootContext()->setContextProperty("runConfigChecks", commandLineParserResult == GlobalCommandLineParser::NormalStartRequested);
 
         // Load the main.qml file
         engine.load(QUrl(QStringLiteral("qrc:/gui/main.qml")));

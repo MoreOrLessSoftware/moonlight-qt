@@ -38,7 +38,7 @@ static qint64 startDetached(const QString& program, const QStringList& args)
     qInfo() << "Started" << program << args << "as process" << pid;
 
 #ifdef Q_OS_WIN32
-    // We're about to exit, so let the new process take the foreground from us
+    // Our window is about to go, so let the new process take the foreground from us
     AllowSetForegroundWindow((DWORD)pid);
 #endif
 
@@ -59,7 +59,7 @@ bool isHandoffEnabled()
 #endif
 }
 
-bool launchStream(NvComputer* computer, const NvApp& app, const QPoint& displayOrigin)
+qint64 launchStream(NvComputer* computer, const NvApp& app, const QPoint& displayOrigin)
 {
     QString program = siblingExecutable("MoonlightStream");
     QStringList args;
@@ -80,9 +80,9 @@ bool launchStream(NvComputer* computer, const NvApp& app, const QPoint& displayO
     args << "stream" << uuid << app.name
          << "--app-id" << QString::number(app.id)
          << "--display-origin" << QString("%1,%2").arg(displayOrigin.x()).arg(displayOrigin.y())
-         << "--return-to-gui";
+         << "--gui-pid" << QString::number(QCoreApplication::applicationPid());
 
-    return startDetached(program, args) != 0;
+    return startDetached(program, args);
 }
 
 bool forwardStream(const QStringList& arguments, int* exitCode)
@@ -115,52 +115,6 @@ bool forwardStream(const QStringList& arguments, int* exitCode)
     Q_UNUSED(arguments);
     Q_UNUSED(exitCode);
     return false;
-#endif
-}
-
-qint64 relaunchGui(const QString& hostUuid)
-{
-    QString program = siblingExecutable("Moonlight");
-    if (!QFile::exists(program)) {
-        program = QCoreApplication::applicationFilePath();
-    }
-
-    QStringList args;
-    if (!hostUuid.isEmpty()) {
-        args << "--select-host" << hostUuid;
-    }
-
-    return startDetached(program, args);
-}
-
-#ifdef Q_OS_WIN32
-struct WindowSearch {
-    DWORD pid;
-    bool found;
-};
-
-static BOOL CALLBACK findVisibleWindow(HWND hwnd, LPARAM param)
-{
-    auto search = (WindowSearch*)param;
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == search->pid && IsWindowVisible(hwnd)) {
-        search->found = true;
-        return FALSE;
-    }
-    return TRUE;
-}
-#endif
-
-bool hasVisibleWindow(qint64 pid)
-{
-#ifdef Q_OS_WIN32
-    WindowSearch search = { (DWORD)pid, false };
-    EnumWindows(findVisibleWindow, (LPARAM)&search);
-    return search.found;
-#else
-    Q_UNUSED(pid);
-    return true;
 #endif
 }
 

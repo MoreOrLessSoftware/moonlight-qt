@@ -94,6 +94,25 @@ Item {
         }
     }
 
+    // The stream process has exited. It showed any errors itself.
+    function handoffFinished(quitAndExit)
+    {
+        StreamHandoff.streamFinished.disconnect(handoffFinished)
+
+        if (quitAndExit) {
+            Qt.quit()
+            return
+        }
+
+        SdlGamepadKeyNavigation.enable()
+        stackView.pop()
+
+        // The stream process let us take the foreground back
+        window.visible = true
+        window.raise()
+        window.requestActivate()
+    }
+
     function sessionReadyForDeletion()
     {
         // Garbage collect the Session object since it's pretty heavyweight
@@ -114,11 +133,21 @@ Item {
         // Hide the toolbar before we start loading
         toolBar.visible = false
 
-        // The stream process streams instead and starts the GUI again afterwards
-        if (StreamHandoff.enabled && StreamHandoff.launch(session, window)) {
-            session = null
-            Qt.quit()
-            return
+        // The stream process streams instead, while we hide and wait for it
+        if (StreamHandoff.enabled) {
+            // Let go of the gamepads, as for a stream here
+            SdlGamepadKeyNavigation.disable()
+
+            if (StreamHandoff.launch(session, window)) {
+                session = null
+                StreamHandoff.streamFinished.connect(handoffFinished)
+
+                // Hiding also stops polling the hosts
+                window.visible = false
+                return
+            }
+
+            SdlGamepadKeyNavigation.enable()
         }
 
         // Hook up our signals

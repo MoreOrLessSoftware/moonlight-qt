@@ -30,29 +30,9 @@ CenteredGridView {
     // Note: Any initialization done here that is critical for streaming must
     // also be done in CliStartStreamSegue.qml, since this code does not run
     // for command-line initiated streams.
-    // Whether we've shown the host the stream process came back from (initialHostUuid)
-    property bool showedInitialHost: false
-
     StackView.onActivated: {
         // Setup signals on CM
         ComputerManager.computerAddCompleted.connect(addComplete)
-
-        // Back from a stream in the stream process: show the apps of the host it streamed
-        // from, like the GUI does when a stream ends. Pushed after this view's own push.
-        if (!showedInitialHost && initialHostUuid !== "") {
-            showedInitialHost = true
-            var hostIndex = computerModel.findComputer(initialHostUuid)
-            if (hostIndex >= 0) {
-                Qt.callLater(function() {
-                    var component = Qt.createComponent("AppView.qml")
-                    // showGames keeps a direct launch app from starting again
-                    var appView = component.createObject(stackView, {"computerIndex": hostIndex,
-                                                                     "objectName": computerModel.getComputerName(hostIndex),
-                                                                     "showGames": true})
-                    stackView.push(appView, StackView.Immediate)
-                })
-            }
-        }
 
         // Highlight the first item if a gamepad is connected
         if (currentIndex === -1 && StreamingPreferences.uiGamepadNavigation && SdlGamepadKeyNavigation.getConnectedGamepads() > 0) {

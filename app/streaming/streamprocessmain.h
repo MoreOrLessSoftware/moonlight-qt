@@ -28,7 +28,7 @@ public:
 private:
     StreamProcessController(StreamingPreferences* preferences, const QString& host,
                             const QString& appName, int appId, const QPoint* displayOrigin,
-                            bool returnToGui);
+                            qint64 guiPid);
 
     bool start();
 
@@ -69,7 +69,8 @@ private:
     int m_AppId;
     QPoint m_DisplayOrigin;
     bool m_HasDisplayOrigin;
-    bool m_ReturnToGui;
+    qint64 m_GuiPid;           // The GUI waiting for us, if it started us
+    bool m_ExitRequested;      // Quit and exit, which exits the GUI too
 
     State m_State;
     LaunchWindow m_Window;
