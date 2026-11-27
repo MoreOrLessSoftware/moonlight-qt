@@ -95,8 +95,31 @@ Item {
         return null
     }
 
-    // Moves the focus to the first control of the next or previous section on
-    // the tab. It stays put at the first and last sections.
+    // The control that last had the focus in each section, for coming back to it
+    property var lastFocusInSection: new Map()
+
+    // The section's remembered control, if it can still take the focus. first is
+    // the section's first control in the focus chain.
+    function rememberedFocusIn(section, first) {
+        var remembered = lastFocusInSection.get(section)
+        if (!remembered) {
+            return null
+        }
+
+        // Only controls still in the focus chain (shown and enabled) count
+        for (var item = first, i = 0;
+             item && sectionOf(item) === section && i < 1000;
+             item = item.nextItemInFocusChain(true), i++) {
+            if (item === remembered) {
+                return item
+            }
+        }
+        return null
+    }
+
+    // Moves the focus to the control that last had it in the next or previous
+    // section on the tab, or to the section's first control. It stays put at the
+    // first and last sections.
     function moveToSection(forward) {
         var item = Window.activeFocusItem
         if (!item || !isChildOfFlickable(item)) {
@@ -138,7 +161,7 @@ Item {
         }
 
         if (target) {
-            target.forceActiveFocus(Qt.TabFocus)
+            (rememberedFocusIn(targetSection, target) || target).forceActiveFocus(Qt.TabFocus)
         }
     }
 
@@ -167,6 +190,11 @@ Item {
             // Ignore non-child elements like the toolbar buttons
             if (!isChildOfFlickable(item)) {
                 return
+            }
+
+            var section = sectionOf(item)
+            if (section) {
+                lastFocusInSection.set(section, item)
             }
 
             var flickable = settingsFlickable
