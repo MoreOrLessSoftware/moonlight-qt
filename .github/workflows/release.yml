@@ -99,7 +99,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $deploy = 'build/deploy-x64-release'
-          foreach ($file in 'Moonlight.exe', 'portable.dat', 'libpyrowave-shared-1.dll', 'avcodec-63.dll') {
+          foreach ($file in 'Moonlight.exe', 'MoonlightStream.exe', 'portable.dat', 'libpyrowave-shared-1.dll', 'avcodec-63.dll') {
             if (-not (Test-Path "$deploy/$file")) { throw "$file is missing from the package" }
           }
           $avcodec = [IO.File]::ReadAllText((Resolve-Path "$deploy/avcodec-63.dll"), [Text.Encoding]::Latin1)

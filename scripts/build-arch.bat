@@ -295,7 +295,7 @@ del %DEPLOY_FOLDER%\icuuc.dll
 
 if "%SIGN%"=="1" (
     echo Signing deployed binaries
-    set FILES_TO_SIGN=%BUILD_FOLDER%\app\%BUILD_CONFIG%\Moonlight.exe
+    set FILES_TO_SIGN=%BUILD_FOLDER%\app\%BUILD_CONFIG%\Moonlight.exe %BUILD_FOLDER%\app\%BUILD_CONFIG%\MoonlightStream.exe
     for /r "%DEPLOY_FOLDER%" %%f in (*.dll *.exe) do (
         set FILES_TO_SIGN=!FILES_TO_SIGN! %%f
     )
@@ -309,6 +309,8 @@ if "%ML_SYMBOL_STORE%" NEQ "" (
     if !ERRORLEVEL! NEQ 0 goto Error
     symstore add /r /f %BUILD_FOLDER%\app\%BUILD_CONFIG%\Moonlight.exe /s %ML_SYMBOL_STORE% /t Moonlight
     if !ERRORLEVEL! NEQ 0 goto Error
+    symstore add /r /f %BUILD_FOLDER%\app\%BUILD_CONFIG%\MoonlightStream.exe /s %ML_SYMBOL_STORE% /t Moonlight
+    if !ERRORLEVEL! NEQ 0 goto Error
 )
 
 echo Building MSI
@@ -317,6 +319,12 @@ if !ERRORLEVEL! NEQ 0 goto Error
 
 echo Copying application binary to deployment directory
 copy %BUILD_FOLDER%\app\%BUILD_CONFIG%\Moonlight.exe %DEPLOY_FOLDER%
+if !ERRORLEVEL! NEQ 0 goto Error
+
+rem Only the portable package streams in a separate process, so the MSI (built above
+rem from the deploy folder) doesn't get the stream executable
+echo Copying stream binary to deployment directory
+copy %BUILD_FOLDER%\app\%BUILD_CONFIG%\MoonlightStream.exe %DEPLOY_FOLDER%
 if !ERRORLEVEL! NEQ 0 goto Error
 
 echo Building portable package

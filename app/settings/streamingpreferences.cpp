@@ -74,13 +74,13 @@ static StreamingPreferences* s_GlobalPrefs;
 
 Q_GLOBAL_STATIC(QReadWriteLock, s_GlobalPrefsLock)
 
-StreamingPreferences::StreamingPreferences(QQmlEngine *qmlEngine)
+StreamingPreferences::StreamingPreferences(QObject *qmlEngine)
     : m_QmlEngine(qmlEngine)
 {
     reload();
 }
 
-StreamingPreferences* StreamingPreferences::get(QQmlEngine *qmlEngine)
+StreamingPreferences* StreamingPreferences::get(QObject *qmlEngine)
 {
     {
         QReadLocker readGuard(s_GlobalPrefsLock);
@@ -268,8 +268,9 @@ bool StreamingPreferences::retranslate()
     if (m_QmlEngine != nullptr) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
         // This is a dynamic retranslation from the settings page.
-        // We have to kick the QML engine into reloading our text.
-        m_QmlEngine->retranslate();
+        // We have to kick the QML engine into reloading our text. It's a slot, called by
+        // name so the stream process doesn't need QtQml.
+        QMetaObject::invokeMethod(m_QmlEngine, "retranslate");
 #else
         // Unreachable below Qt 5.10 due to the check above
         Q_ASSERT(false);

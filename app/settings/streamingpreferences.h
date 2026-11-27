@@ -3,14 +3,14 @@
 #include <QObject>
 #include <QRect>
 #include <QStringList>
-#include <QQmlEngine>
 
 class StreamingPreferences : public QObject
 {
     Q_OBJECT
 
 public:
-    static StreamingPreferences* get(QQmlEngine *qmlEngine = nullptr);
+    // qmlEngine is the GUI's QQmlEngine, retranslated when the language changes
+    static StreamingPreferences* get(QObject *qmlEngine = nullptr);
 
     Q_INVOKABLE static int
     getDefaultBitrate(int width, int height, int fps, bool yuv444);
@@ -326,10 +326,10 @@ signals:
     void videoPresetsChanged();
 
 private:
-    explicit StreamingPreferences(QQmlEngine *qmlEngine);
+    explicit StreamingPreferences(QObject *qmlEngine);
 
     QString getSuffixFromLanguage(Language lang);
 
-    QQmlEngine* m_QmlEngine;
+    QObject* m_QmlEngine;
 };
 

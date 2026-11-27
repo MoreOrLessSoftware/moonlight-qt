@@ -86,6 +86,39 @@ bool launchStream(NvComputer* computer, const NvApp& app, const QPoint& displayO
     return startDetached(program, args) != 0;
 }
 
+bool forwardStream(const QStringList& arguments, int* exitCode)
+{
+#ifdef Q_OS_WIN32
+    QString program = siblingExecutable("MoonlightStream");
+    if (!QFile::exists(program)) {
+        return false;
+    }
+
+    // The arguments are ours without the program, and its output is ours too
+    QProcess process;
+    process.setProgram(program);
+    process.setArguments(arguments.mid(1));
+    process.setProcessChannelMode(QProcess::ForwardedChannels);
+    process.start();
+    if (!process.waitForStarted(-1)) {
+        qWarning() << "Unable to start" << program << ":" << process.errorString();
+        return false;
+    }
+
+    qInfo() << "Streaming in" << program << "as process" << process.processId();
+    AllowSetForegroundWindow((DWORD)process.processId());
+
+    // Launchers watch our process, so we stay until the stream does
+    process.waitForFinished(-1);
+    *exitCode = process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1;
+    return true;
+#else
+    Q_UNUSED(arguments);
+    Q_UNUSED(exitCode);
+    return false;
+#endif
+}
+
 qint64 relaunchGui(const QString& hostUuid)
 {
     QString program = siblingExecutable("Moonlight");

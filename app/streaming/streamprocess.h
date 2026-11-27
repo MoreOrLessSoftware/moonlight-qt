@@ -2,6 +2,7 @@
 
 #include <QPoint>
 #include <QString>
+#include <QStringList>
 #include <QtGlobal>
 
 class NvComputer;
@@ -18,6 +19,10 @@ namespace StreamProcess
     // Starts the stream process for an app on a host, on the display at displayOrigin
     // (the top left corner of the GUI's screen). The caller exits once this succeeds.
     bool launchStream(NvComputer* computer, const NvApp& app, const QPoint& displayOrigin);
+
+    // Runs a command line stream in the stream executable, if there is one, waiting for
+    // it to finish. Returns false without it.
+    bool forwardStream(const QStringList& arguments, int* exitCode);
 
     // Starts the GUI again after a stream, showing the apps of the host it streamed from.
     // Returns its process ID, or 0 if it didn't start.
