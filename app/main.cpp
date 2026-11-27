@@ -44,7 +44,7 @@
 #include "cli/quitstream.h"
 #include "cli/startstream.h"
 #include "gui/streamhandoff.h"
-#include "streaming/streamprocess.h"
+#include "streaming/streamprocessmain.h"
 #include "cli/pair.h"
 #include "cli/commandlineparser.h"
 #include "path.h"
@@ -948,6 +948,50 @@ int main(int argc, char *argv[])
     qputenv("SDL_VIDEO_WAYLAND_WMCLASS", "com.moonlight_stream.Moonlight");
     qputenv("SDL_VIDEO_X11_WMCLASS", "com.moonlight_stream.Moonlight");
 
+    // Shared by the GUI and the stream process when they're done
+    auto shutdown = [&](int err) -> int {
+        // Give worker tasks time to properly exit. Fixes PendingQuitTask
+        // sometimes freezing and blocking process exit.
+        QThreadPool::globalInstance()->waitForDone(30000);
+
+        // Restore the default logger for all libraries before shutting down ours
+#if SDL_VERSION_ATLEAST(3, 0, 0)
+        SDL_SetLogOutputFunction(SDL_GetDefaultLogOutputFunction(), nullptr);
+#else
+        SDL_LogSetOutputFunction(oldSdlLogFn, oldSdlLogUserdata);
+#endif
+        qInstallMessageHandler(nullptr);
+#ifdef HAVE_FFMPEG
+        av_log_set_callback(av_log_default_callback);
+#endif
+
+        // We should not be in async logging mode anymore
+        Q_ASSERT(g_AsyncLoggingEnabled == 0);
+
+        // Wait for pending log messages to be printed
+        s_LoggerThread.waitForDone();
+
+#ifdef Q_OS_WIN32
+        // Without an explicit flush, console redirection for the list command
+        // doesn't work reliably (sometimes the target file contains no text).
+        fflush(stderr);
+        fflush(stdout);
+#endif
+
+        return err;
+    };
+
+#ifdef Q_OS_WIN32
+    // The stream process streams without the QML GUI
+    if (commandLineParserResult == GlobalCommandLineParser::StreamRequested &&
+            app.arguments().contains("--stream-process")) {
+        // Create the identity manager on the main thread
+        IdentityManager::get();
+
+        return shutdown(StreamProcessController::run(app));
+    }
+#endif
+
     // Register our C++ types for QML
     qmlRegisterType<ComputerModel>("ComputerModel", 1, 0, "ComputerModel");
     qmlRegisterType<AppModel>("AppModel", 1, 0, "AppModel");
@@ -1016,10 +1060,6 @@ int main(int argc, char *argv[])
     QString initialView;
     bool hasGUI = true;
 
-    // When this is the stream process, the host to show in the GUI after the stream
-    QString returnToGuiHost;
-    bool returnToGui = false;
-
     switch (commandLineParserResult) {
     case GlobalCommandLineParser::NormalStartRequested:
         initialView = "qrc:/gui/PcView.qml";
@@ -1038,8 +1078,6 @@ int main(int argc, char *argv[])
             if (streamParser.getDisplayOrigin(&displayOrigin)) {
                 launcher->setDisplayOrigin(displayOrigin);
             }
-            returnToGui = streamParser.isReturnToGui();
-            returnToGuiHost = host;
             engine.rootContext()->setContextProperty("launcher", launcher);
             break;
         }
@@ -1088,11 +1126,6 @@ int main(int argc, char *argv[])
 
     int err = app.exec();
 
-    // Bring the GUI back now rather than after our cleanup below
-    if (returnToGui) {
-        StreamProcess::relaunchGui(returnToGuiHost);
-    }
-
     // Remember where the window was and how big it was for next time. Only a plain
     // window counts: a maximized or full-screen window isn't the size it'll come back
     // as (that's the UI display mode setting's job), and a minimized one isn't anywhere.
@@ -1103,33 +1136,5 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Give worker tasks time to properly exit. Fixes PendingQuitTask
-    // sometimes freezing and blocking process exit.
-    QThreadPool::globalInstance()->waitForDone(30000);
-
-    // Restore the default logger for all libraries before shutting down ours
-#if SDL_VERSION_ATLEAST(3, 0, 0)
-    SDL_SetLogOutputFunction(SDL_GetDefaultLogOutputFunction(), nullptr);
-#else
-    SDL_LogSetOutputFunction(oldSdlLogFn, oldSdlLogUserdata);
-#endif
-    qInstallMessageHandler(nullptr);
-#ifdef HAVE_FFMPEG
-    av_log_set_callback(av_log_default_callback);
-#endif
-
-    // We should not be in async logging mode anymore
-    Q_ASSERT(g_AsyncLoggingEnabled == 0);
-
-    // Wait for pending log messages to be printed
-    s_LoggerThread.waitForDone();
-
-#ifdef Q_OS_WIN32
-    // Without an explicit flush, console redirection for the list command
-    // doesn't work reliably (sometimes the target file contains no text).
-    fflush(stderr);
-    fflush(stdout);
-#endif
-
-    return err;
+    return shutdown(err);
 }

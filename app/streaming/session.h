@@ -124,6 +124,10 @@ public:
     // the one the Qt window is on. Set before initialize().
     void setDisplayOrigin(const QPoint& origin);
 
+    // Streams in this window instead of creating one, and leaves it open afterwards.
+    // Set before initialize().
+    void setWindow(SDL_Window* window);
+
     NvComputer* getComputer() const
     {
         return m_Computer;
@@ -207,6 +211,16 @@ private:
 
     void getWindowDimensions(int& x, int& y,
                              int& width, int& height);
+
+public:
+    // The display whose top left corner is at origin (0 if none is)
+    static int findDisplayIndex(const QPoint& origin);
+
+    // The size and position of a window for a stream of this size on that display
+    static void getWindowDimensions(int displayIndex, int streamWidth, int streamHeight,
+                                    int& x, int& y, int& width, int& height);
+
+private:
 
     void toggleFullscreen();
 
@@ -317,6 +331,7 @@ private:
     NvComputer* m_Computer;
     NvApp m_App;
     SDL_Window* m_Window;
+    bool m_OwnsWindow = true;
     IVideoDecoder* m_VideoDecoder;
     SDL_mutex* m_DecoderLock;
     bool m_AudioDisabled;

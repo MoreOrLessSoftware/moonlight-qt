@@ -413,6 +413,7 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     parser.addHiddenValueOption("app-id");
     parser.addHiddenValueOption("display-origin");
     parser.addHiddenFlagOption("return-to-gui");
+    parser.addHiddenFlagOption("stream-process");
 
     if (!parser.parse(args)) {
         parser.showError(parser.errorText());
@@ -604,6 +605,7 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     // Passed by the GUI when it hands a stream to the stream process
     m_AppId = parser.value("app-id").toInt();
     m_ReturnToGui = parser.isSet("return-to-gui");
+    m_StreamProcess = parser.isSet("stream-process");
     if (parser.isSet("display-origin")) {
         QStringList origin = parser.value("display-origin").split(',');
         if (origin.size() == 2) {
@@ -621,6 +623,11 @@ int StreamCommandLineParser::getAppId() const
 bool StreamCommandLineParser::isReturnToGui() const
 {
     return m_ReturnToGui;
+}
+
+bool StreamCommandLineParser::isStreamProcess() const
+{
+    return m_StreamProcess;
 }
 
 bool StreamCommandLineParser::getDisplayOrigin(QPoint* origin) const

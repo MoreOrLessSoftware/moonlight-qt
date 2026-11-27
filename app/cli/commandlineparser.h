@@ -74,6 +74,9 @@ public:
     // whether to start the GUI again afterwards, and the display the GUI was on
     int getAppId() const;
     bool isReturnToGui() const;
+
+    // Whether to stream without the QML GUI, as the stream process does
+    bool isStreamProcess() const;
     bool getDisplayOrigin(QPoint* origin) const;
 
 private:
@@ -81,6 +84,7 @@ private:
     QString m_AppName;
     int m_AppId = 0;
     bool m_ReturnToGui = false;
+    bool m_StreamProcess = false;
     QPoint m_DisplayOrigin;
     bool m_HasDisplayOrigin = false;
     QMap<QString, StreamingPreferences::WindowMode> m_WindowModeMap;

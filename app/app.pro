@@ -202,6 +202,8 @@ SOURCES += \
     streaming/input/reltouch.cpp \
     streaming/session.cpp \
     streaming/streamprocess.cpp \
+    streaming/streamprocessmain.cpp \
+    streaming/launchwindow.cpp \
     streaming/audio/audio.cpp \
     streaming/audio/renderers/sdlaud.cpp \
     gui/computermodel.cpp \
@@ -252,6 +254,8 @@ HEADERS += \
     streaming/input/gyrofilter.h \
     streaming/session.h \
     streaming/streamprocess.h \
+    streaming/streamprocessmain.h \
+    streaming/launchwindow.h \
     streaming/audio/renderers/renderer.h \
     streaming/audio/renderers/sdl.h \
     gui/computermodel.h \

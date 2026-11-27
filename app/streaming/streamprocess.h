@@ -2,6 +2,7 @@
 
 #include <QPoint>
 #include <QString>
+#include <QtGlobal>
 
 class NvComputer;
 class NvApp;
@@ -18,6 +19,10 @@ namespace StreamProcess
     // (the top left corner of the GUI's screen). The caller exits once this succeeds.
     bool launchStream(NvComputer* computer, const NvApp& app, const QPoint& displayOrigin);
 
-    // Starts the GUI again after a stream, showing the apps of the host it streamed from
-    bool relaunchGui(const QString& hostUuid);
+    // Starts the GUI again after a stream, showing the apps of the host it streamed from.
+    // Returns its process ID, or 0 if it didn't start.
+    qint64 relaunchGui(const QString& hostUuid);
+
+    // Whether the process has shown a window yet
+    bool hasVisibleWindow(qint64 pid);
 }

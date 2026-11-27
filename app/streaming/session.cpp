@@ -653,6 +653,13 @@ Session::~Session()
     SDL_DestroyMutex(m_DecoderLock);
 }
 
+void Session::setWindow(SDL_Window* window)
+{
+    Q_ASSERT(m_Window == nullptr);
+    m_Window = window;
+    m_OwnsWindow = false;
+}
+
 void Session::setDisplayOrigin(const QPoint& origin)
 {
     m_DisplayOrigin = origin;
@@ -1429,6 +1436,33 @@ private:
     Session* m_Session;
 };
 
+int Session::findDisplayIndex(const QPoint& origin)
+{
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Qt UI screen is at (%d,%d)",
+                origin.x(), origin.y());
+    for (int i = 0; i < SDL_GetNumVideoDisplays(); i++) {
+        SDL_Rect displayBounds;
+
+        if (SDL_GetDisplayBounds(i, &displayBounds) == 0) {
+            if (displayBounds.x == origin.x() &&
+                displayBounds.y == origin.y()) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "SDL found matching display %d",
+                            i);
+                return i;
+            }
+        }
+        else {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "SDL_GetDisplayBounds(%d) failed: %s",
+                        i, SDL_GetError());
+        }
+    }
+
+    return 0;
+}
+
 void Session::getWindowDimensions(int& x, int& y,
                                   int& width, int& height)
 {
@@ -1438,37 +1472,17 @@ void Session::getWindowDimensions(int& x, int& y,
         displayIndex = SDL_GetWindowDisplayIndex(m_Window);
         SDL_assert(displayIndex >= 0);
     }
-    // Create our window on the same display that Qt's UI was being displayed on,
-    // or the one we were told to use (the GUI's, when it handed the stream to us)
+    // Create our window on the display we were told to use (the GUI's, when it
+    // handed the stream to us), or the same display that Qt's UI was on
+    else if (m_HasDisplayOrigin) {
+        displayIndex = findDisplayIndex(m_DisplayOrigin);
+    }
     else {
-        Q_ASSERT(m_QtWindow != nullptr || m_HasDisplayOrigin);
-        QScreen* screen = m_QtWindow != nullptr ? m_QtWindow->screen() : nullptr;
-        if (m_HasDisplayOrigin || m_QtWindow != nullptr) {
-            if (m_HasDisplayOrigin || screen != nullptr) {
-                QRect displayRect = m_HasDisplayOrigin ? QRect(m_DisplayOrigin, QSize(1, 1)) : screen->geometry();
-
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                            "Qt UI screen is at (%d,%d)",
-                            displayRect.x(), displayRect.y());
-                for (int i = 0; i < SDL_GetNumVideoDisplays(); i++) {
-                    SDL_Rect displayBounds;
-
-                    if (SDL_GetDisplayBounds(i, &displayBounds) == 0) {
-                        if (displayBounds.x == displayRect.x() &&
-                            displayBounds.y == displayRect.y()) {
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                                        "SDL found matching display %d",
-                                        i);
-                            displayIndex = i;
-                            break;
-                        }
-                    }
-                    else {
-                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                                    "SDL_GetDisplayBounds(%d) failed: %s",
-                                    i, SDL_GetError());
-                    }
-                }
+        Q_ASSERT(m_QtWindow != nullptr);
+        if (m_QtWindow != nullptr) {
+            QScreen* screen = m_QtWindow->screen();
+            if (screen != nullptr) {
+                displayIndex = findDisplayIndex(screen->geometry().topLeft());
             }
             else {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -1477,19 +1491,26 @@ void Session::getWindowDimensions(int& x, int& y,
         }
     }
 
+    getWindowDimensions(displayIndex, m_StreamConfig.width, m_StreamConfig.height,
+                        x, y, width, height);
+}
+
+void Session::getWindowDimensions(int displayIndex, int streamWidth, int streamHeight,
+                                  int& x, int& y, int& width, int& height)
+{
     SDL_Rect usableBounds;
     if (SDL_GetDisplayUsableBounds(displayIndex, &usableBounds) == 0) {
         // If the stream resolution fits within the usable display area, use it directly
-        if (m_StreamConfig.width <= usableBounds.w &&
-            m_StreamConfig.height <= usableBounds.h) {
-            width = m_StreamConfig.width;
-            height = m_StreamConfig.height;
+        if (streamWidth <= usableBounds.w &&
+            streamHeight <= usableBounds.h) {
+            width = streamWidth;
+            height = streamHeight;
         } else {
             // Otherwise, use 80% of usable bounds and preserve aspect ratio
             SDL_Rect src, dst;
             src.x = src.y = dst.x = dst.y = 0;
-            src.w = m_StreamConfig.width;
-            src.h = m_StreamConfig.height;
+            src.w = streamWidth;
+            src.h = streamHeight;
 
             dst.w = ((int)(usableBounds.w * 0.80f)) & ~0x1;  // even width
             dst.h = ((int)(usableBounds.h * 0.80f)) & ~0x1;  // even height
@@ -1505,8 +1526,8 @@ void Session::getWindowDimensions(int& x, int& y,
                      "SDL_GetDisplayUsableBounds() failed: %s",
                      SDL_GetError());
 
-        width = m_StreamConfig.width;
-        height = m_StreamConfig.height;
+        width = streamWidth;
+        height = streamHeight;
     }
 
     x = y = SDL_WINDOWPOS_CENTERED_DISPLAY(displayIndex);
@@ -1960,12 +1981,19 @@ void Session::exec()
     std::string windowName = QString(m_Computer->name + " - Moonlight").toStdString();
 #endif
 
-    m_Window = SDL_CreateWindow(windowName.c_str(),
-                                x,
-                                y,
-                                width,
-                                height,
-                                defaultWindowFlags | StreamUtils::getPlatformWindowFlags());
+    // The stream process creates the window before the stream, to show its progress in
+    if (m_Window != nullptr) {
+        SDL_SetWindowTitle(m_Window, windowName.c_str());
+    }
+    else {
+        m_Window = SDL_CreateWindow(windowName.c_str(),
+                                    x,
+                                    y,
+                                    width,
+                                    height,
+                                    defaultWindowFlags | StreamUtils::getPlatformWindowFlags());
+        m_OwnsWindow = true;
+    }
     if (!m_Window) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "SDL_CreateWindow() failed with platform flags: %s",
@@ -2617,7 +2645,10 @@ DispatchDeferredCleanup:
     // This must be called after the decoder is deleted, because
     // the renderer may want to interact with the window
     m_OverlayManager.setOverlayWindow(nullptr);
-    SDL_DestroyWindow(m_Window);
+    if (m_OwnsWindow) {
+        SDL_DestroyWindow(m_Window);
+    }
+    m_Window = nullptr;
 
     if (iconSurface != nullptr) {
         SDL_FreeSurface(iconSurface);
