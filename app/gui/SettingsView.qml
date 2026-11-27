@@ -84,6 +84,69 @@ Item {
         onActivated: settingsPage.switchTab(-1, false)
     }
 
+    // The section (group box) an item is in: tabs hold columns of sections
+    function sectionOf(item) {
+        while (item && item.parent) {
+            if (item.parent.parent && tabs.indexOf(item.parent.parent) >= 0) {
+                return item
+            }
+            item = item.parent
+        }
+        return null
+    }
+
+    // Moves the focus to the first control of the next or previous section on
+    // the tab. It stays put at the first and last sections.
+    function moveToSection(forward) {
+        var item = Window.activeFocusItem
+        if (!item || !isChildOfFlickable(item)) {
+            return
+        }
+
+        var tab = tabs[tabBar.currentIndex]
+        var section = sectionOf(item)
+        var target = null
+        var targetSection = null
+
+        // Bounded in case the focus chain loops without leaving the tab
+        for (var next = item.nextItemInFocusChain(forward), i = 0;
+             next && next !== item && i < 1000;
+             next = next.nextItemInFocusChain(forward), i++) {
+            if (!isDescendantOf(next, tab)) {
+                break
+            }
+
+            var nextSection = sectionOf(next)
+            if (!targetSection) {
+                if (nextSection && nextSection !== section) {
+                    target = next
+                    targetSection = nextSection
+
+                    // Going forward, this is already the section's first control
+                    if (forward) {
+                        break
+                    }
+                }
+            }
+            else if (nextSection === targetSection) {
+                // Going back, keep going to the section's first control
+                target = next
+            }
+            else {
+                break
+            }
+        }
+
+        if (target) {
+            target.forceActiveFocus(Qt.TabFocus)
+        }
+    }
+
+    // Left and right move between sections when the control with the focus
+    // doesn't use them itself (sliders and text fields do)
+    Keys.onLeftPressed: moveToSection(false)
+    Keys.onRightPressed: moveToSection(true)
+
     Window.onActiveFocusItemChanged: {
         var item = Window.activeFocusItem
         if (item) {

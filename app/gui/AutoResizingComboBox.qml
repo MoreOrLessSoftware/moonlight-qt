@@ -10,9 +10,11 @@ ComboBox {
     property int desiredWidth : leftPadding + textWidth + indicator.width + rightPadding
     property int maximumWidth : parent.width
 
-    // Left and right change the selection by default. Turn this off where they
-    // need to move focus between neighboring controls instead, like the toolbar.
-    property bool arrowKeysChangeSelection: true
+    // Left and right never change the selection (that's done in the popup). By
+    // default they're left to the page, like settings, which moves between its
+    // sections. This makes them move to the neighboring controls instead, like
+    // in the toolbar.
+    property bool arrowKeysMoveFocus: false
 
     // The UI navigation mode to restore when the popup closes. Pages that use
     // Tab-based navigation (like settings) want it on, the rest want it off.
@@ -59,22 +61,28 @@ ComboBox {
         SdlGamepadKeyNavigation.setUiNavMode(uiNavModeOnClose)
     }
 
-    Keys.onLeftPressed: {
-        if (arrowKeysChangeSelection) {
-            decrementCurrentIndex()
+    // Keeps the keys while the popup is open, so focus can't leave it
+    Keys.onLeftPressed: function(event) {
+        if (popup.visible) {
+            return
         }
-        else if (!popup.visible) {
-            // Leave the keys alone while the popup is open, so focus can't leave it
+        if (arrowKeysMoveFocus) {
             nextItemInFocusChain(false).forceActiveFocus(Qt.TabFocus)
+        }
+        else {
+            event.accepted = false
         }
     }
 
-    Keys.onRightPressed: {
-        if (arrowKeysChangeSelection) {
-            incrementCurrentIndex()
+    Keys.onRightPressed: function(event) {
+        if (popup.visible) {
+            return
         }
-        else if (!popup.visible) {
+        if (arrowKeysMoveFocus) {
             nextItemInFocusChain(true).forceActiveFocus(Qt.TabFocus)
+        }
+        else {
+            event.accepted = false
         }
     }
 }

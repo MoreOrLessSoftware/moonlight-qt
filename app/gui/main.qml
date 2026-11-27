@@ -426,7 +426,7 @@ ApplicationWindow {
                 Layout.minimumWidth: implicitWidth
 
                 // Left and right move between toolbar controls, like the toolbar buttons
-                arrowKeysChangeSelection: false
+                arrowKeysMoveFocus: true
 
                 // The apps screen doesn't use UI navigation mode, so don't leave it on after the popup closes
                 uiNavModeOnClose: false
