@@ -29,6 +29,10 @@ public:
 
     Q_INVOKABLE int getConnectedGamepads();
 
+    // True while a key made from a gamepad button or stick is being delivered, so a
+    // control can tell it from the same key pressed on a keyboard
+    Q_INVOKABLE bool isSendingKey() const { return m_SendingKey; }
+
     // The instance QML uses, for C++ objects created from QML (null before it exists)
     static SdlGamepadKeyNavigation* instance() { return s_Instance; }
 
@@ -64,6 +68,7 @@ private:
     bool m_UiNavMode;
     bool m_FirstPoll;
     bool m_HasFocus;
+    bool m_SendingKey;
     Uint32 m_LastAxisNavigationEventTime;
     std::function<void(const SDL_ControllerSensorEvent&)> m_SensorListener;
 

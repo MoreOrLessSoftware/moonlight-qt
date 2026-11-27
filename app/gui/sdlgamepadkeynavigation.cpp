@@ -22,6 +22,7 @@ SdlGamepadKeyNavigation::SdlGamepadKeyNavigation(StreamingPreferences* prefs)
       m_UiNavMode(false),
       m_FirstPoll(false),
       m_HasFocus(false),
+      m_SendingKey(false),
       m_LastAxisNavigationEventTime(0)
 {
     m_PollingTimer = new QTimer(this);
@@ -329,7 +330,9 @@ void SdlGamepadKeyNavigation::sendKey(QEvent::Type type, Qt::Key key, Qt::Keyboa
     QWindow* focusWindow = app->focusWindow();
     if (focusWindow != nullptr) {
         QKeyEvent keyPressEvent(type, key, modifiers);
+        m_SendingKey = true;
         app->sendEvent(focusWindow, &keyPressEvent);
+        m_SendingKey = false;
     }
 }
 

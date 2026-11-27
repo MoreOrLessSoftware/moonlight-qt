@@ -143,9 +143,23 @@ Item {
     }
 
     // Left and right move between sections when the control with the focus
-    // doesn't use them itself (sliders and text fields do)
-    Keys.onLeftPressed: moveToSection(false)
-    Keys.onRightPressed: moveToSection(true)
+    // doesn't use them itself. Text fields accept them. Sliders (and spin boxes)
+    // are checked for here, so a slider moving can never also change section.
+    function usesArrowKeys(item) {
+        return item && typeof item.increase === "function" && typeof item.decrease === "function"
+    }
+
+    Keys.onLeftPressed: {
+        if (!usesArrowKeys(Window.activeFocusItem)) {
+            moveToSection(false)
+        }
+    }
+
+    Keys.onRightPressed: {
+        if (!usesArrowKeys(Window.activeFocusItem)) {
+            moveToSection(true)
+        }
+    }
 
     Window.onActiveFocusItemChanged: {
         var item = Window.activeFocusItem
@@ -1425,9 +1439,80 @@ Item {
                                 // Only the user moving the slider sets the bitrate. A bitrate entered in
                                 // bitrateDialog can be past the slider's end, which the slider clamps its
                                 // value to, and that mustn't overwrite it.
-                                onMoved: {
-                                    StreamingPreferences.bitrateKbps = Math.max(value, 500)
+                                onMoved: setBitrate(value)
+
+                                function setBitrate(kbps) {
+                                    StreamingPreferences.bitrateKbps = Math.max(kbps, 500)
                                     StreamingPreferences.autoAdjustBitrate = false
+                                }
+
+                                // With a gamepad, left and right only move the slider while A is held
+                                // (5 Mbps steps) or X is held (50 Mbps steps). Otherwise they move
+                                // between sections like elsewhere on the page. The keyboard's arrow
+                                // keys move the slider as usual.
+                                readonly property int coarseStepKbps: 50000
+                                property bool gamepadAdjustHeld: false
+                                property bool gamepadCoarseHeld: false
+
+                                onActiveFocusChanged: {
+                                    if (!activeFocus) {
+                                        gamepadAdjustHeld = false
+                                        gamepadCoarseHeld = false
+                                    }
+                                }
+
+                                // The event arrives here unaccepted, and an unaccepted one goes on to
+                                // the Slider's own handling, which would move it a step as well
+                                Keys.onPressed: function(event) {
+                                    if (!SdlGamepadKeyNavigation.isSendingKey()) {
+                                        event.accepted = false
+                                        return
+                                    }
+
+                                    event.accepted = true
+                                    switch (event.key) {
+                                    case Qt.Key_Space:
+                                        // A
+                                        gamepadAdjustHeld = true
+                                        break
+                                    case Qt.Key_Menu:
+                                        // X, which otherwise opens the settings
+                                        gamepadCoarseHeld = true
+                                        break
+                                    case Qt.Key_Left:
+                                    case Qt.Key_Right:
+                                        var forward = event.key === Qt.Key_Right
+                                        if (gamepadCoarseHeld) {
+                                            value = Math.min(Math.max(value + (forward ? coarseStepKbps : -coarseStepKbps), from), to)
+                                            setBitrate(value)
+                                        }
+                                        else if (gamepadAdjustHeld) {
+                                            if (forward) {
+                                                increase()
+                                            }
+                                            else {
+                                                decrease()
+                                            }
+                                            setBitrate(value)
+                                        }
+                                        else {
+                                            settingsPage.moveToSection(forward)
+                                        }
+                                        break
+                                    default:
+                                        event.accepted = false
+                                        break
+                                    }
+                                }
+
+                                Keys.onReleased: function(event) {
+                                    if (event.key === Qt.Key_Space) {
+                                        gamepadAdjustHeld = false
+                                    }
+                                    else if (event.key === Qt.Key_Menu) {
+                                        gamepadCoarseHeld = false
+                                    }
+                                    event.accepted = false
                                 }
                             }
 
