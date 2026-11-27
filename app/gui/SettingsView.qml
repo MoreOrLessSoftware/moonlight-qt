@@ -1213,6 +1213,26 @@ Item {
 
                             onLinkActivated: bitrateDialog.open()
 
+                            // Focusable, so keyboard and gamepad navigation can reach the link.
+                            // The gamepad's A button sends Space in UI nav mode.
+                            activeFocusOnTab: true
+                            Keys.onSpacePressed: bitrateDialog.openFromKeys()
+                            Keys.onReturnPressed: bitrateDialog.openFromKeys()
+                            Keys.onEnterPressed: bitrateDialog.openFromKeys()
+
+                            // Highlights the text while the label has the focus
+                            Rectangle {
+                                z: -1
+                                x: -4
+                                y: -2
+                                width: parent.contentWidth + 8
+                                height: parent.contentHeight + 4
+                                radius: 3
+                                color: Material.accent
+                                opacity: 0.25
+                                visible: parent.activeFocus
+                            }
+
                             MouseArea {
                                 anchors.fill: parent
                                 acceptedButtons: Qt.NoButton
@@ -1224,6 +1244,23 @@ Item {
                             id: bitrateDialog
                             standardButtons: Dialog.Ok | Dialog.Cancel
                             title: qsTr("Video bitrate")
+
+                            // Set when the keyboard or gamepad opened the dialog, to give the
+                            // focus back to the link when it closes
+                            property bool restoreFocus: false
+
+                            function openFromKeys() {
+                                restoreFocus = true
+                                open()
+                            }
+
+                            onClosed: {
+                                if (restoreFocus) {
+                                    restoreFocus = false
+                                    // After NavigableDialog has given the focus to the stackView
+                                    Qt.callLater(function() { bitrateTitle.forceActiveFocus(Qt.TabFocus) })
+                                }
+                            }
 
                             // In Kbps, or 0 if what was entered isn't a valid bitrate
                             function enteredKbps() {
