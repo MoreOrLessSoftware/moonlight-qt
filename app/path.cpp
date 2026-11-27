@@ -11,7 +11,6 @@ QString Path::s_LogDir;
 QString Path::s_BoxArtCacheDir;
 QString Path::s_QmlCacheDir;
 QString Path::s_OverlayMenuIconDir;
-bool Path::s_Portable = false;
 
 QString Path::getLogDir()
 {
@@ -110,15 +109,8 @@ QString Path::getDataFilePath(QString fileName)
     return QString(candidatePath);
 }
 
-bool Path::isPortable()
-{
-    return s_Portable;
-}
-
 void Path::initialize(bool portable)
 {
-    s_Portable = portable;
-
     if (portable) {
         s_LogDir = QDir::currentPath();
         s_BoxArtCacheDir = QDir::currentPath() + "/boxart";

@@ -22,14 +22,10 @@ public:
 
     static void initialize(bool portable);
 
-    // Whether portable.dat was found, so settings and caches live in the current directory
-    static bool isPortable();
-
 private:
     static QString s_CacheDir;
     static QString s_LogDir;
     static QString s_BoxArtCacheDir;
     static QString s_QmlCacheDir;
     static QString s_OverlayMenuIconDir;
-    static bool s_Portable;
 };

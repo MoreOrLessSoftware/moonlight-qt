@@ -94,6 +94,19 @@
                                   Name="$(var.FullName)" />
         </File>
       </Component>
+
+      <!-- The GUI hands streams to this process, so it receives the stream's traffic -->
+      <Component Id="MoonlightStream">
+        <File Id="MoonlightStreamExe"
+              KeyPath="yes"
+              Checksum="yes"
+              Source="$(var.BuildDir)\app\$(var.Configuration)\MoonlightStream.exe">
+          <fire:FirewallException Id="MoonlightStreamFirewallException"
+                                  Scope="any"
+                                  IgnoreFailure="yes"
+                                  Name="$(var.FullName) (streaming)" />
+        </File>
+      </Component>
     </DirectoryRef>
 
     <ComponentGroup Id="MoonlightDependencies" Directory="INSTALLFOLDER">
@@ -102,6 +115,7 @@
 
     <Feature Id="ProductFeature" Title="Moonlight" Level="1" ConfigurableDirectory="INSTALLFOLDER">
       <ComponentRef Id="Moonlight" />
+      <ComponentRef Id="MoonlightStream" />
       <ComponentRef Id="MoonlightShortcuts" />
       <ComponentRef Id="MoonlightDesktopShortcutState" />
       <ComponentRef Id="MoonlightDesktopShortcut" />

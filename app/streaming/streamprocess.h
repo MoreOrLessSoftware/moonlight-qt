@@ -12,8 +12,8 @@ class NvApp;
 // process starts the GUI again when the stream ends.
 namespace StreamProcess
 {
-    // Whether the GUI should hand streams off. Only for portable Windows installs, which ship
-    // the stream executable, unless MOONLIGHT_STREAM_PROCESS=1 or 0 says otherwise.
+    // Whether the GUI should hand streams off: on Windows, when the stream executable is next
+    // to us, unless MOONLIGHT_STREAM_PROCESS=1 or 0 says otherwise.
     bool isHandoffEnabled();
 
     // Starts the stream process for an app on a host, on the display at displayOrigin

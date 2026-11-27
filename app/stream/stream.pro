@@ -1,5 +1,5 @@
 # MoonlightStream.exe: streams one app without the QML GUI (see streammain.cpp). It's built
-# next to Moonlight.exe, and only the portable package ships it.
+# next to Moonlight.exe, which hands streams to it on Windows.
 
 TARGET = MoonlightStream
 TEMPLATE = app

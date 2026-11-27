@@ -2,7 +2,6 @@
 
 #include "backend/nvapp.h"
 #include "backend/nvcomputer.h"
-#include "path.h"
 #include "utils.h"
 
 #include <QCoreApplication>
@@ -54,7 +53,7 @@ bool isHandoffEnabled()
         return enabled;
     }
 
-    return Path::isPortable() && QFile::exists(siblingExecutable("MoonlightStream"));
+    return QFile::exists(siblingExecutable("MoonlightStream"));
 #else
     return false;
 #endif

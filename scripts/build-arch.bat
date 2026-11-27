@@ -321,8 +321,8 @@ echo Copying application binary to deployment directory
 copy %BUILD_FOLDER%\app\%BUILD_CONFIG%\Moonlight.exe %DEPLOY_FOLDER%
 if !ERRORLEVEL! NEQ 0 goto Error
 
-rem Only the portable package streams in a separate process, so the MSI (built above
-rem from the deploy folder) doesn't get the stream executable
+rem Like Moonlight.exe, the MSI takes the stream executable from the build folder, so it's
+rem copied in after the MSI harvested the deploy folder
 echo Copying stream binary to deployment directory
 copy %BUILD_FOLDER%\app\%BUILD_CONFIG%\MoonlightStream.exe %DEPLOY_FOLDER%
 if !ERRORLEVEL! NEQ 0 goto Error
