@@ -172,11 +172,13 @@ void OverlayManager::setOverlayRenderer(IOverlayRenderer* renderer)
 {
     m_Renderer = renderer;
 
-    // A new renderer (as after a full-screen toggle) starts without any overlays. A text
-    // overlay is drawn again with its next update, but an image overlay may not get one.
+    // A new renderer (the first one, or after a full-screen toggle) starts without any
+    // overlays. The stats are updated often enough to show again on their own, but the
+    // status text (like the launch warnings, set before there's a renderer) and the menu's
+    // image may not be updated again.
     if (m_Renderer != nullptr) {
         for (int i = 0; i < OverlayType::OverlayMax; i++) {
-            if (isImageOverlay((OverlayType)i) && m_Overlays[i].enabled) {
+            if (m_Overlays[i].enabled) {
                 notifyOverlayUpdated((OverlayType)i);
             }
         }
