@@ -20,9 +20,6 @@
 // How long our window stays up for the GUI to show its own after the stream
 #define GUI_SHOW_TIMEOUT_MS 3000
 
-// Launch warnings are shown this long before the stream starts, like the GUI's toasts
-#define LAUNCH_WARNING_DELAY_MS 3500
-
 int StreamProcessController::run(QGuiApplication& app)
 {
     StreamingPreferences* preferences = StreamingPreferences::get();
@@ -158,7 +155,8 @@ void StreamProcessController::onSessionCreated(QString appName, Session* session
         return;
     }
 
-    // Show any warnings for a moment before starting, like the GUI does
+    // The warnings show in the stream once it starts, rather than holding it up for a few
+    // seconds like the GUI does. They're on the card while it connects too.
     QStringList warnings = session->property("launchWarnings").toStringList();
     for (const QString& warning : std::as_const(warnings)) {
         qWarning() << warning;
@@ -167,9 +165,10 @@ void StreamProcessController::onSessionCreated(QString appName, Session* session
         m_Window.showStatus(isResume ? tr("Resuming %1...").arg(appName) : tr("Starting %1...").arg(appName),
                             warnings, streamHint());
     }
+    session->setShowLaunchWarningsInStream(true);
 
-    QTimer::singleShot(warnings.isEmpty() ? 0 : LAUNCH_WARNING_DELAY_MS, this, [this, session] {
-        // Canceled while showing the warnings
+    QTimer::singleShot(0, this, [this, session] {
+        // Canceled before it started
         if (m_State != StateStarting || m_Session != session) {
             return;
         }
@@ -249,7 +248,7 @@ void StreamProcessController::onCanceled()
                 m_Session->interrupt();
             }
             else {
-                // Still showing the warnings, so it hasn't started
+                // It hasn't started yet
                 m_Session->deleteLater();
                 m_Session = nullptr;
                 finish();

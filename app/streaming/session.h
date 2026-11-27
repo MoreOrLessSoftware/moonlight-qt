@@ -19,6 +19,8 @@
 
 // A custom command's keys all sent (data1: its post action, data2: the session's token)
 #define SDL_CODE_OVERLAY_MENU_COMMAND_DONE 108
+// The launch warnings shown at the start of the stream timing out
+#define SDL_CODE_LAUNCH_WARNINGS_TIMEOUT 140
 // A message on one of the overlay menu's buttons timing out (data1: which one)
 #define SDL_CODE_OVERLAY_MENU_MESSAGE_TIMEOUT 111
 // Time to turn the spinner on a busy overlay menu button (data1: the session's token, data2:
@@ -125,6 +127,13 @@ public:
     // Puts the stream window on the display whose top left corner is here, instead of
     // the one the Qt window is on. Set before initialize().
     void setDisplayOrigin(const QPoint& origin);
+
+    // Shows the launch warnings in the stream's status overlay for a few seconds once it
+    // starts, rather than before it (as the stream process does). Set before start().
+    void setShowLaunchWarningsInStream(bool show)
+    {
+        m_ShowLaunchWarningsInStream = show;
+    }
 
     // Streams in this window instead of creating one, and leaves it open afterwards.
     // Set before initialize().
@@ -347,6 +356,8 @@ private:
     NvApp m_App;
     SDL_Window* m_Window;
     bool m_OwnsWindow = true;
+    bool m_ShowLaunchWarningsInStream = false;
+    bool m_ShowingLaunchWarnings = false;
     std::function<void()> m_WindowReleaseHandler;
     IVideoDecoder* m_VideoDecoder;
     SDL_mutex* m_DecoderLock;

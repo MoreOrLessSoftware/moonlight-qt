@@ -47,6 +47,9 @@
 
 #define CONN_TEST_SERVER "qt.conntest.moonlight-stream.org"
 
+// How long the launch warnings show in the stream (see setShowLaunchWarningsInStream())
+#define LAUNCH_WARNINGS_IN_STREAM_MS 6000
+
 CONNECTION_LISTENER_CALLBACKS Session::k_ConnCallbacks = {
     Session::clStageStarting,
     nullptr,
@@ -190,6 +193,8 @@ void Session::clConnectionStatusUpdate(int connectionStatus)
         // Don't display the overlay if mouse emulation is already using it
         return;
     }
+
+    s_ActiveSession->m_ShowingLaunchWarnings = false;
 
     switch (connectionStatus)
     {
@@ -1684,6 +1689,7 @@ void Session::notifyMouseEmulationMode(bool enabled)
     SDL_assert(m_MouseEmulationRefCount >= 0);
 
     // We re-use the status update overlay for mouse mode notification
+    m_ShowingLaunchWarnings = false;
     if (m_MouseEmulationRefCount > 0) {
         m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate, "Gamepad mouse mode active\nLong press Start to deactivate");
         m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
@@ -2166,6 +2172,21 @@ void Session::exec()
         SDL_UnlockMutex(m_DecoderLock);
     });
 
+    // The launch warnings, which the stream process shows here instead of before the stream
+    if (m_ShowLaunchWarningsInStream && !m_LaunchWarnings.isEmpty()) {
+        m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate, m_LaunchWarnings.join('\n').toUtf8().constData());
+        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
+        m_ShowingLaunchWarnings = true;
+
+        SDL_AddTimer(LAUNCH_WARNINGS_IN_STREAM_MS, [](Uint32, void*) -> Uint32 {
+            SDL_Event event = {};
+            event.type = SDL_USEREVENT;
+            event.user.code = SDL_CODE_LAUNCH_WARNINGS_TIMEOUT;
+            SDL_PushEvent(&event);
+            return 0;
+        }, nullptr);
+    }
+
     // Switch to async logging mode when we enter the SDL loop
     StreamUtils::enterAsyncLoggingMode();
 
@@ -2243,6 +2264,13 @@ void Session::exec()
                 break;
             case SDL_CODE_OVERLAY_MENU_COMMAND_DONE:
                 finishOverlayMenuCommand(event.user);
+                break;
+            case SDL_CODE_LAUNCH_WARNINGS_TIMEOUT:
+                // Unless something else is using the overlay now
+                if (m_ShowingLaunchWarnings) {
+                    m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, false);
+                    m_ShowingLaunchWarnings = false;
+                }
                 break;
             case SDL_CODE_OVERLAY_MENU_MESSAGE_TIMEOUT:
                 if ((int)(intptr_t)event.user.data1 == m_OverlayMenuMessages) {
