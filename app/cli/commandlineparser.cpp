@@ -141,6 +141,21 @@ public:
         addOption(QCommandLineOption(name, QString("Specify %1 to use.").arg(descriptiveName), name));
     }
 
+    // For the GUI and the stream process to pass things between them
+    void addHiddenValueOption(QString name)
+    {
+        QCommandLineOption option(name, QString(), name);
+        option.setFlags(QCommandLineOption::HiddenFromHelp);
+        addOption(option);
+    }
+
+    void addHiddenFlagOption(QString name)
+    {
+        QCommandLineOption option(name, QString());
+        option.setFlags(QCommandLineOption::HiddenFromHelp);
+        addOption(option);
+    }
+
     void addChoiceOption(QString name, QString descriptiveName, QStringList choices)
     {
         addOption(QCommandLineOption(name, QString("Select %1: %2.").arg(descriptiveName, choices.join('/')), name));
@@ -157,6 +172,11 @@ GlobalCommandLineParser::GlobalCommandLineParser()
 
 GlobalCommandLineParser::~GlobalCommandLineParser()
 {
+}
+
+QString GlobalCommandLineParser::getSelectHost() const
+{
+    return m_SelectHost;
 }
 
 GlobalCommandLineParser::ParseResult GlobalCommandLineParser::parse(const QStringList &args)
@@ -176,6 +196,7 @@ GlobalCommandLineParser::ParseResult GlobalCommandLineParser::parse(const QStrin
         "See 'moonlight <action> --help' for help of specific action."
     );
     parser.addPositionalArgument("action", "Action to execute", "<action>");
+    parser.addHiddenValueOption("select-host");
     parser.parse(args);
     auto posArgs = parser.positionalArguments();
 
@@ -184,6 +205,9 @@ GlobalCommandLineParser::ParseResult GlobalCommandLineParser::parse(const QStrin
         // or --help is specified
         parser.handleHelpAndVersionOptions();
         parser.handleUnknownOptions();
+
+        // The stream process starting us again, to show the apps of the host it streamed from
+        m_SelectHost = parser.value("select-host");
         return NormalStartRequested;
     }
     else {
@@ -386,6 +410,9 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     parser.addOption(QCommandLineOption("preset",
                                         "Apply a saved video preset first, so any other options override its values.",
                                         "name"));
+    parser.addHiddenValueOption("app-id");
+    parser.addHiddenValueOption("display-origin");
+    parser.addHiddenFlagOption("return-to-gui");
 
     if (!parser.parse(args)) {
         parser.showError(parser.errorText());
@@ -573,6 +600,33 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
         parser.showError("App not provided");
     }
     m_AppName = parser.positionalArguments().at(2);
+
+    // Passed by the GUI when it hands a stream to the stream process
+    m_AppId = parser.value("app-id").toInt();
+    m_ReturnToGui = parser.isSet("return-to-gui");
+    if (parser.isSet("display-origin")) {
+        QStringList origin = parser.value("display-origin").split(',');
+        if (origin.size() == 2) {
+            m_DisplayOrigin = QPoint(origin[0].toInt(), origin[1].toInt());
+            m_HasDisplayOrigin = true;
+        }
+    }
+}
+
+int StreamCommandLineParser::getAppId() const
+{
+    return m_AppId;
+}
+
+bool StreamCommandLineParser::isReturnToGui() const
+{
+    return m_ReturnToGui;
+}
+
+bool StreamCommandLineParser::getDisplayOrigin(QPoint* origin) const
+{
+    *origin = m_DisplayOrigin;
+    return m_HasDisplayOrigin;
 }
 
 QString StreamCommandLineParser::getHost() const

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QPoint>
 #include <QVariant>
 
 class ComputerManager;
@@ -24,6 +25,12 @@ public:
                       StreamingPreferences* preferences,
                       QObject *parent = nullptr);
     ~Launcher();
+
+    // Finds the app by its ID first, when known
+    void setAppId(int appId);
+
+    // Puts the stream window on the display whose top left corner is here
+    void setDisplayOrigin(const QPoint& origin);
     Q_INVOKABLE void execute(ComputerManager *manager);
     Q_INVOKABLE void quitRunningApp();
     Q_INVOKABLE bool isExecuted() const;

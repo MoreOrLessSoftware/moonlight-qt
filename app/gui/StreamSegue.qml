@@ -5,6 +5,7 @@ import QtQuick.Window 2.2
 import SdlGamepadKeyNavigation 1.0
 import StreamingPreferences 1.0
 import Session 1.0
+import StreamHandoff 1.0
 import SystemProperties 1.0
 
 Item {
@@ -112,6 +113,13 @@ Item {
     StackView.onActivated: {
         // Hide the toolbar before we start loading
         toolBar.visible = false
+
+        // The stream process streams instead and starts the GUI again afterwards
+        if (StreamHandoff.enabled && StreamHandoff.launch(session, window)) {
+            session = null
+            Qt.quit()
+            return
+        }
 
         // Hook up our signals
         session.stageStarting.connect(stageStarting)

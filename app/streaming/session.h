@@ -1,7 +1,8 @@
 #pragma once
 
 #include <QSemaphore>
-#include <QQuickWindow>
+#include <QPoint>
+#include <QWindow>
 
 #include <Limelight.h>
 #include <opus_multistream.h>
@@ -117,7 +118,21 @@ public:
     explicit Session(NvComputer* computer, NvApp& app, StreamingPreferences *preferences = nullptr);
     virtual ~Session();
 
-    Q_INVOKABLE bool initialize(QQuickWindow* qtWindow);
+    Q_INVOKABLE bool initialize(QWindow* qtWindow);
+
+    // Puts the stream window on the display whose top left corner is here, instead of
+    // the one the Qt window is on. Set before initialize().
+    void setDisplayOrigin(const QPoint& origin);
+
+    NvComputer* getComputer() const
+    {
+        return m_Computer;
+    }
+
+    const NvApp& getApp() const
+    {
+        return m_App;
+    }
     Q_INVOKABLE void start();
     Q_INVOKABLE void interrupt();
     Q_PROPERTY(QStringList launchWarnings MEMBER m_LaunchWarnings NOTIFY launchWarningsChanged);
@@ -307,7 +322,9 @@ private:
     bool m_AudioDisabled;
     bool m_AudioMuted;
     Uint32 m_FullScreenFlag;
-    QQuickWindow* m_QtWindow;
+    QWindow* m_QtWindow;
+    QPoint m_DisplayOrigin;
+    bool m_HasDisplayOrigin = false;
     bool m_UnexpectedTermination;
     SdlInputHandler* m_InputHandler;
     int m_MouseEmulationRefCount;

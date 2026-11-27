@@ -43,6 +43,8 @@
 #include "cli/listapps.h"
 #include "cli/quitstream.h"
 #include "cli/startstream.h"
+#include "gui/streamhandoff.h"
+#include "streaming/streamprocess.h"
 #include "cli/pair.h"
 #include "cli/commandlineparser.h"
 #include "path.h"
@@ -974,6 +976,13 @@ int main(int argc, char *argv[])
                                                       [](QQmlEngine* qmlEngine, QJSEngine*) -> QObject* {
                                                           return new SdlGamepadKeyNavigation(StreamingPreferences::get(qmlEngine));
                                                       });
+    // Only a normal start hands streams to the stream process, not a command line stream
+    bool allowStreamHandoff = commandLineParserResult == GlobalCommandLineParser::NormalStartRequested;
+    qmlRegisterSingletonType<StreamHandoff>("StreamHandoff", 1, 0,
+                                            "StreamHandoff",
+                                            [allowStreamHandoff](QQmlEngine*, QJSEngine*) -> QObject* {
+                                                return new StreamHandoff(allowStreamHandoff);
+                                            });
     qmlRegisterSingletonType<StreamingPreferences>("StreamingPreferences", 1, 0,
                                                    "StreamingPreferences",
                                                    [](QQmlEngine* qmlEngine, QJSEngine*) -> QObject* {
@@ -1007,6 +1016,10 @@ int main(int argc, char *argv[])
     QString initialView;
     bool hasGUI = true;
 
+    // When this is the stream process, the host to show in the GUI after the stream
+    QString returnToGuiHost;
+    bool returnToGui = false;
+
     switch (commandLineParserResult) {
     case GlobalCommandLineParser::NormalStartRequested:
         initialView = "qrc:/gui/PcView.qml";
@@ -1020,6 +1033,13 @@ int main(int argc, char *argv[])
             QString host    = streamParser.getHost();
             QString appName = streamParser.getAppName();
             auto launcher   = new CliStartStream::Launcher(host, appName, preferences, &app);
+            launcher->setAppId(streamParser.getAppId());
+            QPoint displayOrigin;
+            if (streamParser.getDisplayOrigin(&displayOrigin)) {
+                launcher->setDisplayOrigin(displayOrigin);
+            }
+            returnToGui = streamParser.isReturnToGui();
+            returnToGuiHost = host;
             engine.rootContext()->setContextProperty("launcher", launcher);
             break;
         }
@@ -1054,7 +1074,11 @@ int main(int argc, char *argv[])
 
     if (hasGUI) {
         engine.rootContext()->setContextProperty("initialView", initialView);
-        engine.rootContext()->setContextProperty("runConfigChecks", commandLineParserResult == GlobalCommandLineParser::NormalStartRequested);
+        // The stream process starting us again shouldn't repeat the configuration warnings
+        engine.rootContext()->setContextProperty("runConfigChecks",
+                                                 commandLineParserResult == GlobalCommandLineParser::NormalStartRequested &&
+                                                 parser.getSelectHost().isEmpty());
+        engine.rootContext()->setContextProperty("initialHostUuid", parser.getSelectHost());
 
         // Load the main.qml file
         engine.load(QUrl(QStringLiteral("qrc:/gui/main.qml")));
@@ -1063,6 +1087,11 @@ int main(int argc, char *argv[])
     }
 
     int err = app.exec();
+
+    // Bring the GUI back now rather than after our cleanup below
+    if (returnToGui) {
+        StreamProcess::relaunchGui(returnToGuiHost);
+    }
 
     // Remember where the window was and how big it was for next time. Only a plain
     // window counts: a maximized or full-screen window isn't the size it'll come back

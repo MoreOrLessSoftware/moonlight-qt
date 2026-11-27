@@ -44,9 +44,6 @@
 #include <QCursor>
 #include <QScreen>
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-#include <QQuickOpenGLUtils>
-#endif
 
 #define CONN_TEST_SERVER "qt.conntest.moonlight-stream.org"
 
@@ -656,7 +653,13 @@ Session::~Session()
     SDL_DestroyMutex(m_DecoderLock);
 }
 
-bool Session::initialize(QQuickWindow* qtWindow)
+void Session::setDisplayOrigin(const QPoint& origin)
+{
+    m_DisplayOrigin = origin;
+    m_HasDisplayOrigin = true;
+}
+
+bool Session::initialize(QWindow* qtWindow)
 {
     m_QtWindow = qtWindow;
 
@@ -1435,14 +1438,14 @@ void Session::getWindowDimensions(int& x, int& y,
         displayIndex = SDL_GetWindowDisplayIndex(m_Window);
         SDL_assert(displayIndex >= 0);
     }
-    // Create our window on the same display that Qt's UI
-    // was being displayed on.
+    // Create our window on the same display that Qt's UI was being displayed on,
+    // or the one we were told to use (the GUI's, when it handed the stream to us)
     else {
-        Q_ASSERT(m_QtWindow != nullptr);
-        if (m_QtWindow != nullptr) {
-            QScreen* screen = m_QtWindow->screen();
-            if (screen != nullptr) {
-                QRect displayRect = screen->geometry();
+        Q_ASSERT(m_QtWindow != nullptr || m_HasDisplayOrigin);
+        QScreen* screen = m_QtWindow != nullptr ? m_QtWindow->screen() : nullptr;
+        if (m_HasDisplayOrigin || m_QtWindow != nullptr) {
+            if (m_HasDisplayOrigin || screen != nullptr) {
+                QRect displayRect = m_HasDisplayOrigin ? QRect(m_DisplayOrigin, QSize(1, 1)) : screen->geometry();
 
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "Qt UI screen is at (%d,%d)",

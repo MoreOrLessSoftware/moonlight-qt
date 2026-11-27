@@ -192,6 +192,7 @@ SOURCES += \
     gui/keyrecorder.cpp \
     gui/gamepadsettingsmodel.cpp \
     gui/gyrotester.cpp \
+    gui/streamhandoff.cpp \
     streaming/input/abstouch.cpp \
     streaming/input/gamepad.cpp \
     streaming/input/gyrofilter.cpp \
@@ -200,6 +201,7 @@ SOURCES += \
     streaming/input/mouse.cpp \
     streaming/input/reltouch.cpp \
     streaming/session.cpp \
+    streaming/streamprocess.cpp \
     streaming/audio/audio.cpp \
     streaming/audio/renderers/sdlaud.cpp \
     gui/computermodel.cpp \
@@ -245,9 +247,11 @@ HEADERS += \
     gui/keyrecorder.h \
     gui/gamepadsettingsmodel.h \
     gui/gyrotester.h \
+    gui/streamhandoff.h \
     streaming/input/input.h \
     streaming/input/gyrofilter.h \
     streaming/session.h \
+    streaming/streamprocess.h \
     streaming/audio/renderers/renderer.h \
     streaming/audio/renderers/sdl.h \
     gui/computermodel.h \

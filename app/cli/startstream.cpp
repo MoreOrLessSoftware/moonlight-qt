@@ -103,6 +103,9 @@ public:
                     if (isNotStreaming() || isStreamingApp(app)) {
                         m_State = StateStartSession;
                         session = new Session(m_Computer, app, m_Preferences);
+                        if (m_HasDisplayOrigin) {
+                            session->setDisplayOrigin(m_DisplayOrigin);
+                        }
                         emit q->sessionCreated(app.name, session);
                     } else {
                         emit q->appQuitRequired(getCurrentAppName());
@@ -142,6 +145,15 @@ public:
 
     int getAppIndex() const
     {
+        // The GUI passes the app's ID too, since names don't have to be unique
+        if (m_AppId != 0) {
+            for (int i = 0; i < m_Computer->appList.length(); i++) {
+                if (m_Computer->appList[i].id == m_AppId) {
+                    return i;
+                }
+            }
+        }
+
         for (int i = 0; i < m_Computer->appList.length(); i++) {
             if (m_Computer->appList[i].name.toLower() == m_AppName.toLower()) {
                 return i;
@@ -173,6 +185,9 @@ public:
     Launcher *q_ptr;
     QString m_ComputerName;
     QString m_AppName;
+    int m_AppId = 0;
+    QPoint m_DisplayOrigin;
+    bool m_HasDisplayOrigin = false;
     StreamingPreferences *m_Preferences;
     ComputerManager *m_ComputerManager;
     ComputerSeeker *m_ComputerSeeker;
@@ -199,6 +214,19 @@ Launcher::Launcher(QString computer, QString app,
 
 Launcher::~Launcher()
 {
+}
+
+void Launcher::setAppId(int appId)
+{
+    Q_D(Launcher);
+    d->m_AppId = appId;
+}
+
+void Launcher::setDisplayOrigin(const QPoint& origin)
+{
+    Q_D(Launcher);
+    d->m_DisplayOrigin = origin;
+    d->m_HasDisplayOrigin = true;
 }
 
 void Launcher::execute(ComputerManager *manager)
