@@ -279,7 +279,7 @@ void StreamProcessController::finish()
     }
 #endif
 
-    // Quit and exit (Ctrl+Alt+Shift+Q) closes the GUI too. From the command line, it's
+    // Quit and exit (Ctrl+Alt+Shift+E) closes the GUI too. From the command line, it's
     // just the end of the stream.
     QCoreApplication::exit(m_ExitRequested && m_GuiPid != 0 ? StreamProcess::k_ExitCodeQuitAndExit : 0);
 }

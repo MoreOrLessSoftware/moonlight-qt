@@ -21,7 +21,7 @@ namespace StreamProcess
     qint64 launchStream(NvComputer* computer, const NvApp& app, const QPoint& displayOrigin);
 
     // The stream process's exit code when the user quit Moonlight from the stream
-    // (Ctrl+Alt+Shift+Q), so the GUI exits too
+    // (Ctrl+Alt+Shift+E), so the GUI exits too
     const int k_ExitCodeQuitAndExit = 3;
 
     // Runs a command line stream in the stream executable, if there is one, waiting for
